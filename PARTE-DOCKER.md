@@ -2,7 +2,9 @@
 
 Solo necesitás **Docker Desktop**. No hace falta Node, ni Python, ni npm.
 
-La primera vez baja ~307 MB. Después arranca en segundos.
+La primera vez baja ~310 MB. Después arranca en segundos.
+
+Las tres imágenes viven en un solo repositorio: **`k1ntsu/dat.ia`**
 
 ---
 
@@ -66,6 +68,12 @@ funcionando.
 ---
 
 ## 4. Problemas frecuentes
+
+**En Mac con chip Apple Silicon (M1/M2/M3/M4) va lento**
+Las imágenes se publicaron desde una máquina Intel, así que son solo `linux/amd64`.
+Docker las emula y funciona, pero Postgres puede tardar varios minutos en
+arrancar la primera vez. Es normal, no es un error. En un Windows o Linux x86-64
+arranca al instante.
 
 **"docker compose" no encuentra los archivos**
 Usá los dos `-f`, o el orden importa:

@@ -4,21 +4,24 @@
 # En vez de `build:` tira de las imágenes ya construidas en Docker Hub, así que
 # no necesita Node, ni Python, ni npm. Solo `docker compose up -d`.
 #
-#   docker compose -f docker-compose.partner.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.partner.yml up -d
 #
-# La primera vez baja ~307 MB. Después usa la copia local.
+# (el compose base va primero: este archivo solo lo pisa, no lo reemplaza)
 #
-# Estos tags deben existir en https://hub.docker.com/r/k1ntsu/datia-*
+# La primera vez baja ~310 MB. Después usa la copia local.
+#
+# Los tres tags viven en el mismo repositorio:
+#   https://hub.docker.com/r/k1ntsu/dat.ia
 # ==========================================
 
 services:
   backend:
-    image: k1ntsu/datia-backend:latest
+    image: k1ntsu/dat.ia:backend
     build: !reset null
 
   frontend:
-    image: k1ntsu/datia-frontend:latest
+    image: k1ntsu/dat.ia:frontend
     build: !reset null
 
   postgres:
-    image: k1ntsu/datia-postgres:16-alpine
+    image: k1ntsu/dat.ia:postgres
