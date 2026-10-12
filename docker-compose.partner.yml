@@ -1,27 +1,101 @@
 # ==========================================
-# OVERRIDE para la maquina del compañero.
+# Dat.ia — para probar la app en otra maquina.
 #
-# En vez de `build:` tira de las imágenes ya construidas en Docker Hub, así que
-# no necesita Node, ni Python, ni npm. Solo `docker compose up -d`.
+#   docker compose -f docker-compose.partner.yml up -d
 #
-#   docker compose -f docker-compose.yml -f docker-compose.partner.yml up -d
+# Autonomouso a proposito: no necesita el docker-compose.yml de al lado ni
+# Node/Python. Todo lo que hace falta esta aca.
 #
-# (el compose base va primero: este archivo solo lo pisa, no lo reemplaza)
+# NO combines con `-f docker-compose.yml`: ese archivo declara `build:` y al
+# mezclarse gana la construccion local en vez de la imagen publicada.
 #
-# La primera vez baja ~310 MB. Después usa la copia local.
-#
-# Los tres tags viven en el mismo repositorio:
-#   https://hub.docker.com/r/k1ntsu/dat.ia
+# La primera vez baja ~310 MB. Despues usa la copia local.
+# Imagenes: https://hub.docker.com/r/k1ntsu/dat.ia
 # ==========================================
 
 services:
-  backend:
-    image: k1ntsu/dat.ia:backend
-    build: !reset null
-
-  frontend:
-    image: k1ntsu/dat.ia:frontend
-    build: !reset null
-
+  # ==========================================
+  # 1. DATABASE: PostgreSQL 16 (Metadata & Governance)
+  # ==========================================
   postgres:
     image: k1ntsu/dat.ia:postgres
+    container_name: datia-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - edit .env}
+      POSTGRES_DB: ${POSTGRES_DB:-democratizacion_metadatos}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-democratizacion_metadatos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - datia-network
+
+  # ==========================================
+  # 2. BACKEND: FastAPI & Local Text-to-SQL Engine
+  # ==========================================
+  backend:
+    image: k1ntsu/dat.ia:backend
+    container_name: datia-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - ENVIRONMENT=production
+      # ':?' hace que compose se niegue a arrancar si faltan, en vez de caer
+      # a la clave de desarrollo que esta publicada en el README.
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required - copy it from .env}
+      # Sin esto, las columnas cifradas de los conectores quedan indescifrables
+      # y el fallo aparece a mitad de una consulta, no al arrancar.
+      - FERNET_KEY=${FERNET_KEY:?FERNET_KEY is required - generate one with 'python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'}
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - edit .env}
+      - POSTGRES_DB=${POSTGRES_DB:-democratizacion_metadatos}
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      # Fijo: dentro de un contenedor `localhost` es el PROPIO contenedor, asi
+      # que este tiene que ser el host de la maquina donde corre Ollama.
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-coder:7b}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
+    ports:
+      - "8000:8000"
+    volumes:
+      - data_sources_data:/app/data_sources
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - datia-network
+
+  # ==========================================
+  # 3. FRONTEND: React SPA & Nginx Reverse Proxy
+  # ==========================================
+  frontend:
+    image: k1ntsu/dat.ia:frontend
+    container_name: datia-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "5173:80"
+    networks:
+      - datia-network
+
+volumes:
+  postgres_data:
+    driver: local
+  data_sources_data:
+    driver: local
+
+networks:
+  datia-network:
+    driver: bridge

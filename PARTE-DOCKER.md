@@ -28,13 +28,17 @@ FERNET_KEY=pega_aqui_la_clave
 POSTGRES_PASSWORD=una_contrasena_cualquiera
 ```
 
-Después:
+Después, **un solo comando**:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.partner.yml up -d
+docker compose -f docker-compose.partner.yml up -d
 ```
 
 Y abrí **http://localhost**
+
+> Fijate que el comando lleva **solo** `docker-compose.partner.yml`. Si le
+> agregás `-f docker-compose.yml`, ese archivo manda `build:` y te compila todo
+> local en vez de usar las imágenes de Docker Hub.
 
 ---
 
@@ -75,29 +79,33 @@ Docker las emula y funciona, pero Postgres puede tardar varios minutos en
 arrancar la primera vez. Es normal, no es un error. En un Windows o Linux x86-64
 arranca al instante.
 
-**"docker compose" no encuentra los archivos**
-Usá los dos `-f`, o el orden importa:
+**Postgres dice "Database is uninitialized and superuser password is not specified"**
+Te falta el `.env` o le falta `POSTGRES_PASSWORD`. El compose se niega a
+arrancar antes de producir ese error, así que si lo estás viendo es que estás
+usando el `docker-compose.yml` (el de desarrollo) en vez del
+`docker-compose.partner.yml`. Revisá que el comando sea:
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.partner.yml up -d
+docker compose -f docker-compose.partner.yml up -d
 ```
 
 **El puerto 80 está ocupado** (a veces lo agarra otro programa en Windows):
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.partner.yml down
-# cambiá "80:80" por "8080:80" en docker-compose.yml (línea 79) y abrí http://localhost:8080
+docker compose -f docker-compose.partner.yml down
+# cambiá "80:80" por "8080:80" en docker-compose.partner.yml (sección frontend)
+# y abrí http://localhost:8080
 ```
 
 **Empezar de cero** (borra la base y toda la data):
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.partner.yml down -v
+docker compose -f docker-compose.partner.yml down -v
 ```
 
 **Ver los errores**:
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.partner.yml logs -f backend
+docker compose -f docker-compose.partner.yml logs -f backend
 ```
 
 **Parar**:
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.partner.yml down
+docker compose -f docker-compose.partner.yml down
 ```
