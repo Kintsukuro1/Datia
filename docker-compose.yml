@@ -52,7 +52,13 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - POSTGRES_DB=${POSTGRES_DB:-democratizacion_metadatos}
       - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # Fijo, sin ${...}: dentro de un contenedor `localhost` es el PROPIO
+      # contenedor, así que heredar el OLLAMA_BASE_URL=http://localhost:11434
+      # que trae .env (correcto para `npm run dev` sin Docker) dejaba al backend
+      # hablando consigo mismo. El síntoma era el chat respondiendo "IA local no
+      # disponible" con Ollama corriendo en la máquina. La variable de .env
+      # sigue sirviendo para correr sin Docker; acá no aplica.
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-coder:7b}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
     ports:

@@ -1,0 +1,24 @@
+# ==========================================
+# OVERRIDE para la maquina del compañero.
+#
+# En vez de `build:` tira de las imágenes ya construidas en Docker Hub, así que
+# no necesita Node, ni Python, ni npm. Solo `docker compose up -d`.
+#
+#   docker compose -f docker-compose.partner.yml up -d
+#
+# La primera vez baja ~307 MB. Después usa la copia local.
+#
+# Estos tags deben existir en https://hub.docker.com/r/k1ntsu/datia-*
+# ==========================================
+
+services:
+  backend:
+    image: k1ntsu/datia-backend:latest
+    build: !reset null
+
+  frontend:
+    image: k1ntsu/datia-frontend:latest
+    build: !reset null
+
+  postgres:
+    image: k1ntsu/datia-postgres:16-alpine
