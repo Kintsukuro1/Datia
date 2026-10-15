@@ -24,6 +24,7 @@ from app.modules.auth.models import Role
 from app.modules.catalog.services.catalog_service import CatalogDomainService
 from app.modules.catalog.services.connector_service import ConnectorDomainService
 from app.modules.catalog.services.null_manager import NullManagerService
+from app.modules.catalog.services.schema_inspector import SchemaIntrospectionError
 from app.modules.reports.generator import ReportGeneratorService
 from app.modules.system.health_service import HealthService
 from fastapi import HTTPException
@@ -146,7 +147,17 @@ def audit_connection_nulls(
     conn = db.query(CorporateConnection).filter(CorporateConnection.id == connection_id).first()
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada.")
-    return NullManagerService.audit_connection_nulls(conn, db)
+    try:
+        return NullManagerService.audit_connection_nulls(conn, db)
+    except SchemaIntrospectionError as ex:
+        # Mismo criterio que /catalog/data-dictionary: la peticion es valida, la
+        # base de la conexion no se pudo leer. Sin este catch daba 500; antes de
+        # que el inspector dejara de tragarse el fallo, respondia 200 con
+        # has_nulls=false ("base limpia") sobre una base que no se abrio.
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(ex)
+        )
 
 @router.post("/catalog/connections/{connection_id}/nulls-policy")
 def apply_connection_null_policy(

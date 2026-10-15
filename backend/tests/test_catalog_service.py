@@ -254,6 +254,23 @@ class TestDataDictionaryDoesNotReportAFailedConnectionAsEmpty(unittest.TestCase)
                 self.assertIsNotNone(raised, "la llamada deveria fallar, no devolver un diccionario vacio")
                 self.assertNotEqual(raised.status_code, 200)
 
+    def test_resolve_failure_is_also_mapped_to_502(self):
+        """`resolve_connection_db_path` ahora lanza por una ruta configurada
+        inexistente (no cae mas a la base demo); el catch del diccionario tiene
+        que cubrir tambien eso y no dejarlo pasar como 500."""
+        db = MagicMock()
+        with patch.object(
+            cs.SchemaInspector, "resolve_connection_db_path",
+            side_effect=SchemaIntrospectionError(
+                "La conexión 'Clientes' apunta al archivo 'no/existe.db', que no existe en disco."
+            ),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                CatalogDomainService.get_data_dictionary(db, connection_id=1)
+
+        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertIn("no/existe.db", ctx.exception.detail)
+
 
 class TestUnknownConnectionIdIsRejectedByTheInspector(unittest.TestCase):
     """`SchemaInspector.resolve_connection_db_path` con un `connection_id` explicito

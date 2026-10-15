@@ -59,10 +59,23 @@ class SchemaInspector:
                 conn = db.query(CorporateConnection).order_by(CorporateConnection.id.desc()).first()
 
         if conn and conn.db_type == DatabaseType.SQLITE:
-            if conn.host and os.path.exists(conn.host):
-                return conn.host, conn
-            if conn.database_name and os.path.exists(conn.database_name):
-                return conn.database_name, conn
+            # Una ruta CONFIGURADA que ya no existe es error, no fallback a la
+            # base demo de la plataforma: con el fallback silencioso el
+            # diccionario, el catalogo y el chat leian `demo_corporativa.db`
+            # creyendo que era la base pedida. El fallback de abajo queda solo
+            # para la rama historica sin ruta configurada. `isinstance(str)`
+            # distingue una ruta real de los mocks que usan los tests.
+            configured_path: Optional[str] = None
+            for candidate in (conn.host, conn.database_name):
+                if isinstance(candidate, str) and candidate:
+                    if configured_path is None:
+                        configured_path = candidate
+                    if os.path.exists(candidate):
+                        return candidate, conn
+            if configured_path:
+                raise SchemaIntrospectionError(
+                    f"La conexión '{conn.name}' apunta al archivo '{configured_path}', que no existe en disco."
+                )
 
         db_path = settings.SQLITE_DB_PATH
         if not conn:
@@ -182,17 +195,37 @@ class SchemaInspector:
 
         # 2. SQLite local file
         target_path = db_path
+        configured_path: Optional[str] = None
         if not target_path and conn_obj:
-            if conn_obj.database_name and os.path.exists(conn_obj.database_name):
-                target_path = conn_obj.database_name
-            elif conn_obj.host and os.path.exists(conn_obj.host):
-                target_path = conn_obj.host
+            # `database_name` antes que `host`, igual que el codigo historico de
+            # esta rama (al reves que `resolve_connection_db_path`): se mantiene
+            # la preferencia con la que resolvia aca.
+            for candidate in (conn_obj.database_name, conn_obj.host):
+                if isinstance(candidate, str) and candidate:
+                    if configured_path is None:
+                        configured_path = candidate
+                    if os.path.exists(candidate):
+                        target_path = candidate
+                        break
+
+        if not target_path and configured_path:
+            # Misma regla que `resolve_connection_db_path`: ruta configurada que
+            # no existe en disco = error. Antes caia en silencio a
+            # `settings.SQLITE_DB_PATH` y este metodo devolvia las tablas de
+            # OTRA base (la demo de la plataforma) como si fueran de la pedida.
+            raise SchemaIntrospectionError(
+                f"La conexión '{conn_obj.name}' apunta al archivo '{configured_path}', que no existe en disco."
+            )
 
         if not target_path:
             target_path = settings.SQLITE_DB_PATH
 
         if not target_path or not os.path.exists(target_path):
-            return tables_metadata
+            # Antes `return tables_metadata` ([]): indistinguible de "la base no
+            # tiene tablas" y el caller respondia 200 con total_tables=0.
+            raise SchemaIntrospectionError(
+                f"No se pudo leer el archivo SQLite '{target_path}': no existe en disco."
+            )
 
         try:
             # `closing`, no el `with sqlite3.connect(...)`: ese context manager

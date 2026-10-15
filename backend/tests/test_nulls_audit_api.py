@@ -114,6 +114,37 @@ class TestNullsAuditApi(unittest.TestCase):
 
         real_conn.close()
 
+    def test_unreadable_sqlite_file_is_502_not_a_clean_database(self):
+        """El archivo de la conexion no existe: antes el inspector caia a la
+        base demo y el endpoint respondia 200 con has_nulls=false sobre una
+        base que no se leyo."""
+        missing = self.db_path + ".missing"
+        broken = CorporateConnection(
+            name=f"nulls-api-broken-{uuid.uuid4().hex[:8]}",
+            db_type=DatabaseType.SQLITE,
+            host=missing,
+            port=0,
+            database_name=missing,
+            username="admin",
+            is_active=True,
+        )
+        self.db.add(broken)
+        self.db.commit()
+        try:
+            headers = {"Authorization": f"Bearer {self.admin_token}"}
+            resp = self.client.get(
+                f"/api/v1/catalog/connections/{broken.id}/nulls-audit",
+                headers=headers,
+            )
+        finally:
+            self.db.query(CorporateConnection).filter(
+                CorporateConnection.id == broken.id
+            ).delete()
+            self.db.commit()
+
+        self.assertEqual(resp.status_code, 502, resp.text)
+        self.assertIn(missing, resp.json()["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

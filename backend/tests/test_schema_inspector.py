@@ -16,9 +16,11 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import uuid
 from unittest.mock import MagicMock, patch
 
-from app.modules.admin_catalog.models import DatabaseType
+from app.core.config import settings
+from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
 from app.modules.catalog.services import schema_inspector as si
 from app.modules.catalog.services.schema_inspector import SchemaInspector, SchemaIntrospectionError
 
@@ -68,6 +70,74 @@ class TestConnectionFailureIsNotAnEmptyDatabase(unittest.TestCase):
 
 class OperationalErrorShim(Exception):
     pass
+
+
+class TestMissingSqliteFileIsNotAnEmptyDatabase(unittest.TestCase):
+    """Una ruta SQLite inexistente devolvia `[]` (200 con total_tables=0), que
+    es indistinguible de "esta base no tiene tablas". Ahora lanza."""
+
+    def test_explicit_db_path_that_does_not_exist_raises_with_the_path(self):
+        missing = os.path.join(tempfile.gettempdir(), f"no-existe-{uuid.uuid4().hex}.db")
+        self.assertFalse(os.path.exists(missing))
+
+        with self.assertRaises(SchemaIntrospectionError) as ctx:
+            SchemaInspector.introspect_connection_metadata(None, missing)
+
+        self.assertIn(missing, str(ctx.exception))
+
+    def test_connection_with_configured_missing_path_raises(self):
+        """La conexion trae ruta configurada que ya no existe: no se cae en
+        silencio a la base demo de la plataforma."""
+        missing = os.path.join(tempfile.gettempdir(), f"no-existe-{uuid.uuid4().hex}.db")
+        conn = MagicMock()
+        conn.db_type = DatabaseType.SQLITE
+        conn.name = "Clientes"
+        conn.host = missing
+        conn.database_name = missing
+
+        with self.assertRaises(SchemaIntrospectionError) as ctx:
+            SchemaInspector.introspect_connection_metadata(conn)
+
+        self.assertIn(missing, str(ctx.exception))
+
+
+class TestResolveDoesNotSilentlyFallBackToTheDemoDatabase(unittest.TestCase):
+    """Una conexion SQLite con ruta CONFIGURADA inexistente caia en silencio a
+    `settings.SQLITE_DB_PATH`: el diccionario, el catalogo y el chat leian la
+    base demo de la plataforma creyendo que era la base pedida."""
+
+    @staticmethod
+    def _db_returning(conn):
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = conn
+        return db
+
+    def test_configured_but_missing_path_raises_and_never_names_the_demo_db(self):
+        missing = os.path.join(tempfile.gettempdir(), f"no-existe-{uuid.uuid4().hex}.db")
+        conn = CorporateConnection(
+            id=42, name="Clientes", db_type=DatabaseType.SQLITE,
+            host=missing, port=0, database_name=missing, username="admin",
+            is_active=True,
+        )
+
+        with self.assertRaises(SchemaIntrospectionError) as ctx:
+            SchemaInspector.resolve_connection_db_path(self._db_returning(conn), 42)
+
+        msg = str(ctx.exception)
+        self.assertIn(missing, msg)
+        self.assertNotIn(settings.SQLITE_DB_PATH, msg)
+
+    def test_connection_without_configured_path_keeps_the_historical_fallback(self):
+        conn = CorporateConnection(
+            id=43, name="Sin ruta", db_type=DatabaseType.SQLITE,
+            host=None, port=0, database_name=None, username="admin",
+            is_active=True,
+        )
+
+        db_path, resolved = SchemaInspector.resolve_connection_db_path(self._db_returning(conn), 43)
+
+        self.assertEqual(db_path, settings.SQLITE_DB_PATH)
+        self.assertIs(resolved, conn)
 
 
 class TestSqliteResourceIsClosed(unittest.TestCase):

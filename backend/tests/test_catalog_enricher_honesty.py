@@ -15,6 +15,7 @@ import uuid
 import asyncio
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from main import app
@@ -118,6 +119,52 @@ class TestCatalogEnricher(unittest.TestCase):
 
         self.assertFalse(resp.success, resp.message)
         self.assertEqual(resp.enriched_count, 0)
+
+    # ------------------------------------- BUG 1b: ruta configurada inexistente
+
+    def _add_broken_connection(self):
+        """Conexion SQLite activa cuya ruta configurada no existe en disco."""
+        missing = self.sqlite_path + ".missing"
+        broken = CorporateConnection(
+            name=f"enrich_broken_{uuid.uuid4().hex[:8]}",
+            db_type=DatabaseType.SQLITE,
+            host=missing,
+            port=0,
+            database_name=missing,
+            is_active=True,
+        )
+        self.db.add(broken)
+        self.db.commit()
+        self.addCleanup(self._delete_connection, broken.id)
+        return broken
+
+    @staticmethod
+    def _delete_connection(conn_id):
+        # Sesion propia: los cleanups corren despues del tearDown, que cierra
+        # `self.db`.
+        db = SessionLocal()
+        try:
+            db.query(SemanticCatalog).filter(
+                SemanticCatalog.connection_id == conn_id
+            ).delete(synchronize_session=False)
+            db.query(CorporateConnection).filter(CorporateConnection.id == conn_id).delete()
+            db.commit()
+        finally:
+            db.close()
+
+    def test_explicit_broken_connection_is_502_not_a_false_success(self):
+        """`resolve_connection_db_path` lanza porque la ruta configurada no
+        existe: la conexion pedida no esta y eso es 502, no un enrich vacio."""
+        broken = self._add_broken_connection()
+        with self.assertRaises(HTTPException) as ctx:
+            _run_enrich(self.db, AutoEnrichRequest(connection_id=broken.id))
+        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertIn(broken.host, ctx.exception.detail)
+
+    def test_all_active_scan_reports_the_broken_connection_without_throwing(self):
+        broken = self._add_broken_connection()
+        resp = _run_enrich(self.db)
+        self.assertIn(broken.name, resp.message)
 
     def test_successful_enrich_reports_true_with_count(self):
         """Contraparte: cuando sí se lee y se enriquece, sigue siendo success=True."""

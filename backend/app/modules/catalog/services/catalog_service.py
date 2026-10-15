@@ -171,8 +171,11 @@ class CatalogDomainService:
         valores enmascarados. Sin ellos el diccionario devuelve el valor real de
         columnas que el perfil no deberia ver.
         """
-        db_path, conn_obj = SchemaInspector.resolve_connection_db_path(db, connection_id)
         try:
+            # `resolve_connection_db_path` tambien lanza `SchemaIntrospectionError`
+            # desde que una ruta configurada inexistente no cae a la base demo:
+            # el catch tiene que cubrir las dos, no solo la introspeccion.
+            db_path, conn_obj = SchemaInspector.resolve_connection_db_path(db, connection_id)
             tables_meta = SchemaInspector.introspect_connection_metadata(conn_obj, db_path)
         except SchemaIntrospectionError as ex:
             # 502: la peticion es valida, la base de destino no responde. Un 200

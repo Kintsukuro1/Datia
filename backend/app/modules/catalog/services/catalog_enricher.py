@@ -9,7 +9,7 @@ from app.modules.admin_catalog.models import SemanticCatalog, CorporateConnectio
 from app.modules.admin_catalog.schemas import AutoEnrichRequest, AutoEnrichResponse
 from app.modules.chat_engine.llm_service import LLMService
 from app.core.logging import logger
-from app.modules.catalog.services.schema_inspector import SchemaInspector
+from app.modules.catalog.services.schema_inspector import SchemaInspector, SchemaIntrospectionError
 
 class CatalogEnricher:
     """
@@ -339,28 +339,45 @@ class CatalogEnricher:
         conn_req_id = req.connection_id if req else None
 
         targets: List[Tuple[CorporateConnection, str]] = []
+        # Antes se inicializaba mas abajo; ahora la resolucion de ruta tambien
+        # puede fallar (una ruta configurada inexistente ya no cae a la base
+        # demo) y ese fallo se reporta, no se traga.
+        failed_connections: List[str] = []
         if conn_req_id:
             conn_obj = db.query(CorporateConnection).filter(CorporateConnection.id == conn_req_id).first()
             if conn_obj:
-                db_path, _ = SchemaInspector.resolve_connection_db_path(db, conn_req_id)
+                try:
+                    db_path, _ = SchemaInspector.resolve_connection_db_path(db, conn_req_id)
+                except SchemaIntrospectionError as ex:
+                    # Pidieron ESA base y no esta: mismo corte que el diccionario
+                    # de datos (502), no un 200 con "0 campos enriquecidos".
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=str(ex)
+                    )
                 targets.append((conn_obj, db_path))
         else:
             active_conns = db.query(CorporateConnection).filter(CorporateConnection.is_active == True).all()
             if not active_conns:
                 active_conns = db.query(CorporateConnection).all()
             for c_obj in active_conns:
-                db_path, _ = SchemaInspector.resolve_connection_db_path(db, c_obj.id)
+                try:
+                    db_path, _ = SchemaInspector.resolve_connection_db_path(db, c_obj.id)
+                except SchemaIntrospectionError as ex:
+                    # Barrido: una conexion rota no puede tirar el request ni
+                    # perderse en silencio (mismo idioma que el try de abajo).
+                    failed_connections.append(f"{getattr(c_obj, 'name', c_obj.id)}: {ex}")
+                    continue
                 targets.append((c_obj, db_path))
 
-        if not targets:
+        if not targets and not failed_connections:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No se encontró una base de datos activa para auto-enriquecer."
             )
 
         total_enriched_count = 0
-        last_conn_id = targets[0][0].id
-        failed_connections: List[str] = []
+        last_conn_id = targets[0][0].id if targets else None
 
         for conn_obj, db_path in targets:
             conn_id = conn_obj.id
