@@ -110,7 +110,6 @@ export const ExecutiveDashboardView: React.FC<ExecutiveDashboardViewProps> = ({
           <ExecutiveAssistantView
             result={result}
             onOpenTraceability={onOpenTraceability}
-            onSwitchToReport={result.executive_report ? () => setViewMode('report') : undefined}
             onFollowUp={onFollowUp}
           />
 

@@ -5,7 +5,6 @@ interface ChatPromptInputProps {
   promptInput: string;
   setPromptInput: (val: string) => void;
   isGenerating: boolean;
-  userRole: string;
   activeDatabaseName?: string;
   textareaRef?: React.RefObject<HTMLTextAreaElement>;
   onSubmit: (promptText?: string) => void;
@@ -15,7 +14,6 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
   promptInput,
   setPromptInput,
   isGenerating,
-  userRole: _userRole,
   activeDatabaseName = 'BD Corporativa Local',
   textareaRef: externalTextareaRef,
   onSubmit,

@@ -1,5 +1,4 @@
 import React from 'react';
-import { QueryResult } from '../../../../types';
 import {
   Sparkles,
   Copy,
@@ -8,16 +7,13 @@ import {
 } from 'lucide-react';
 
 interface AssistantHeaderProps {
-  result: QueryResult;
   canSwitchToStudio: boolean;
   copied: boolean;
   onSwitchToStudio?: () => void;
-  onSwitchToReport?: () => void;
   onCopy: () => void;
 }
 
 export const AssistantHeader: React.FC<AssistantHeaderProps> = ({
-  result,
   canSwitchToStudio,
   copied,
   onSwitchToStudio,

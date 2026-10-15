@@ -9,7 +9,6 @@ interface ExecutiveAssistantViewProps {
   result: QueryResult;
   onOpenTraceability?: () => void;
   onSwitchToStudio?: () => void;
-  onSwitchToReport?: () => void;
   onFollowUp?: (prompt: string) => void;
 }
 
@@ -17,7 +16,6 @@ export const ExecutiveAssistantView: React.FC<ExecutiveAssistantViewProps> = ({
   result,
   onOpenTraceability,
   onSwitchToStudio,
-  onSwitchToReport,
   onFollowUp,
 }) => {
   const [copied, setCopied] = useState(false);
@@ -43,11 +41,9 @@ export const ExecutiveAssistantView: React.FC<ExecutiveAssistantViewProps> = ({
   return (
     <div className="w-full space-y-3 animate-fadeIn font-sans assistant-response-shell">
       <AssistantHeader
-        result={result}
         canSwitchToStudio={canSwitchToStudio}
         copied={copied}
         onSwitchToStudio={onSwitchToStudio}
-        onSwitchToReport={onSwitchToReport}
         onCopy={handleCopy}
       />
 

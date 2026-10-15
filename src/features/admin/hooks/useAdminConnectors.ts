@@ -5,7 +5,6 @@ export function useAdminConnectors(connectors: CorporateConnection[]) {
   const [filterDbType, setFilterDbType] = useState<string>('ALL');
   const [testingId, setTestingId] = useState<number | null>(null);
   const [testResultsMap, setTestResultsMap] = useState<Record<number, ConnectionTestResult>>({});
-  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
 
   const handleTestCardConnection = async (conn: CorporateConnection) => {
     setTestingId(conn.id);
@@ -32,8 +31,6 @@ export function useAdminConnectors(connectors: CorporateConnection[]) {
     setFilterDbType,
     testingId,
     testResultsMap,
-    isUploadModalOpen,
-    setIsUploadModalOpen,
     handleTestCardConnection,
     filteredConnectors,
   };

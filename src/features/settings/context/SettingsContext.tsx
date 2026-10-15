@@ -80,5 +80,3 @@ export const useSettings = () => {
   }
   return context;
 };
-
-export const useAppSettings = useSettings;

@@ -559,7 +559,6 @@ export const ChatDashboardPage: React.FC = () => {
                 promptInput={promptInput}
                 setPromptInput={setPromptInput}
                 isGenerating={isGenerating}
-                userRole={userRole}
                 activeDatabaseName={activeDatabaseName}
                 textareaRef={promptTextareaRef}
                 onSubmit={(customPrompt) => handleSendPrompt(customPrompt || promptInput)}

@@ -4,19 +4,15 @@ import { authService } from '../services/auth_service';
 import { getAuthToken, PASSWORD_CHANGE_PENDING_EVENT } from '../../../shared/api/api_client';
 import { useSettings } from '../../settings/context/SettingsContext';
 
-type PageView = 'login' | 'dashboard' | 'settings' | 'admin';
-
 interface AuthContextType {
   user: User | null;
-  activePage: PageView;
   settings: AppSettings;
   isLoading: boolean;
   error: string | null;
   login: (username: string, password: string) => Promise<void>;
-  register: (username: string, email: string, password: string, roleId?: number, isAdmin?: boolean) => Promise<void>;
+  register: (username: string, email: string, password: string) => Promise<void>;
 
   logout: () => void;
-  setActivePage: (page: PageView) => void;
   updateSettings: (newSettings: Partial<AppSettings>) => boolean;
   clearError: () => void;
   /** Limpia `must_change_password` en el estado tras un cambio confirmado. */
@@ -24,7 +20,6 @@ interface AuthContextType {
 }
 
 const USER_KEY = 'datia_auth_user:v1';
-const PAGE_KEY = 'datia_active_page:v1';
 
 const loadPersistedUser = (): User | null => {
   try {
@@ -35,31 +30,11 @@ const loadPersistedUser = (): User | null => {
   }
 };
 
-const loadPersistedPage = (): PageView => {
-  try {
-    const saved = localStorage.getItem(PAGE_KEY) as PageView;
-    if (saved && ['login', 'dashboard', 'settings', 'admin'].includes(saved)) {
-      return saved;
-    }
-    return 'dashboard';
-  } catch {
-    return 'dashboard';
-  }
-};
-
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { settings, updateSettings } = useSettings();
   const [user, setUser] = useState<User | null>(loadPersistedUser);
-  const [activePage, setActivePage] = useState<PageView>(() => {
-    const savedUser = loadPersistedUser();
-    if (!savedUser && !getAuthToken()) {
-      return 'login';
-    }
-    const page = loadPersistedPage();
-    return page === 'login' ? 'dashboard' : page;
-  });
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,7 +42,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const restoreSession = async () => {
       const token = getAuthToken();
       const savedUser = loadPersistedUser();
-      const savedPage = loadPersistedPage();
 
       if (token) {
         try {
@@ -76,7 +50,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           try {
             localStorage.setItem(USER_KEY, JSON.stringify(profile));
           } catch { /* ignore */ }
-          setActivePage(savedPage === 'login' ? 'dashboard' : savedPage);
         } catch (err: any) {
           // Un 401 significa que el token expiró o fue revocado: la sesión NO existe.
           // Limpiamos token y usuario cacheado y mandamos a /login.
@@ -88,34 +61,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               localStorage.removeItem(USER_KEY);
             } catch { /* ignore */ }
             setUser(null);
-            setActivePage('login');
           } else if (savedUser) {
             setUser(savedUser);
-            setActivePage(savedPage === 'login' ? 'dashboard' : savedPage);
           } else {
             authService.logout();
             setUser(null);
-            setActivePage('login');
           }
         }
       } else if (savedUser) {
         setUser(savedUser);
-        setActivePage(savedPage === 'login' ? 'dashboard' : savedPage);
       } else {
         setUser(null);
-        setActivePage('login');
       }
       setIsLoading(false);
     };
 
     restoreSession();
-  }, []);
-
-  const handleSetActivePage = useCallback((page: PageView) => {
-    try {
-      localStorage.setItem(PAGE_KEY, page);
-    } catch { /* ignore */ }
-    setActivePage(page);
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
@@ -126,9 +87,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(res.user);
       try {
         localStorage.setItem(USER_KEY, JSON.stringify(res.user));
-        localStorage.setItem(PAGE_KEY, 'dashboard');
       } catch { /* ignore */ }
-      setActivePage('dashboard');
     } catch (err: any) {
       const msg = err.response?.data?.detail || 'Error de inicio de sesión. Revisa usuario y contraseña.';
       setError(msg);
@@ -138,11 +97,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
-  const register = useCallback(async (username: string, email: string, password: string, roleId?: number, isAdmin?: boolean) => {
+  const register = useCallback(async (username: string, email: string, password: string) => {
     setIsLoading(true);
     setError(null);
     try {
-      await authService.register({ username, email, password, role_id: roleId, is_admin: isAdmin });
+      await authService.register({ username, email, password });
       await login(username, password);
     } catch (err: any) {
       const msg = err.response?.data?.detail || 'Error en el registro. Intenta con otro usuario o correo.';
@@ -171,10 +130,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         .filter((k) => k.startsWith('datia_corporate_connectors') || k.startsWith('datia_governance_users'))
         .forEach((k) => localStorage.removeItem(k));
       localStorage.removeItem(USER_KEY);
-      localStorage.removeItem(PAGE_KEY);
     } catch { /* ignore */ }
     setUser(null);
-    setActivePage('login');
   }, []);
 
   const clearError = useCallback(() => setError(null), []);
@@ -204,28 +161,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const contextValue = useMemo(
     () => ({
       user,
-      activePage,
       settings,
       isLoading,
       error,
       login,
       register,
       logout,
-      setActivePage: handleSetActivePage,
       updateSettings,
       clearError,
       completePasswordChange: handlePasswordChangeSuccess,
     }),
     [
       user,
-      activePage,
       settings,
       isLoading,
       error,
       login,
       register,
       logout,
-      handleSetActivePage,
       updateSettings,
       clearError,
       handlePasswordChangeSuccess,
