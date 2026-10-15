@@ -77,15 +77,17 @@ export interface NullsAuditResponse {
 
 export const catalogService = {
   async getCatalog(connectionId?: number, tableName?: string): Promise<CatalogItem[]> {
-    try {
-      const params: Record<string, any> = {};
-      if (connectionId) params.connection_id = connectionId;
-      if (tableName) params.table_name = tableName;
-      const res = await apiClient.get<CatalogItem[]>('/catalog', { params });
-      return res.data;
-    } catch {
-      return [];
+    // Sin catch: devolver [] ante un 500 o un error de red es indistinguible de
+    // "no hay reglas en el catalogo" y la vista afirmaba un conteo que nadie
+    // confirmo. El que llama decide que mostrar.
+    const params: Record<string, any> = {};
+    if (connectionId) params.connection_id = connectionId;
+    if (tableName) params.table_name = tableName;
+    const res = await apiClient.get<CatalogItem[]>('/catalog', { params });
+    if (!Array.isArray(res.data)) {
+      throw new Error('El servidor no devolvió la lista del catálogo.');
     }
+    return res.data;
   },
 
   async createCatalogItem(item: {
@@ -132,21 +134,13 @@ export const catalogService = {
   },
 
   async getDataDictionary(connectionId?: number): Promise<DataDictionaryResponse> {
-    try {
-      const params: Record<string, any> = {};
-      if (connectionId) params.connection_id = connectionId;
-      const res = await apiClient.get<DataDictionaryResponse>('/catalog/data-dictionary', { params });
-      return res.data;
-    } catch {
-      return {
-        connection_id: connectionId || 1,
-        connection_name: 'Base de Datos',
-        db_type: 'sqlite',
-        tables: [],
-        total_tables: 0,
-        total_columns: 0,
-      };
-    }
+    // Sin catch: fabricar `{tables: [], total_tables: 0, connection_name: 'Base
+    // de Datos'}` ante un fallo pintaba "0 Tablas • 0 Columnas" sobre una
+    // conexion que existe. Ninguna respuesta inventada.
+    const params: Record<string, any> = {};
+    if (connectionId) params.connection_id = connectionId;
+    const res = await apiClient.get<DataDictionaryResponse>('/catalog/data-dictionary', { params });
+    return res.data;
   },
 
   async autoEnrich(connectionId?: number, tableName?: string): Promise<AutoEnrichResponse> {

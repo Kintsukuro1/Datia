@@ -55,22 +55,21 @@ export const queryService = {
   },
 
   async getSuggestions(connectionId?: number): Promise<string[]> {
-    try {
-      const params: Record<string, any> = {};
-      if (connectionId) {
-        params.connection_id = connectionId;
-      }
-      const res = await apiClient.get('/chat/suggestions', { params });
-      if (res.data && Array.isArray(res.data.suggestions)) {
-        return res.data.suggestions;
-      }
-      return [];
-    } catch {
-      // Sin fallback local: las sugerencias las decide el backend, que ya tiene
-      // las suyas neutras derivadas del rol y del esquema permitido. Inventar
-      // preguntas aca anuncia capacidades que el servidor no ofrece.
-      return [];
+    const params: Record<string, any> = {};
+    if (connectionId) {
+      params.connection_id = connectionId;
     }
+    // Sin catch: las sugerencias las decide el backend, que ya tiene las suyas
+    // neutras derivadas del rol y del esquema permitido. Devolver [] ante un
+    // fallo de red o un 500 es indistinguible de "el servidor no tiene
+    // sugerencias" y el consumidor no podia distinguir cargando / vacio /
+    // error. Inventar preguntas aca anuncia capacidades que el servidor no
+    // ofrece.
+    const res = await apiClient.get('/chat/suggestions', { params });
+    if (!Array.isArray(res.data?.suggestions)) {
+      throw new Error('El servidor no devolvió la lista de sugerencias.');
+    }
+    return res.data.suggestions;
   },
 
   /**
@@ -272,8 +271,11 @@ export const queryService = {
     try {
       const res = await apiClient.get(`/chat/threads/${id}`);
       return res.data;
-    } catch {
-      return null;
+    } catch (err: any) {
+      // 404 = el hilo no existe (respuesta valida). Cualquier otro status (401,
+      // red, 500) es un fallo real y debe propagarse.
+      if (err.response?.status === 404) return null;
+      throw err;
     }
   },
 

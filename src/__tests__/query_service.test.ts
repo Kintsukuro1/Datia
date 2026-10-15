@@ -223,15 +223,37 @@ describe('config LLM: viaja en el payload solo cuando existe', () => {
   });
 });
 
-describe('getSuggestions: no inventa capacidades que el servidor no ofrece', () => {
-  it('deja la lista vacia ante un fallo, sin inventar preguntas', async () => {
+describe('getSuggestions: un fallo no es una lista vacia', () => {
+  it('propaga el fallo en vez de resolver []', async () => {
     apiClient.get.mockRejectedValue(httpError(500));
-    await expect(queryService.getSuggestions()).resolves.toEqual([]);
+
+    // Si esto resolviera [], el consumidor no podria distinguir "el servidor no
+    // tiene sugerencias" de "no se pudo preguntar".
+    await expect(queryService.getSuggestions()).rejects.toThrow();
+  });
+
+  it('rechaza un 200 sin la lista de sugerencias', async () => {
+    apiClient.get.mockResolvedValue({ data: { suggestions: 'no soy un array' } });
+    await expect(queryService.getSuggestions()).rejects.toThrow(/sugerencias/i);
   });
 
   it('devuelve lo que el servidor respondio', async () => {
     apiClient.get.mockResolvedValue({ data: { suggestions: ['A', 'B'] } });
     await expect(queryService.getSuggestions()).resolves.toEqual(['A', 'B']);
+  });
+});
+
+describe('getThread: 404 es null, cualquier otro fallo se propaga', () => {
+  it('404 devuelve null', async () => {
+    apiClient.get.mockRejectedValue(httpError(404));
+    await expect(queryService.getThread('t1')).resolves.toBeNull();
+  });
+
+  it('500 no se convierte en null', async () => {
+    // Si esto devolviera null, el consumidor mostraria el hilo local como si el
+    // servidor hubiera confirmado que no hay nada mas.
+    apiClient.get.mockRejectedValue(httpError(500));
+    await expect(queryService.getThread('t1')).rejects.toThrow();
   });
 });
 

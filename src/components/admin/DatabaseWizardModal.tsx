@@ -239,10 +239,19 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
         setCurrentStep('review');
       } catch (err: any) {
         setErrorMessage('Aviso durante la generación por IA. Se cargarán los datos introspeccionados para revisión.');
-        const dict = await catalogService.getDataDictionary(registeredConnection.id);
-        setDictionaryData(dict);
-        initializeEditedColumns(dict);
-        setCurrentStep('review');
+        // La IA es opcional: se cae al diccionario introspeccionado. Pero esta
+        // segunda carga necesita su propio catch: `getDataDictionary` propaga,
+        // y sin el, un rechazo dejaba el modal clavado en 'generating' con una
+        // promesa rechazada sin manejar.
+        try {
+          const dict = await catalogService.getDataDictionary(registeredConnection.id);
+          setDictionaryData(dict);
+          initializeEditedColumns(dict);
+          setCurrentStep('review');
+        } catch {
+          setErrorMessage('No se pudo introspeccionar la base de datos. Revisá la conexión y volvé a intentar.');
+          setCurrentStep('choice');
+        }
       }
     } else {
       // Manual creation mode

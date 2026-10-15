@@ -5,6 +5,7 @@ import { CatalogItem } from '../../../features/admin/services/catalog_service';
 interface SemanticCatalogSectionProps {
   items: CatalogItem[];
   isLoadingCatalog: boolean;
+  errorMsg?: string | null;
   onOpenEditModal: (item: CatalogItem) => void;
   onDeleteItem: (id: number, table: string, column?: string) => void;
 }
@@ -12,6 +13,7 @@ interface SemanticCatalogSectionProps {
 export const SemanticCatalogSection: React.FC<SemanticCatalogSectionProps> = ({
   items,
   isLoadingCatalog,
+  errorMsg,
   onOpenEditModal,
   onDeleteItem,
 }) => {
@@ -57,7 +59,10 @@ export const SemanticCatalogSection: React.FC<SemanticCatalogSectionProps> = ({
             onChange={(e) => setSelectedTableFilter(e.target.value)}
             className="bg-slate-50 dark:bg-dark-base border border-slate-300 dark:border-dark-border rounded-xl px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:border-brand-500 text-xs"
           >
-            <option value="ALL">Todas las Tablas ({items.length} reglas)</option>
+            {/* Sin conteo cuando la carga fallo: 0 reglas no es el conteo real. */}
+            <option value="ALL">
+              {errorMsg ? 'Todas las Tablas' : `Todas las Tablas (${items.length} reglas)`}
+            </option>
             {uniqueTables.map((tbl) => (
               <option key={tbl} value={tbl}>
                 {tbl}
@@ -91,7 +96,15 @@ export const SemanticCatalogSection: React.FC<SemanticCatalogSectionProps> = ({
             ) : filteredCatalogItems.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-slate-500 dark:text-gray-500">
-                  No se encontraron entradas en el catálogo. Haz clic en "Auto-enriquecer con IA" para generarlas automáticamente.
+                  {errorMsg ? (
+                    // El texto de "vacio" invita a auto-enriquecer, que es otra
+                    // llamada al mismo servidor que acaba de fallar.
+                    <span className="text-rose-700 dark:text-rose-400">
+                      No se pudo cargar el catálogo semántico: {errorMsg}
+                    </span>
+                  ) : (
+                    'No se encontraron entradas en el catálogo. Haz clic en "Auto-enriquecer con IA" para generarlas automáticamente.'
+                  )}
                 </td>
               </tr>
             ) : (

@@ -29,6 +29,13 @@ export function useAdminCatalog() {
   const [enrichErrorMsg, setEnrichErrorMsg] = useState<string | null>(null);
   // Catalog CRUD errors (edit / create)
   const [catalogErrorMsg, setCatalogErrorMsg] = useState<string | null>(null);
+  // Errores de carga/refresco de la VISTA (los de guardado van a
+  // catalogErrorMsg, que se muestra dentro del modal "Añadir Regla"). Son dos
+  // estados separados y no uno: las dos cargas corren en paralelo y el exito de
+  // una limpiaria el fallo de la otra, dejando la seccion del catalogo
+  // afirmando "no se encontraron entradas" con la API caida.
+  const [catalogViewErrorMsg, setCatalogViewErrorMsg] = useState<string | null>(null);
+  const [dictionaryViewErrorMsg, setDictionaryViewErrorMsg] = useState<string | null>(null);
 
   // Technical Data Dictionary State
   const [dataDictionary, setDataDictionary] = useState<DataDictionaryResponse | null>(null);
@@ -67,8 +74,12 @@ export function useAdminCatalog() {
     try {
       const data = await catalogService.getCatalog(targetId || undefined);
       setItems(data);
-    } catch {
-      // Fallback
+      setCatalogViewErrorMsg(null);
+    } catch (err: any) {
+      // Se limpian los items: los de la conexion anterior en pantalla serian
+      // datos viejos afirmando ser de la conexion actual.
+      setCatalogViewErrorMsg(err.response?.data?.detail || err.message || 'No se pudo cargar el catálogo semántico.');
+      setItems([]);
     } finally {
       setIsLoadingCatalog(false);
     }
@@ -81,14 +92,17 @@ export function useAdminCatalog() {
     try {
       const data = await catalogService.getDataDictionary(targetId || undefined);
       setDataDictionary(data);
+      setDictionaryViewErrorMsg(null);
       // Auto-expand first 3 tables
       const initialExpanded: Record<string, boolean> = {};
       data.tables.forEach((t, idx) => {
         initialExpanded[t.table_name] = idx < 3;
       });
       setExpandedTables(initialExpanded);
-    } catch {
-      // Fallback
+    } catch (err: any) {
+      setDictionaryViewErrorMsg(err.response?.data?.detail || err.message || 'No se pudo cargar el diccionario de datos.');
+      setDataDictionary(null);
+      setExpandedTables({});
     } finally {
       setIsLoadingDictionary(false);
     }
@@ -117,7 +131,15 @@ export function useAdminCatalog() {
     setEnrichErrorMsg(null);
     try {
       const res = await catalogService.autoEnrich(selectedConnectionId || undefined);
-      setEnrichSuccessMsg(res.message);
+      // `success: false` es un fallo del enriquecimiento aunque el POST haya
+      // respondido 200: pintarlo en verde afirmaba que enriquecio. Y sin
+      // refresco: nada cambio en el servidor.
+      if (!res.success) {
+        setEnrichErrorMsg(res.message || 'La IA no pudo enriquecer el catálogo.');
+        setTimeout(() => setEnrichErrorMsg(null), 6000);
+        return;
+      }
+      setEnrichSuccessMsg(res.message || 'Catálogo enriquecido con IA.');
       await fetchCatalogData(selectedConnectionId);
       await fetchDictionaryData(selectedConnectionId);
       setTimeout(() => setEnrichSuccessMsg(null), 5000);
@@ -180,9 +202,12 @@ export function useAdminCatalog() {
     try {
       await catalogService.deleteCatalogItem(id);
       setItems((prev) => prev.filter((i) => i.id !== id));
+      // Este refresco ya no lanza: captura su propio fallo en dictionaryViewErrorMsg.
       await fetchDictionaryData(selectedConnectionId);
-    } catch {
-      // Fallback
+    } catch (err: any) {
+      // No va a catalogErrorMsg: ese se muestra dentro del modal "Añadir Regla"
+      // y un borrado no tiene nada que ver con ese formulario.
+      setCatalogViewErrorMsg(err.response?.data?.detail || err.message || 'No se pudo eliminar la regla del catálogo.');
     }
   };
 
@@ -213,6 +238,8 @@ export function useAdminCatalog() {
     enrichSuccessMsg,
     enrichErrorMsg,
     catalogErrorMsg,
+    catalogViewErrorMsg,
+    dictionaryViewErrorMsg,
     dataDictionary,
     isLoadingDictionary,
     expandedTables,

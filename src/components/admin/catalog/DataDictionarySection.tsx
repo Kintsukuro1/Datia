@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Search, RefreshCw, Database, Table as TableIcon, Eye, Key } from 'lucide-react';
+import { Search, RefreshCw, Database, Table as TableIcon, Eye, Key, AlertCircle } from 'lucide-react';
 import { DataDictionaryResponse, DataDictionaryTable } from '../../../features/admin/services/catalog_service';
 
 interface DataDictionarySectionProps {
   dataDictionary: DataDictionaryResponse | null;
   isLoadingDictionary: boolean;
+  errorMsg?: string | null;
   expandedTables: Record<string, boolean>;
   onToggleTableExpansion: (tableName: string) => void;
 }
@@ -12,6 +13,7 @@ interface DataDictionarySectionProps {
 export const DataDictionarySection: React.FC<DataDictionarySectionProps> = ({
   dataDictionary,
   isLoadingDictionary,
+  errorMsg,
   expandedTables,
   onToggleTableExpansion,
 }) => {
@@ -51,10 +53,14 @@ export const DataDictionarySection: React.FC<DataDictionarySectionProps> = ({
           <span className="bg-slate-100 dark:bg-dark-base px-3 py-1.5 rounded-xl border border-slate-200 dark:border-dark-border">
             Base: <strong className="text-slate-900 dark:text-white">{dataDictionary?.connection_name || 'BD Activa'}</strong>
           </span>
-          <span className="bg-slate-100 dark:bg-dark-base px-3 py-1.5 rounded-xl border border-slate-200 dark:border-dark-border">
-            Total: <strong className="text-brand-700 dark:text-purple-400">{dataDictionary?.total_tables || 0} Tablas</strong> •{' '}
-            <strong className="text-cyan-700 dark:text-cyan-400">{dataDictionary?.total_columns || 0} Columnas</strong>
-          </span>
+          {/* El chip de totales solo existe con un diccionario real: con un
+              fallo, "0 Tablas • 0 Columnas" es un conteo inventado. */}
+          {dataDictionary && (
+            <span className="bg-slate-100 dark:bg-dark-base px-3 py-1.5 rounded-xl border border-slate-200 dark:border-dark-border">
+              Total: <strong className="text-brand-700 dark:text-purple-400">{dataDictionary.total_tables || 0} Tablas</strong> •{' '}
+              <strong className="text-cyan-700 dark:text-cyan-400">{dataDictionary.total_columns || 0} Columnas</strong>
+            </span>
+          )}
         </div>
       </div>
 
@@ -62,6 +68,14 @@ export const DataDictionarySection: React.FC<DataDictionarySectionProps> = ({
         <div className="py-12 text-center text-slate-600 dark:text-gray-400 border border-slate-200 dark:border-dark-border rounded-2xl">
           <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-brand-600 dark:text-purple-400" />
           Introspeccionando esquema físico de la base de datos...
+        </div>
+      ) : errorMsg ? (
+        // Sin datos: afirmar "no se encontraron tablas" seria decir que la
+        // introspeccion corrio y no encontro nada, cuando no llego a correr.
+        <div className="text-center py-12 border border-rose-200 dark:border-rose-500/20 bg-rose-50/50 dark:bg-rose-500/5 rounded-2xl p-8 space-y-2">
+          <AlertCircle className="w-8 h-8 text-rose-600 dark:text-rose-400 mx-auto" />
+          <h4 className="text-sm font-semibold text-rose-800 dark:text-rose-400">No se pudo cargar el diccionario de datos</h4>
+          <p className="text-xs text-rose-700 dark:text-rose-400/90">{errorMsg}</p>
         </div>
       ) : filteredDictTables.length === 0 ? (
         <div className="text-center py-12 border border-dashed border-slate-300 dark:border-dark-border rounded-2xl p-8 space-y-2">

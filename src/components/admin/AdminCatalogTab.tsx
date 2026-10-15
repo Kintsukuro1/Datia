@@ -32,6 +32,8 @@ export const AdminCatalogTab: React.FC<AdminCatalogTabProps> = () => {
     enrichSuccessMsg,
     enrichErrorMsg,
     catalogErrorMsg,
+    catalogViewErrorMsg,
+    dictionaryViewErrorMsg,
     dataDictionary,
     isLoadingDictionary,
     expandedTables,
@@ -70,7 +72,8 @@ export const AdminCatalogTab: React.FC<AdminCatalogTabProps> = () => {
               }`}
             >
               <BookOpen className="w-3.5 h-3.5" />
-              <span>Catálogo Semántico ({items.length})</span>
+              {/* Sin conteo cuando la carga fallo: 0 no es el conteo real. */}
+              <span>{catalogViewErrorMsg ? 'Catálogo Semántico' : `Catálogo Semántico (${items.length})`}</span>
             </button>
 
             <button
@@ -83,7 +86,10 @@ export const AdminCatalogTab: React.FC<AdminCatalogTabProps> = () => {
               }`}
             >
               <Database className="w-3.5 h-3.5" />
-              <span>Diccionario de Datos ({dataDictionary?.total_tables || 0} Tablas)</span>
+              {/* Sin conteo cuando la carga fallo: 0 Tablas no es el conteo real. */}
+              <span>
+                {dictionaryViewErrorMsg ? 'Diccionario de Datos' : `Diccionario de Datos (${dataDictionary?.total_tables || 0} Tablas)`}
+              </span>
             </button>
           </div>
 
@@ -172,10 +178,10 @@ export const AdminCatalogTab: React.FC<AdminCatalogTabProps> = () => {
         </div>
       )}
 
-      {(enrichErrorMsg || catalogErrorMsg) && (
+      {(enrichErrorMsg || catalogErrorMsg || catalogViewErrorMsg || dictionaryViewErrorMsg) && (
         <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-400 text-xs flex items-center space-x-2 animate-fadeIn">
           <AlertCircle className="w-4 h-4 shrink-0" />
-          <span>{enrichErrorMsg || catalogErrorMsg}</span>
+          <span>{enrichErrorMsg || catalogErrorMsg || catalogViewErrorMsg || dictionaryViewErrorMsg}</span>
         </div>
       )}
 
@@ -184,6 +190,7 @@ export const AdminCatalogTab: React.FC<AdminCatalogTabProps> = () => {
         <SemanticCatalogSection
           items={items}
           isLoadingCatalog={isLoadingCatalog}
+          errorMsg={catalogViewErrorMsg}
           onOpenEditModal={(item) => setEditingItem(item)}
           onDeleteItem={handleDeleteItem}
         />
@@ -194,6 +201,7 @@ export const AdminCatalogTab: React.FC<AdminCatalogTabProps> = () => {
         <DataDictionarySection
           dataDictionary={dataDictionary}
           isLoadingDictionary={isLoadingDictionary}
+          errorMsg={dictionaryViewErrorMsg}
           expandedTables={expandedTables}
           onToggleTableExpansion={toggleTableExpansion}
         />

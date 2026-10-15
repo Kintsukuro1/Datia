@@ -98,6 +98,13 @@ export function useChatEngine() {
       if (seq === suggestionsSeqRef.current) {
         setPromptSuggestions(suggs);
       }
+    }).catch(() => {
+      // La lista vacia es el estado por defecto (no hay chips), no una
+      // afirmacion sobre el servidor: `ChatEmptyState` solo pinta el bloque si
+      // `length > 0`.
+      if (seq === suggestionsSeqRef.current) {
+        setPromptSuggestions([]);
+      }
     });
   }, []);
 
@@ -354,10 +361,12 @@ export function useChatEngine() {
           );
         }
       } catch {
-        // use existing thread state
+        // Los datos locales siguen en pantalla (son de este navegador), pero el
+        // usuario se entera de que el servidor no respondio.
+        notify('error', 'No se pudo cargar la conversación desde el servidor; se muestran los datos locales.');
       }
     }
-  }, [threads]);
+  }, [threads, notify]);
 
   const handleNewThread = useCallback(() => {
     if (abortControllerRef.current) {

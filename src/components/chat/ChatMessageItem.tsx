@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { queryService } from '../../features/chat/services/query_service';
 import { connectorService } from '../../features/admin/services/connector_service';
+import { useNotifications } from '../../context/NotificationContext';
 import { buildDynamicChartOption, deriveProcessedRows, THEME_COLORS, ChartType } from '../dashboard/executiveDashboardUtils';
 import { copyToClipboard } from '../../shared/clipboard';
 
@@ -76,6 +77,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
   onFeedback,
   onFollowUp,
 }) => {
+  const { notify } = useNotifications();
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedShareLink, setCopiedShareLink] = useState(false);
   const [isGolden, setIsGolden] = useState(false);
@@ -133,9 +135,15 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
       });
       // toggleGoldenQuery no lanza: devuelve {success:false}. El catch de abajo
       // nunca corria y la estrella quedaba marcada sin estar guardada.
-      if (!res.success) setIsGolden(!nextState);
+      if (!res.success) {
+        setIsGolden(!nextState);
+        notify('error', res.message || 'No se pudo guardar la consulta dorada.');
+      } else {
+        notify('success', res.message || 'Consulta dorada guardada.');
+      }
     } catch {
       setIsGolden(!nextState);
+      notify('error', 'No se pudo guardar la consulta dorada.');
     }
   };
 
@@ -168,9 +176,13 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
         kpis_json: result.kpis ? JSON.stringify(result.kpis) : undefined,
         query_text: result.question,
       });
-      if (ok) setIsPinned(true);
+      if (ok) {
+        setIsPinned(true);
+      } else {
+        notify('error', 'No se pudo fijar el gráfico en el tablero.');
+      }
     } catch {
-      // ignore
+      notify('error', 'No se pudo fijar el gráfico en el tablero.');
     } finally {
       setIsPinning(false);
     }
