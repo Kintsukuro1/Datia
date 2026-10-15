@@ -116,16 +116,27 @@ class NullColumnInfo(BaseModel):
     null_count: int
     null_percentage: float
 
+class UnverifiableColumnInfo(BaseModel):
+    # Columna cuyo COUNT lanzo (p.ej. GRANT de tabla pero no de columna). Se
+    # reporta aparte: "no se pudo mirar" no es "no hay nulos".
+    column_name: str
+    reason: str
+
 class NullTableInfo(BaseModel):
     table_name: str
     schema_name: str = "main"
     total_rows: int
     total_null_columns: int
     columns_with_nulls: List[NullColumnInfo]
+    unverifiable_columns: List[UnverifiableColumnInfo] = []
 
 class NullsAuditResponse(BaseModel):
     has_nulls: bool
     total_tables_with_nulls: int
+    # `has_nulls` solo mira columnas CON nulos; estas dos permiten distinguir
+    # "base limpia" de "escaneo incompleto".
+    total_unverifiable_columns: int = 0
+    is_complete: bool = True
     tables: List[NullTableInfo]
     current_policy: str = "open"
 
