@@ -5,12 +5,17 @@ import { CORPORATE_ROLES } from '../constants';
 import logoDatiaDark from './Logo_datia_2.png';
 import logoDatiaLight from './Logo_Datia_3.png';
 
-// Las credenciales de la demo viven aca porque el backend las siembra; el NOMBRE
-// del rol sale de `CORPORATE_ROLES`, que es la unica lista del frontend. Escribir
-// el nombre dos veces hacia que el perfil del desplegable y el badge del Header
-// digan cosas distintas en cuanto uno de los dos se toca.
+// Credenciales de los perfiles demo. Viven aca porque el backend las siembra
+// (DEMO_MODE=true) y el desplegable rellena el formulario con ellas. En builds
+// no-demo (VITE_DEMO_MODE=false) el bloque entero — mapas incluidos — cae del
+// bundle: una instalacion cliente no publica claves conocidas.
 //
+// El NOMBRE del rol sale de `CORPORATE_ROLES`, que es la unica lista del
+// frontend. Escribir el nombre dos veces hacia que el perfil del desplegable y
+// el badge del Header dijeran cosas distintas en cuanto uno de los dos se toca.
 // El orden sigue el de la matriz de `init_db`, de mas a menos privilegios.
+const DEMO_MODE = import.meta.env.VITE_DEMO_MODE !== 'false';
+
 const DEMO_PASSWORDS: Record<string, string> = {
   'Administrador de Plataforma': 'admin123',
   'Director Ejecutivo (C-Level)': 'director123',
@@ -33,15 +38,20 @@ const DEMO_USERNAMES: Record<string, string> = {
   'Usuario Consultor': 'consultor',
 };
 
-const DEMO_PROFILES = CORPORATE_ROLES
-  .filter((r) => DEMO_USERNAMES[r.name])
-  .map((r) => ({
-    role: r.name,
-    username: DEMO_USERNAMES[r.name],
-    password: DEMO_PASSWORDS[r.name],
-  }));
+// Condicional a proposito: con DEMO_MODE constante en false, el minificador
+// descarta la rama y con ella `DEMO_PASSWORDS`/`DEMO_USERNAMES`. Los mapas se
+// referencian SOLO aca adentro; sacarlos de este ternario los devuelve al bundle.
+const DEMO_PROFILES = DEMO_MODE
+  ? CORPORATE_ROLES
+      .filter((r) => DEMO_USERNAMES[r.name])
+      .map((r) => ({
+        role: r.name,
+        username: DEMO_USERNAMES[r.name],
+        password: DEMO_PASSWORDS[r.name],
+      }))
+  : [];
 
-const PERFIL_INICIAL = DEMO_PROFILES[0].username;
+const PERFIL_INICIAL = DEMO_PROFILES[0]?.username ?? '';
 
 export const LoginPage: React.FC = () => {
   const { login, register, error, clearError } = useAuth();
@@ -261,34 +271,38 @@ export const LoginPage: React.FC = () => {
           {/* Selector de perfil de la demo: un desplegable y no una fila de
               botones. Los 8 perfiles no entran en tres botones sin que las
               etiquetas se corten, y un desplegable deja leer el nombre completo
-              del rol, que es justo lo que hay que comparar entre perfiles. */}
-          <div className="pt-4 border-t border-dark-border/60">
-            <label
-              htmlFor="login-demo-perfil"
-              className="block text-[11px] text-gray-400 mb-2 font-medium"
-            >
-              O entra con un perfil de la demo
-            </label>
-            <div className="relative">
-              <select
-                id="login-demo-perfil"
-                value={perfilDemo}
-                onChange={(e) => handlePerfilChange(e.target.value)}
-                className="w-full appearance-none bg-dark-base/50 border border-dark-border hover:border-brand-500/40 focus:outline-none focus:border-brand-500 rounded-xl pl-9 pr-9 py-2.5 text-xs text-app-text transition-colors cursor-pointer"
+              del rol, que es justo lo que hay que comparar entre perfiles.
+              Gateado por DEMO_MODE: en un build no-demo el bloque no se
+              renderiza (y no llega al bundle). */}
+          {DEMO_MODE && (
+            <div className="pt-4 border-t border-dark-border/60">
+              <label
+                htmlFor="login-demo-perfil"
+                className="block text-[11px] text-gray-400 mb-2 font-medium"
               >
-                {DEMO_PROFILES.map((p) => (
-                  <option key={p.username} value={p.username} className="bg-dark-card text-app-text">
-                    {p.role} — {p.username}
-                  </option>
-                ))}
-              </select>
-              <Users className="w-4 h-4 text-gray-500 absolute left-3 top-3 pointer-events-none" />
-              <ChevronDown className="w-4 h-4 text-gray-500 absolute right-3 top-3 pointer-events-none" />
+                O entra con un perfil de la demo
+              </label>
+              <div className="relative">
+                <select
+                  id="login-demo-perfil"
+                  value={perfilDemo}
+                  onChange={(e) => handlePerfilChange(e.target.value)}
+                  className="w-full appearance-none bg-dark-base/50 border border-dark-border hover:border-brand-500/40 focus:outline-none focus:border-brand-500 rounded-xl pl-9 pr-9 py-2.5 text-xs text-app-text transition-colors cursor-pointer"
+                >
+                  {DEMO_PROFILES.map((p) => (
+                    <option key={p.username} value={p.username} className="bg-dark-card text-app-text">
+                      {p.role} — {p.username}
+                    </option>
+                  ))}
+                </select>
+                <Users className="w-4 h-4 text-gray-500 absolute left-3 top-3 pointer-events-none" />
+                <ChevronDown className="w-4 h-4 text-gray-500 absolute right-3 top-3 pointer-events-none" />
+              </div>
+              <p className="text-[10px] text-gray-500 mt-1.5 text-center">
+                Rellena el formulario. El acceso ocurre al pulsar «Acceder al Sistema».
+              </p>
             </div>
-            <p className="text-[10px] text-gray-500 mt-1.5 text-center">
-              Rellena el formulario. El acceso ocurre al pulsar «Acceder al Sistema».
-            </p>
-          </div>
+          )}
         </div>
 
         {/* Footer Badges */}

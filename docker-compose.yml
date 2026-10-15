@@ -81,6 +81,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # VITE_* se hornea en build-time: sin esto la imagen no-demo muestra el
+      # desplegable igual. La maquina demo pone VITE_DEMO_MODE=true en su .env.
+      args:
+        VITE_DEMO_MODE: ${VITE_DEMO_MODE:-false}
     container_name: datia-frontend
     restart: unless-stopped
     depends_on:

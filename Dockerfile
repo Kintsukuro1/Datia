@@ -11,6 +11,11 @@ RUN npm ci --no-audit --prefer-offline
 
 # Copy source code and build production bundle
 COPY . .
+# Vite reemplaza VITE_* en build-time: con 'false' el desplegable demo (y las
+# credenciales que referencia) no entran al bundle. Default false: una
+# instalacion cliente no trae la demo; el compose de una maquina demo pasa true.
+ARG VITE_DEMO_MODE=false
+ENV VITE_DEMO_MODE=$VITE_DEMO_MODE
 RUN npm run build
 
 # ==========================================
