@@ -52,6 +52,31 @@ class _FakeClient:
         return _FakeResponse(404, {})
 
 
+class _FakeClientSecuencial:
+    """httpx.AsyncClient minimo que responde distinto en GETs sucesivos.
+
+    `_FakeClient` mapea por URL, asi que no puede simular un 500 transitorio
+    seguido de un 200. Este consume una respuesta por GET y repite la ultima
+    si quedan mas llamadas.
+    """
+
+    def __init__(self, responses, recorder):
+        self._responses = list(responses)
+        self._recorder = recorder
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url):
+        self._recorder.append(url)
+        if len(self._responses) > 1:
+            return self._responses.pop(0)
+        return self._responses[0]
+
+
 class TestResolucionDeModelo(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
@@ -96,6 +121,31 @@ class TestResolucionDeModelo(unittest.IsolatedAsyncioTestCase):
         await self._resolver(["unico:7b"], "qwen2.5-coder:7b", recorder)
         await self._resolver(["unico:7b"], "qwen2.5-coder:7b", recorder)
         self.assertEqual(len(recorder), 1, "el GET a /v1/models no se cacheo")
+
+    async def test_un_fallo_no_se_cachea(self):
+        # Un 500 transitorio congelaba el modelo configurado hasta reiniciar
+        # el proceso: el reintento nunca volvia a preguntarle al servidor.
+        recorder = []
+        fake = _FakeClientSecuencial(
+            [
+                _FakeResponse(500, {}),
+                _FakeResponse(200, {"data": [{"id": "unico:7b"}]}),
+            ],
+            recorder,
+        )
+        with patch("app.modules.chat_engine.llm_service.httpx.AsyncClient", return_value=fake):
+            primero = await LLMService.resolve_model_for("http://localhost:1234", "qwen2.5-coder:7b")
+            self.assertEqual(primero, "qwen2.5-coder:7b")
+            self.assertEqual(LLMService._resolved_models, {}, "un fallo se cacheo")
+
+            segundo = await LLMService.resolve_model_for("http://localhost:1234", "qwen2.5-coder:7b")
+            self.assertEqual(segundo, "unico:7b", "el reintento no releyo el servidor")
+            self.assertEqual(len(recorder), 2, "no reintento el GET a /v1/models")
+            self.assertEqual(LLMService._resolved_models, {"http://localhost:1234|qwen2.5-coder:7b": "unico:7b"})
+
+            tercero = await LLMService.resolve_model_for("http://localhost:1234", "qwen2.5-coder:7b")
+            self.assertEqual(tercero, "unico:7b")
+            self.assertEqual(len(recorder), 2, "hizo un GET con el modelo ya cacheado")
 
 
 class TestPayloadDeChat(unittest.TestCase):

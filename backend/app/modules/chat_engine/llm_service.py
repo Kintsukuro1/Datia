@@ -311,10 +311,12 @@ class LLMService:
             return cached
 
         resolved = configured
+        resolved_from_server = False
         try:
             async with httpx.AsyncClient(timeout=cls.LLM_CONNECT_TIMEOUT) as client:
                 res = await client.get(f"{base}/v1/models")
                 if res.status_code == 200:
+                    resolved_from_server = True
                     data = res.json()
                     ids = [
                         str(m.get("id"))
@@ -334,7 +336,7 @@ class LLMService:
         except Exception as e:
             logger.debug("No se pudo listar modelos en %s: %s", base, e)
 
-        if resolved:
+        if resolved and resolved_from_server:
             cls._resolved_models[cache_key] = resolved
         return resolved
 
