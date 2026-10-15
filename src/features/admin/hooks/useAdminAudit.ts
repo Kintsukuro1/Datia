@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { auditService } from '../services/audit_service';
 import { AuditLog, AuditFilterParams } from '../../../types';
+import { useNotifications } from '../../../context/NotificationContext';
 
 export function useAdminAudit() {
+  const { notify } = useNotifications();
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [total, setTotal] = useState<number>(0);
   const [page, setPage] = useState<number>(1);
@@ -83,7 +85,7 @@ export function useAdminAudit() {
       };
       await auditService.exportAuditLogsCsv(params);
     } catch {
-      alert('Error al exportar archivo CSV de auditoría.');
+      notify('error', 'Error al exportar archivo CSV de auditoría.');
     } finally {
       setExporting(false);
     }

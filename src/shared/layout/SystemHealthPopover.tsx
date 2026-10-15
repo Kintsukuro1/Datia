@@ -7,7 +7,7 @@ import {
   RefreshCw,
   AlertTriangle,
   AlertOctagon,
-  WifiOff,
+  Wifi,
   HelpCircle,
 } from 'lucide-react';
 import { getProviderLabel } from '../../constants';
@@ -68,7 +68,7 @@ export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
         const provLabel = getProviderLabel(details?.llm_engine?.details?.provider);
         return {
           bg: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25',
-          icon: <WifiOff className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />,
+          icon: <Wifi className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />,
           label: `IA Local Activa (${provLabel})`,
         };
       }
