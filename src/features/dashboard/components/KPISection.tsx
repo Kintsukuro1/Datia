@@ -360,6 +360,8 @@ const SingleKPICard: React.FC<SingleCardProps> = ({ kpi, idx }) => {
   const theme = ARCHETYPE_THEMES[archetypeId];
   const { cleanTitle, filterTag, fullTitle } = parseKPITitle(kpi.title);
   const { prefix, numberPart, suffix, rawPercentNum } = formatKPIValue(kpi.value, archetypeId);
+  // Sin porcentaje real no se dibuja la barra: el fallback anterior (24) inventaba una proporcion.
+  const percentValue = rawPercentNum ?? parseFloat(numberPart);
   const cleanSubtitle = sanitizeSubtitle(kpi.subtitle, archetypeId, filterTag);
 
   const isPositive = kpi.change_direction === 'positive';
@@ -486,8 +488,8 @@ const SingleKPICard: React.FC<SingleCardProps> = ({ kpi, idx }) => {
 
       {/* Embedded Micro-Visualizations */}
       <div>
-        {archetypeId === 'percentage' && (
-          <PercentageTrack percent={rawPercentNum ?? (parseFloat(numberPart) || 24)} />
+        {archetypeId === 'percentage' && Number.isFinite(percentValue) && (
+          <PercentageTrack percent={percentValue} />
         )}
       </div>
     </div>
