@@ -169,6 +169,60 @@ describe('sendQuery: un fallo jamas se convierte en un analisis', () => {
   });
 });
 
+describe('config LLM: viaja en el payload solo cuando existe', () => {
+  it('sendQuery manda llm_base_url y llm_model cuando se pasan', async () => {
+    apiClient.post.mockResolvedValue({ data: { question: 'ventas' } });
+
+    await queryService.sendQuery('ventas', undefined, undefined, undefined, {
+      baseUrl: 'http://127.0.0.1:11434',
+      model: 'qwen2.5:3b',
+    });
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/chat/query',
+      { question: 'ventas', llm_base_url: 'http://127.0.0.1:11434', llm_model: 'qwen2.5:3b' },
+      undefined
+    );
+  });
+
+  it('sendQuery sin llm no agrega las claves: el default del backend se conserva', async () => {
+    apiClient.post.mockResolvedValue({ data: { question: 'ventas' } });
+
+    await queryService.sendQuery('ventas');
+
+    expect(apiClient.post).toHaveBeenCalledWith('/chat/query', { question: 'ventas' }, undefined);
+  });
+
+  it('sendQuery con llm vacio ({} o valores falsy) tampoco agrega las claves', async () => {
+    apiClient.post.mockResolvedValue({ data: { question: 'ventas' } });
+
+    await queryService.sendQuery('ventas', undefined, undefined, undefined, {});
+    await queryService.sendQuery('ventas', undefined, undefined, undefined, { baseUrl: '', model: undefined });
+
+    expect(apiClient.post).toHaveBeenCalledWith('/chat/query', { question: 'ventas' }, undefined);
+    expect(apiClient.post).toHaveBeenCalledTimes(2);
+  });
+
+  it('sendQueryStreaming manda las claves en el payload del stream', async () => {
+    // El body null corta el metodo con "Este navegador no permite...", pero
+    // antes de eso la llamada a rawStream ya quedo registrada.
+    apiClient.rawStream.mockResolvedValue({ body: null });
+
+    await expect(
+      queryService.sendQueryStreaming('ventas', undefined, undefined, undefined, undefined, {
+        baseUrl: 'http://127.0.0.1:11434',
+        model: 'qwen2.5:3b',
+      })
+    ).rejects.toThrow(/navegador no permite/);
+
+    expect(apiClient.rawStream).toHaveBeenCalledWith(
+      '/chat/query/stream',
+      { question: 'ventas', llm_base_url: 'http://127.0.0.1:11434', llm_model: 'qwen2.5:3b' },
+      undefined
+    );
+  });
+});
+
 describe('getSuggestions: no inventa capacidades que el servidor no ofrece', () => {
   it('deja la lista vacia ante un fallo, sin inventar preguntas', async () => {
     apiClient.get.mockRejectedValue(httpError(500));

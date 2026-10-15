@@ -567,7 +567,8 @@ export function useChatEngine() {
                 // arriba es lo que impide que un intento ya cancelado escriba.
                 streamBufferRef.current.push(chunk);
               }
-            }
+            },
+            { baseUrl: settings?.ollama_url, model: settings?.ollama_model }
           );
         } catch (streamErr: any) {
           // Cancelar y el timeout NO son "el stream no funciono": son decisiones
@@ -587,7 +588,8 @@ export function useChatEngine() {
           trimmed,
           activeConnectionId || undefined,
           conversationHistory.length > 0 ? conversationHistory : undefined,
-          controller.signal
+          controller.signal,
+          { baseUrl: settings?.ollama_url, model: settings?.ollama_model }
         );
       }
 

@@ -76,17 +76,21 @@ export const queryService = {
   /**
    * Consulta simple (sin stream) a `/chat/query`.
    *
-   * `userRole` y `settings` se eliminaron: ninguno llegaba al payload. El rol lo
-   * resuelve el backend desde el JWT (`current_user.role.name`, router.py), y
-   * `QueryRequest` (schemas.py) no tiene ningun campo de ajustes — mandarlos era
-   * escribir en el vacio. El parametro `settingsOrSignal` era el que hacia la
-   * llamada ilegible: cuatro posicionales de dos tipos, y el que nadie leia.
+   * `userRole` sigue fuera: el rol lo resuelve el backend desde el JWT
+   * (`current_user.role.name`, router.py), asi que mandarlo era escribir en el
+   * vacio. La config LLM es el caso contrario: `llm_base_url` y `llm_model` SI
+   * existen en `QueryRequest` (schemas.py) y viajan en el parametro opcional
+   * `llm`; el backend los revalida con la allowlist anti-SSRF antes de tocar el
+   * motor y corta con 400 si no pasan. El parametro `settingsOrSignal` era el
+   * que hacia la llamada ilegible: cuatro posicionales de dos tipos, y el que
+   * nadie leia.
    */
   async sendQuery(
     question: string,
     connectionId?: number,
     conversationHistory?: Array<{ question: string; sql?: string }>,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    llm?: { baseUrl?: string; model?: string }
   ): Promise<QueryResult> {
     const payload: any = { question };
     if (connectionId) {
@@ -94,6 +98,12 @@ export const queryService = {
     }
     if (conversationHistory && conversationHistory.length > 0) {
       payload.conversation_history = conversationHistory;
+    }
+    if (llm?.baseUrl) {
+      payload.llm_base_url = llm.baseUrl;
+    }
+    if (llm?.model) {
+      payload.llm_model = llm.model;
     }
 
     try {
@@ -142,7 +152,8 @@ export const queryService = {
     connectionId?: number,
     conversationHistory?: Array<{ question: string; sql?: string }>,
     signal?: AbortSignal,
-    onNarrative?: (chunk: string) => void
+    onNarrative?: (chunk: string) => void,
+    llm?: { baseUrl?: string; model?: string }
   ): Promise<QueryResult> {
     const payload: any = { question };
     if (connectionId) {
@@ -150,6 +161,12 @@ export const queryService = {
     }
     if (conversationHistory && conversationHistory.length > 0) {
       payload.conversation_history = conversationHistory;
+    }
+    if (llm?.baseUrl) {
+      payload.llm_base_url = llm.baseUrl;
+    }
+    if (llm?.model) {
+      payload.llm_model = llm.model;
     }
 
     let response: Response;
