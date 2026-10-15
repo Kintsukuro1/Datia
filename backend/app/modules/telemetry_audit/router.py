@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_current_admin
+from app.core.security import sanitize_spreadsheet_value
 from app.modules.auth.models import User
 from app.modules.telemetry_audit.models import AuditLog
 from app.modules.telemetry_audit.schemas import AuditLogsPage, AuditLogOut
@@ -129,15 +130,15 @@ def export_audit_logs_csv(
         writer.writerow([
             log.id,
             log.timestamp.strftime("%Y-%m-%d %H:%M:%S") if log.timestamp else "",
-            log.username or "",
-            log.user_role or "",
-            log.question_prompt or "",
-            log.sql_generated or "",
-            log.validation_status or "",
-            log.target_database or "",
+            sanitize_spreadsheet_value(log.username or ""),
+            sanitize_spreadsheet_value(log.user_role or ""),
+            sanitize_spreadsheet_value(log.question_prompt or ""),
+            sanitize_spreadsheet_value(log.sql_generated or ""),
+            sanitize_spreadsheet_value(log.validation_status or ""),
+            sanitize_spreadsheet_value(log.target_database or ""),
             log.execution_time_ms or 0,
             log.rows_returned or 0,
-            log.error_message or ""
+            sanitize_spreadsheet_value(log.error_message or "")
         ])
 
     csv_data = output.getvalue()
