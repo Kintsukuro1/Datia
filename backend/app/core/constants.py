@@ -30,6 +30,11 @@ SYSTEM_STATUS_OPERATIONAL = "OPERATIVO"
 SYSTEM_STATUS_DEGRADED = "DEGRADADO"
 SYSTEM_STATUS_CRITICAL = "CRITICO"
 
+# Consulta "lenta" para el detector de anomalias. El mismo numero estaba en el
+# filtro, en el texto de la descripcion que ve el usuario y en el docstring del
+# endpoint: tres copias que solo coincidian por memoria.
+SLOW_QUERY_THRESHOLD_MS = 4000
+
 # Standard Domain Names
 DOMAIN_FINANZAS = "Economía & Finanzas"
 DOMAIN_TI = "Tecnología & TI"

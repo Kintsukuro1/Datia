@@ -15,6 +15,17 @@ export type ChartType =
 
 export type ColorTheme = 'amber' | 'cyan' | 'emerald' | 'indigo' | 'rose';
 
+/**
+ * Pila tipografica de las graficas.
+ *
+ * `Inter` aparecia literal en ocho lugares (el `textStyle` de cada builder, el de
+ * los ejes y el del tooltip) y NUNCA se aplico: `index.html` solo descarga
+ * "Plus Jakarta Sans", asi que `Inter` cae de largo y el navegador usa
+ * `system-ui`. Se replica aqui la pila REAL de `tailwind.config.js` para que las
+ * graficas usen la misma fuente que el resto de la aplicacion.
+ */
+export const CHART_FONT_FAMILY = '"Plus Jakarta Sans", system-ui, sans-serif';
+
 export const THEME_COLORS: Record<
   ColorTheme,
   {
@@ -61,6 +72,102 @@ export const THEME_COLORS: Record<
     gradient: ['#F43F5E', '#E11D48', '#BE123C', '#FB7185', '#FDA4AF', '#881337'],
   },
 };
+
+/**
+ * Base ECharts tooltip. Estaba declarado identico (byte a byte) en los cuatro
+ * builders — bar, extra, line y pie — y cada copia podia desviarse sin que nada
+ * lo notara. Vive aqui con el resto del tema.
+ */
+export const BASE_TOOLTIP = {
+  backgroundColor: '#0F172A',
+  borderColor: '#334155',
+  borderWidth: 1,
+  padding: [10, 14] as [number, number],
+  textStyle: { color: '#F8FAFC', fontFamily: CHART_FONT_FAMILY },
+  extraCssText:
+    'box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.7), 0 8px 10px -6px rgba(0, 0, 0, 0.7); border-radius: 12px; backdrop-filter: blur(8px);',
+};
+
+/**
+ * Cuerpo HTML del tooltip. Estaba copiado linea por linea en los cuatro builders
+ * (bar, extra, line y pie) con quince valores de estilo Repetidos dentro, y cada
+ * copia podia cambiar un color sin que las otras se enteraran.
+ *
+ * `BASE_TOOLTIP` de abajo es la cascara de ECharts; esto es lo que va DENTRO.
+ */
+export const TOOLTIP_CSS = {
+  // `Inter` estaba aqui desde antes, pero NUNCA se aplico: `index.html` solo
+  // descarga "Plus Jakarta Sans" y `tailwind.config.js` deja `Inter` como
+  // segundo de una pila donde nunca llega a usarse, asi que el navegador caia a
+  // `system-ui`. Se replica aqui la pila REAL para que el tooltip coincida con
+  // el resto de la aplicacion en vez de fingir una fuente que no existe.
+  fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif',
+  minWidth: '140px',
+  maxWidth: '320px',
+  titleSize: '11px',
+  labelSize: '12px',
+  valueSize: '13px',
+  shareSize: '10px',
+  titleColor: '#94A3B8',
+  labelColor: '#E2E8F0',
+  shareColor: '#64748B',
+  dividerColor: '#1E293B',
+  dotSize: '8px',
+} as const;
+
+export function buildTooltipHtml(
+  name: string,
+  valueText: string,
+  valueShareText: string,
+  numColLabel: string,
+  accentColor: string
+): string {
+  const c = TOOLTIP_CSS;
+  return `
+      <div style="font-family:${c.fontFamily}; min-width:${c.minWidth}; max-width:${c.maxWidth};">
+        <div style="font-size:${c.titleSize}; font-weight:600; color:${c.titleColor}; margin-bottom:6px; word-wrap:break-word; line-height:1.3; border-bottom:1px solid ${c.dividerColor}; padding-bottom:4px;">
+          ${name}
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span style="display:inline-block; width:${c.dotSize}; height:${c.dotSize}; border-radius:50%; background-color:${accentColor};"></span>
+            <span style="font-size:${c.labelSize}; font-weight:500; color:${c.labelColor};">${numColLabel}:</span>
+          </div>
+          <span style="font-size:${c.valueSize}; font-weight:700; color:${accentColor}; font-family:monospace;">${valueText}</span>
+        </div>
+        ${
+          valueShareText
+            ? `<div style="font-size:${c.shareSize}; color:${c.shareColor}; margin-top:4px; text-align:right;">${valueShareText} del total</div>`
+            : ''
+        }
+      </div>
+    `;
+}
+
+/**
+ * Recorta una etiqueta de eje. `str.length > 20` con `substring(0, 18)` estaba
+ * en bar, extra y line; pie usa otros numeros (`18`/`16`) y por eso su recorte
+ * no coincidia con el de los otros tres.
+ */
+export function truncateAxisLabel(val: string, max = 20): string {
+  // El guard de `!val` no es decorativo: ECharts llama al formatter con
+  // `undefined` y con `''` en categorias sin nombre, y sin el los series de
+  // texto se rotulan literalmente "undefined".
+  if (!val) return '';
+  const t = String(val).trim();
+  return t.length > max ? `${t.substring(0, max - 2)}...` : t;
+}
+
+/**
+ * Angulo de rotacion de las etiquetas del eje X, en grados.
+ *
+ * Reproduce el ternario duplicado en bar, extra y line:
+ *   alguna etiqueta larga -> 25, muchas etiquetas -> 15, si no -> 0
+ */
+export function axisRotateAngle(labels: string[]): number {
+  if (labels.some((l) => l.length > 14)) return 25;
+  return labels.length > 6 ? 15 : 0;
+}
 
 /**
  * globals.css kills CSS animations for prefers-reduced-motion, but ECharts

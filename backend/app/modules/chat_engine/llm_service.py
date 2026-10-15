@@ -3,7 +3,7 @@ import json
 import re
 import ipaddress
 from urllib.parse import urlsplit
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, List, Optional, Tuple
 from app.core.config import settings
 from app.core.logging import logger
 from app.core.prompts import PromptManager
@@ -34,6 +34,13 @@ LLM_SINK_EXTRA_HOSTS = {"host.docker.internal"}
 _LAN_NETWORKS = tuple(
     ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
 )
+
+# Endpoint por defecto de llama.cpp / llama.exe serve. Es el primer fallback de
+# la cadena de inferencia y estaba repetido como literal en tres lugares de este
+# modulo (`_candidate_chat_urls`, el endpoint nativo `/completion` y el stream),
+# mas la tabla de sondeo de `HealthService`. Lo que coincide es el puerto; el
+# host y el path varian segun donde corra el servidor.
+LLAMA_CPP_BASE_URL = "http://127.0.0.1:8080"
 
 
 def _is_lan_host(hostname: str) -> bool:
@@ -168,6 +175,13 @@ class LLMService:
     LLM_TIMEOUT = 300.0
     LLM_CONNECT_TIMEOUT = 2.5
 
+    # Cuanto del cuerpo de error del servidor se guarda en el mensaje que ve el
+    # usuario. Estaba en `[:200]` repetido en los tres caminos de inferencia
+    # (chat, /completion nativo y /api/generate), y cada copia podia truncar en
+    # un punto distinto sin que nada lo notara. Es diagnostico, no parseo: lo que
+    # importa es que quepa en el mensaje sin volverse ilegible.
+    ERROR_BODY_CHARS = 200
+
     # Parametros de muestreo. No estaban, y esa ausencia era la causa de la
     # corrupcion de salida mas dificil de detectar del pipeline: a temperatura
     # 0.05 un 7B cuantizado (Q4_K_M) entra en bucle de repeticion con facilidad,
@@ -221,6 +235,38 @@ class LLMService:
         if base.endswith('/v1'):
             base = base[:-3].rstrip('/')
         return base
+
+    @classmethod
+    def _candidate_chat_urls(cls, base_url: Optional[str]) -> List[Tuple[str, str]]:
+        """Cadena de endpoints OpenAI-compatible como (base, url), deduplicada y en orden.
+
+        `generate_completion` (no-stream) y `stream_completion` (stream) tenian
+        esta misma lista copiada byte a byte: un endpoint nuevo aplicado a uno y
+        olvidado en el otro producia un fallo que solo se reproducia en uno de
+        los dos caminos.
+
+        Se devuelve tambien la `base` porque el llamador resuelve el `model`
+        contra el servidor que VA a responder, y el fallback que gana no es
+        necesariamente el que tiene cargado el modelo configurado.
+
+        `base_url` debe venir YA validado por `validate_llm_base_url`. Pasar el
+        valor crudo desde el parametro abriria la puerta a que esta cadena emita
+        la request contra un host no permitido, que es justo lo que el allowlist
+        de `validate_llm_base_url` existe para impedir.
+        """
+        candidates: List[Tuple[str, str]] = []
+        seen = set()
+        for raw_base in ([base_url] if base_url else []) + [
+            LLAMA_CPP_BASE_URL,
+            settings.OLLAMA_BASE_URL,
+            settings.OPENAI_COMPATIBLE_URL,
+        ]:
+            cand_base = cls._as_base_url(raw_base)
+            url = f"{cand_base}/v1/chat/completions"
+            if url not in seen:
+                seen.add(url)
+                candidates.append((cand_base, url))
+        return candidates
 
     @classmethod
     async def resolve_model_for(cls, base_url: str, configured: str) -> str:
@@ -359,15 +405,9 @@ class LLMService:
 
         # Cada candidato guarda su base para poder resolverle el `model` contra
         # el servidor que VA a responder: el fallback que gana no es
-        # necesariamente el que tiene cargado el modelo configurado.
-        candidates = []
-        for raw_base in ([base_url] if base_url else []) + [
-            "http://127.0.0.1:8080",
-            settings.OLLAMA_BASE_URL,
-            settings.OPENAI_COMPATIBLE_URL,
-        ]:
-            cand_base = cls._as_base_url(raw_base)
-            candidates.append((cand_base, f"{cand_base}/v1/chat/completions"))
+        # necesariamente el que tiene cargado el modelo configurado. La cadena la
+        # arma `_candidate_chat_urls`, compartida con el camino de stream.
+        candidates = cls._candidate_chat_urls(base_url)
 
         timeout_cfg = cls._get_timeout_config()
 
@@ -378,12 +418,7 @@ class LLMService:
         # :1234, OPENAI_COMPATIBLE_URL y los endpoints nativos.
         failures: List[str] = []
 
-        seen = set()
         for cand_base, url in candidates:
-            if url in seen:
-                continue
-            seen.add(url)
-
             payload_chat = cls._chat_payload(
                 await cls.resolve_model_for(cand_base, effective_model),
                 system_prompt, prompt, temperature, max_tokens, stop,
@@ -402,9 +437,9 @@ class LLMService:
                     else:
                         err_body = (res.text or "").lower()
                         if "context size has been exceeded" in err_body or "context size" in err_body or "kv cache" in err_body:
-                            logger.error(f"Context size exceeded on {url}: {res.text[:200]}")
+                            logger.error(f"Context size exceeded on {url}: {res.text[:cls.ERROR_BODY_CHARS]}")
                             raise ValueError(f"Context size has been exceeded on LLM server ({url}). Prompt was too long for current slot.")
-                        failures.append(f"{url} -> HTTP {res.status_code}: {(res.text or '')[:200]}")
+                        failures.append(f"{url} -> HTTP {res.status_code}: {(res.text or '')[:cls.ERROR_BODY_CHARS]}")
             except ValueError:
                 raise
             except Exception as e:
@@ -415,7 +450,7 @@ class LLMService:
         native_urls = []
         if base_url:
             native_urls.append(f"{cls._as_base_url(base_url)}/completion")
-        native_urls.append("http://127.0.0.1:8080/completion")
+        native_urls.append(f"{LLAMA_CPP_BASE_URL}/completion")
 
         for url_native in native_urls:
             try:
@@ -437,9 +472,9 @@ class LLMService:
                     else:
                         err_body = (res.text or "").lower()
                         if "context size has been exceeded" in err_body or "context size" in err_body or "kv cache" in err_body:
-                            logger.error(f"Context size exceeded on native {url_native}: {res.text[:200]}")
+                            logger.error(f"Context size exceeded on native {url_native}: {res.text[:cls.ERROR_BODY_CHARS]}")
                             raise ValueError(f"Context size has been exceeded on LLM native server ({url_native}).")
-                        failures.append(f"{url_native} -> HTTP {res.status_code}: {(res.text or '')[:200]}")
+                        failures.append(f"{url_native} -> HTTP {res.status_code}: {(res.text or '')[:cls.ERROR_BODY_CHARS]}")
             except ValueError:
                 raise
             except Exception as e:
@@ -478,9 +513,9 @@ class LLMService:
                 else:
                     err_body = (res.text or "").lower()
                     if "context size has been exceeded" in err_body or "context size" in err_body or "kv cache" in err_body:
-                        logger.error(f"Context size exceeded on Ollama {url_ollama}: {res.text[:200]}")
+                        logger.error(f"Context size exceeded on Ollama {url_ollama}: {res.text[:cls.ERROR_BODY_CHARS]}")
                         raise ValueError(f"Context size has been exceeded on Ollama ({url_ollama}).")
-                    failures.append(f"{url_ollama} -> HTTP {res.status_code}: {(res.text or '')[:200]}")
+                    failures.append(f"{url_ollama} -> HTTP {res.status_code}: {(res.text or '')[:cls.ERROR_BODY_CHARS]}")
         except ValueError:
             raise
         except Exception as e:
@@ -524,25 +559,13 @@ class LLMService:
         if base_url:
             base_url = validate_llm_base_url(base_url)
 
-        candidates = []
-        for raw_base in ([base_url] if base_url else []) + [
-            "http://127.0.0.1:8080",
-            settings.OLLAMA_BASE_URL,
-            settings.OPENAI_COMPATIBLE_URL,
-        ]:
-            cand_base = cls._as_base_url(raw_base)
-            candidates.append((cand_base, f"{cand_base}/v1/chat/completions"))
+        candidates = cls._candidate_chat_urls(base_url)
 
         timeout_cfg = cls._get_timeout_config()
-        seen = set()
         failures: List[str] = []
         think_filter = StreamingThinkFilter()
 
         for cand_base, url in candidates:
-            if url in seen:
-                continue
-            seen.add(url)
-
             # El `model` se resuelve por URL, y aqui importa mas que en la ruta
             # no-stream: si esta mal, LM Studio responde 404 y el stream entero
             # se pierde. `resolve_model_for` esta cacheado, asi que el GET solo

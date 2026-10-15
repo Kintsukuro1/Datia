@@ -7,9 +7,17 @@ from app.api.v1.router import api_router
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
 
+# `/docs` y el esquema OpenAPI no piden autenticacion: describen los 50 endpoints
+# con todos sus parametros a cualquiera que alcance el puerto. En produccion van
+# apagados salvo que `ENABLE_API_DOCS` los vuelva a encender a proposito.
+_IS_PROD = settings.ENVIRONMENT.lower() == "production"
+_DOCS_ENABLED = settings.ENABLE_API_DOCS if settings.ENABLE_API_DOCS is not None else not _IS_PROD
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    openapi_url=f"{settings.API_V1_STR}/openapi.json" if _DOCS_ENABLED else None,
+    docs_url="/docs" if _DOCS_ENABLED else None,
+    redoc_url="/redoc" if _DOCS_ENABLED else None,
     description="Backend Sidecar Python para Democratización de Datos Corporativos con IA Local"
 )
 
@@ -30,8 +38,28 @@ def validate_startup_security():
                 "SECRET_KEY no fue configurado para producción. Defina una clave única en su archivo .env antes de desplegar."
             )
         if "*" in settings.CORS_ORIGINS:
-            logger.warning(
-                "CORS: Orígenes abiertos con '*' detectados en entorno de producción. Asegúrese de que esta configuración sea intencional."
+            # `allow_credentials=True` con origen `*` hace que el middleware
+            # repita el origen de la petición, o sea que CUALQUIER sitio que el
+            # usuario visite puede llamar a la API con su sesion.
+            #
+            # No se detiene el arranque a proposito: casi toda instalacion local
+            # tiene ENVIRONMENT=production en su `.env` (asi se ejercita el guard
+            # de SECRET_KEY) y romperlas seria peor que avisar. Por eso va a
+            # stderr y no al log: un `logger.warning` queda tapado por el nivel de
+            # INFO de `core/logging.py` y nadie lo lee nunca.
+            import sys
+            aviso = (
+                "\n"
+                "  [SEGURIDAD] CORS con origen '*' y credenciales habilitadas.\n"
+                "  Cualquier sitio web que visite un usuario autenticado puede\n"
+                "  llamar a esta API con su sesion. Defina en su .env:\n"
+                "      CORS_ORIGINS=[\"http://<host-del-frontend>\"]\n"
+                "  y no '*'.\n"
+            )
+            print(aviso, file=sys.stderr, flush=True)
+            logger.error(
+                "CORS: origenes abiertos con '*' en produccion. "
+                "Defina CORS_ORIGINS con los origenes reales."
             )
 
 # Include API v1 router

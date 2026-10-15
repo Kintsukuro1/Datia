@@ -14,6 +14,7 @@ from app.core.constants import (
     SYSTEM_STATUS_OPERATIONAL,
     SYSTEM_STATUS_DEGRADED,
     SYSTEM_STATUS_CRITICAL,
+    SLOW_QUERY_THRESHOLD_MS,
     ADMIN_ROLES,
     ROLE_ADMINISTRADOR,
 )
@@ -165,7 +166,7 @@ async def get_system_anomalies(
     Scans for proactive operational and analytical anomalies:
     1. Active connection reachability and status
     2. Connection-specific AST security blocks in the last 24h
-    3. Connection-specific slow queries (>4000ms)
+    3. Connection-specific slow queries (see `SLOW_QUERY_THRESHOLD_MS`)
     4. Proactive data anomalies (outliers in key metrics)
     5. Connections requiring permission review
     """
@@ -247,15 +248,15 @@ async def get_system_anomalies(
             "action_route": "/admin/audit" if current_user.is_admin else None
         })
 
-    # 3. Consultas lentas (>4s)
-    slow_queries = audit_query.filter(AuditLog.execution_time_ms > 4000).count()
+    # 3. Consultas lentas
+    slow_queries = audit_query.filter(AuditLog.execution_time_ms > SLOW_QUERY_THRESHOLD_MS).count()
     if slow_queries > 0:
         anomalies.append({
             "id": f"audit-slow-{target_conn.id if target_conn else 'all'}",
             "type": "performance",
             "severity": "info",
             "title": f"{slow_queries} consultas lentas detectadas",
-            "description": f"Se detectaron ejecuciones con tiempos superiores a 4s en {target_conn.name if target_conn else 'la base de datos'}. Podría requerirse optimización de índices.",
+            "description": f"Se detectaron ejecuciones con tiempos superiores a {SLOW_QUERY_THRESHOLD_MS // 1000}s en {target_conn.name if target_conn else 'la base de datos'}. Podría requerirse optimización de índices.",
             "action_label": "Investigar Rendimiento",
             "query_prompt": f"¿Cuáles son las consultas más lentas ejecutadas recientemente y qué tablas involucran?",
             "action_route": "/admin/audit" if current_user.is_admin else None

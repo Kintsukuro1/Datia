@@ -24,6 +24,31 @@ from app.modules.chat_engine.schemas import KPICard, ExecutiveReport
 SYNTHESIS_MAX_TOKENS = 1200
 SYNTHESIS_TEMPERATURE = 0.15
 
+# Umbrales de negocio del informe ejecutivo. Estaban sueltos dentro de una
+# cadena ternaria y de un dict, donde el unico nombre que los describia era la
+# variable que los usaba.
+#
+# No son configurables por entorno a proposito: son politica de negocio (que
+# concentracion se considera alarming), no un parametro del despliegue. Si alguna
+# vez lo son, van a `Settings`.
+#
+# `RISK_HIGH_PCT` / `RISK_MEDIUM_PCT` se aplican al porcentaje del total que
+# aporta la entidad principal. `CONCENTRATION_*` se aplican al share del top 20%
+# de las entidades. Ojo: los NOMBRES de las claves del dict de respuesta siguen
+# siendo `top_20_count` / `top_20_share` aunque la fraccion sea configurable;
+# son parte del contrato de la API.
+RISK_HIGH_PCT = 70.0
+RISK_MEDIUM_PCT = 40.0
+CONCENTRATION_TOP_FRACTION = 0.2
+CONCENTRATION_SHARE_THRESHOLD = 60.0
+
+# Una columna de año se reconoce por su NOMBRE (año/anio/year) y porque su valor
+# cae en un rango de año. Los dos numeros estaban sueltos dentro de la expresión
+# booleana, donde lo unico que los describia era la condicion que los usaba.
+YEAR_MIN = 1900
+YEAR_MAX = 2100
+YEAR_COLUMN_KEYWORDS = ("ano", "anio", "year")
+
 NON_METRIC_KEYWORDS = {
     "ano", "anio", "year", "mes", "month", "dia", "day", "fecha", "date",
     "periodo", "period", "trimestre", "quarter", "semestre", "codigo", "code",
@@ -43,7 +68,7 @@ def is_true_numeric_metric(col_name: str, sample_val: Any) -> bool:
         return False
     if not isinstance(sample_val, (int, float)):
         return False
-    if isinstance(sample_val, int) and (1900 <= sample_val <= 2100) and any(k in col_lower for k in ("ano", "anio", "year")):
+    if isinstance(sample_val, int) and (YEAR_MIN <= sample_val <= YEAR_MAX) and any(k in col_lower for k in YEAR_COLUMN_KEYWORDS):
         return False
     return True
 
@@ -336,7 +361,7 @@ class KPICalculator:
             f"La entidad principal es **{top_entity}** representando **{formatted_top}** ({pct_top}% del total)."
         )
 
-        risk = "ALTO" if pct_top > 70 else "MEDIO" if pct_top > 40 else "BAJO"
+        risk = "ALTO" if pct_top > RISK_HIGH_PCT else "MEDIO" if pct_top > RISK_MEDIUM_PCT else "BAJO"
 
         exec_rep = ExecutiveReport(
             overview=f"Diagnóstico cuantitativo sobre '{question}': se procesaron {len(rows)} registros con un acumulado de {formatted_total} en {kpi_title}.",
@@ -390,7 +415,7 @@ class KPICalculator:
         if total <= 0 or has_negatives:
             return None
 
-        top_20_count = max(1, int(len(vals) * 0.2))
+        top_20_count = max(1, int(len(vals) * CONCENTRATION_TOP_FRACTION))
         top_20_sum = sum(vals[:top_20_count])
         top_20_share = round((top_20_sum / total) * 100, 1)
         top_entity_share = round((vals[0] / total) * 100, 1)
@@ -401,7 +426,7 @@ class KPICalculator:
             "count": len(vals),
             "top_20_count": top_20_count,
             "top_20_share": top_20_share,
-            "is_concentrated": top_20_share >= 60.0,
+            "is_concentrated": top_20_share >= CONCENTRATION_SHARE_THRESHOLD,
             "top_entity_share": top_entity_share
         }
 

@@ -635,7 +635,6 @@ class ConnectorDomainService:
         result = HealthService.check_db_connectivity(
             host=test_in.host,
             port=test_in.port,
-            timeout=3.0,
             db_type=test_in.db_type.value.upper(),
             database_name=test_in.database_name
         )

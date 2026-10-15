@@ -25,6 +25,19 @@ class Settings(BaseSettings):
     CORS_ORIGINS: List[str] = ["*"]
     
     ENVIRONMENT: str = "development" # development | production
+
+    # Publica `/docs` y `/api/v1/openapi.json`. Sin autenticacion: describen los
+    # 50 endpoints con todos sus parametros y esquemas a cualquiera que alcance
+    # el puerto. Por eso en produccion viene apagado y hay que encenderlo a mano.
+    #
+    # Notado: con ENVIRONMENT=production y esto ausente, `/docs` devuelve 404.
+    # Para recuperarlo en local, pon ENABLE_API_DOCS=true en el `.env`.
+    ENABLE_API_DOCS: Optional[bool] = None
+
+    # Cuantos turnos de historial acepta el chat como maximo.
+    # Vive en Settings (y no junto al schema) porque es un limite de la
+    # plataforma, no del contrato de un endpoint.
+    MAX_HISTORY_TURNS: int = 20
     DEFAULT_SECRET_KEY: str = "democratizacion_datos_super_secret_key_local_2026_aes256_change_in_prod"
 
     # Secret Key for JWT Tokens and AES Encryption

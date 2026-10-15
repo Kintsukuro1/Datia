@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { AppSettings } from '../../../types';
 import { llmClientService, LLMConnectionTestResult, LLMCompletionTestResult } from '../../chat/services/llm_service';
 import { apiClient } from '../../../shared/api/api_client';
-import { DEFAULT_OLLAMA_URL, DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER, LLM_PROVIDER_DEFAULTS } from '../../../constants';
+import { DEFAULT_OLLAMA_URL, DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER, LLM_PROVIDER_DEFAULTS, type LLMProviderKey } from '../../../constants';
 
 type LLMProvider = AppSettings['llm_provider'];
 
@@ -75,7 +75,11 @@ export function useSettingsDiagnostics(settings: AppSettings, updateSettings: (n
       setModelName(remembered.model);
       return;
     }
-    const fallback = LLM_PROVIDER_DEFAULTS[String(newProvider)];
+    // El cast es necesario porque `newProvider` es el string de `AppSettings` y la
+// tabla ahora tiene claves literales (asi `DEFAULT_LLM_PROVIDER` es un error de
+// compilacion si se aparta de la tabla). El `if (fallback)` de abajo sigue
+// cubriendo el caso en runtime: un proveedor desconocido no esta en la tabla.
+const fallback = LLM_PROVIDER_DEFAULTS[String(newProvider) as LLMProviderKey];
     if (fallback) {
       setOllamaUrl(fallback.url);
       setModelName(fallback.model);

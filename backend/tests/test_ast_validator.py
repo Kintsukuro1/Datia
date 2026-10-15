@@ -1,5 +1,13 @@
 import unittest
+from app.core.config import settings
 from app.modules.chat_engine.ast_validator import ASTValidator, ASTValidationError
+
+# El techo de filas lo decide `settings.DEFAULT_ROW_LIMIT`, no un 500 escrito
+# aqui. Con el literal, estos tests affirmations una sola configuracion: en CI
+# (sin `.env`) el default es 500 y pasaban, pero en una maquina con
+# DEFAULT_ROW_LIMIT=1000 el clamp a 500 ya no ocurria y el fallo se reportaba
+# como si fuera del codigo cuando era del entorno.
+MAX = settings.DEFAULT_ROW_LIMIT
 
 class TestASTValidator(unittest.TestCase):
 
@@ -11,7 +19,7 @@ class TestASTValidator(unittest.TestCase):
             allowed_tables={"fact_ventas"}
         )
         self.assertTrue(is_valid)
-        self.assertIn("LIMIT 500", secured_sql)
+        self.assertIn(f"LIMIT {MAX}", secured_sql)
         self.assertIn("fact_ventas", meta["tables_used"])
 
     def test_generate_sql_explanation(self):
@@ -64,26 +72,23 @@ class TestASTValidator(unittest.TestCase):
 
     def test_limit_above_max_is_clamped_not_crashed(self):
         """sqlglot>=30: Literal.this es read-only. Limitar sobre el maximo no debe lanzar AttributeError."""
-        for sql in (
-            "SELECT id_venta FROM fact_ventas LIMIT 501",
-            "SELECT id_venta FROM fact_ventas LIMIT 1000000",
-        ):
+        for over in (MAX + 1, MAX * 1000):
             is_valid, secured_sql, meta = ASTValidator.validate_and_secure_sql(
-                sql, dialect="postgres", allowed_tables={"fact_ventas"}
+                f"SELECT id_venta FROM fact_ventas LIMIT {over}",
+                dialect="postgres", allowed_tables={"fact_ventas"}
             )
             self.assertTrue(is_valid)
-            self.assertIn("LIMIT 500", secured_sql)
-            self.assertNotIn("501", secured_sql)
-            self.assertNotIn("1000000", secured_sql)
+            self.assertIn(f"LIMIT {MAX}", secured_sql)
+            self.assertNotIn(f"LIMIT {over}", secured_sql)
 
     def test_limit_at_max_boundary_is_left_untouched(self):
         """El limite igual al maximo no se modifica."""
         is_valid, secured_sql, _ = ASTValidator.validate_and_secure_sql(
-            "SELECT id_venta FROM fact_ventas LIMIT 500",
+            f"SELECT id_venta FROM fact_ventas LIMIT {MAX}",
             dialect="postgres", allowed_tables={"fact_ventas"}
         )
         self.assertTrue(is_valid)
-        self.assertIn("LIMIT 500", secured_sql)
+        self.assertIn(f"LIMIT {MAX}", secured_sql)
 
     def test_small_limit_is_preserved_not_raised_to_max(self):
         """El clamp es un techo, no un piso: LIMIT 5 debe seguir siendo 5."""
@@ -94,39 +99,48 @@ class TestASTValidator(unittest.TestCase):
             )
             self.assertTrue(is_valid)
             self.assertIn(f"LIMIT {literal}", secured_sql)
-            self.assertNotIn("LIMIT 500", secured_sql)
+            self.assertNotIn(f"LIMIT {MAX}", secured_sql)
 
     def test_tsql_top_above_max_is_clamped(self):
         """TOP es un Limit en el AST de tsql: tambien debe clampearse y no crashear."""
         is_valid, secured_sql, _ = ASTValidator.validate_and_secure_sql(
-            "SELECT TOP 1000000 id FROM fact_ventas",
+            f"SELECT TOP {MAX * 1000} id FROM fact_ventas",
             dialect="tsql", allowed_tables={"fact_ventas"}
         )
         self.assertTrue(is_valid)
-        self.assertIn("TOP 500", secured_sql)
+        self.assertIn(f"TOP {MAX}", secured_sql)
+        # Sin esto el test pasa en vacio: "TOP 500" es subcadena de "TOP 500000",
+        # asi que si el clamp dejara de clampear, la linea de arriba seguiria
+        # cumpliendose sobre el SQL sin clampear.
+        self.assertNotIn(f"TOP {MAX * 1000}", secured_sql)
 
     def test_limit_inside_subquery_is_clamped(self):
         """El clamp aplica a todos los Limit del arbol, no solo al del nodo raiz."""
         sql = (
             "SELECT COUNT(*) FROM (SELECT id_venta, monto FROM fact_ventas "
-            "LIMIT 1000000000) x"
+            f"LIMIT {MAX * 1000000}) x"
         )
         is_valid, secured_sql, _ = ASTValidator.validate_and_secure_sql(
             sql, dialect="postgres", allowed_tables={"fact_ventas"}
         )
         self.assertTrue(is_valid)
-        self.assertNotIn("1000000000", secured_sql)
-        self.assertIn("LIMIT 500", secured_sql)
+        self.assertNotIn(f"{MAX * 1000000}", secured_sql)
+        self.assertIn(f"LIMIT {MAX}", secured_sql)
 
     def test_small_limit_inside_subquery_is_preserved(self):
-        """Un LIMIT chico legitimo dentro de una subconsulta no debe convertirse en 500."""
+        """Un LIMIT chico legitimo dentro de una subconsulta no debe convertirse al maximo."""
         is_valid, secured_sql, _ = ASTValidator.validate_and_secure_sql(
             "SELECT id_venta FROM (SELECT id_venta FROM fact_ventas LIMIT 5) y",
             dialect="postgres", allowed_tables={"fact_ventas"}
         )
         self.assertTrue(is_valid)
-        self.assertIn("LIMIT 5", secured_sql)
-        self.assertIn("LIMIT 500", secured_sql)
+        # `assertIn("LIMIT 5", ...)` no probaba nada: con MAX=500, "LIMIT 500"
+        # CONTIENE "LIMIT 5", asi que la asercion se cumplia sola. Peor con mi
+        # cambio: con MAX=1000 "LIMIT 1000" ya no contiene "LIMIT 5", o sea que
+        # el test era mas fuerte en local que en CI. El `(?!\d)` obliga a que el 5
+        # no sea el primer digito de un numero mayor, que es el falso positivo.
+        self.assertRegex(secured_sql, r"LIMIT\s+5(?!\d)")
+        self.assertIn(f"LIMIT {MAX}", secured_sql)
 
     def test_select_star_without_table_columns_fails_closed(self):
         """Sin columnas conocidas no se puede filtrar el star: falla cerrado, no pasa sin filtrar."""

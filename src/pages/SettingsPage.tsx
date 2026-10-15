@@ -5,6 +5,7 @@ import { Settings, CheckCircle2, AlertCircle, Save, Cpu, Database, ShieldCheck, 
 import { SettingsLLMSection } from '../components/settings/SettingsLLMSection';
 import { SettingsInferenceSection } from '../components/settings/SettingsInferenceSection';
 import { SettingsPostgresSection } from '../components/settings/SettingsPostgresSection';
+import { getProviderLabel } from '../constants';
 
 export const SettingsPage: React.FC = () => {
   const { settings, updateSettings } = useAuth();
@@ -55,8 +56,7 @@ export const SettingsPage: React.FC = () => {
     return () => window.removeEventListener('beforeunload', warn);
   }, [dirty]);
 
-  const providerLabel =
-    provider === 'llama_cpp' ? 'llama.cpp' : provider === 'ollama' ? 'Ollama' : 'OpenAI Compatible';
+  const providerLabel = getProviderLabel(provider);
 
   return (
     <div className="w-full h-full flex-1 bg-dark-base overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar pb-28 font-sans">

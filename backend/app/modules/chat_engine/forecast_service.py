@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.logging import logger
 from app.core.security import mask_rows
 from app.modules.admin_catalog.models import CorporateConnection
@@ -126,7 +127,7 @@ def build_series_sql(table: str, date_col: str, value_col: str, dialect: str = "
         period_expr = f"TO_CHAR({d}, 'YYYY-MM')"
     return (
         f"SELECT {period_expr} AS periodo, SUM({v}) AS valor "
-        f"FROM {t} WHERE {v} > 0 GROUP BY 1 ORDER BY 1 LIMIT 500"
+        f"FROM {t} WHERE {v} > 0 GROUP BY 1 ORDER BY 1 LIMIT {settings.DEFAULT_ROW_LIMIT}"
     )
 
 
@@ -154,7 +155,7 @@ def build_retention_sql(table: str, date_col: str, value_col: str, entity_col: s
         f"{agg}(DISTINCT {period_expr}, ',' ORDER BY {period_expr}) AS meses, "
         f"SUM({v}) AS valor "
         f"FROM {t} WHERE {v} > 0 AND {e} IS NOT NULL AND LENGTH({e}) > 0 "
-        f"GROUP BY {e} ORDER BY valor DESC LIMIT 500"
+        f"GROUP BY {e} ORDER BY valor DESC LIMIT {settings.DEFAULT_ROW_LIMIT}"
     )
 
 
@@ -200,7 +201,9 @@ def _run_guarded_sql(
         allowed_tables=allowed,
         blocked_columns=blocked,
         table_columns=table_columns,
-        max_limit=500,
+        # Se pasa explicito aunque coincida con el default del validador: asi el
+        # techo del predictor queda anclado al knob y no al default de otra clase.
+        max_limit=settings.DEFAULT_ROW_LIMIT,
         is_admin=is_admin,
     )
     if not ok:

@@ -3,6 +3,7 @@ import json
 import re
 from typing import List, Dict, Any, Optional, Set, Tuple
 from sqlalchemy.orm import Session
+from app.core.config import settings
 from app.core.constants import ADMIN_ROLES
 from app.core.database import discard_failed_transaction
 from app.modules.chat_engine.ast_validator import ASTValidator, ASTValidationError
@@ -42,7 +43,7 @@ class SQLExecutor:
                 if getattr(target_db, "db_type", None) == DatabaseType.POSTGRESQL or "postgres" in str(getattr(target_db, "db_type", "")).lower():
                     try:
                         conn.execute(text("SET TRANSACTION READ ONLY;"))
-                        conn.execute(text("SET statement_timeout = 15000;"))
+                        conn.execute(text(f"SET statement_timeout = {settings.QUERY_TIMEOUT_SECONDS * 1000};"))
                     except Exception:
                         pass
                 res = conn.execute(text(sql))
@@ -56,7 +57,7 @@ class SQLExecutor:
                 with eng.connect() as conn:
                     try:
                         conn.execute(text("SET TRANSACTION READ ONLY;"))
-                        conn.execute(text("SET statement_timeout = 15000;"))
+                        conn.execute(text(f"SET statement_timeout = {settings.QUERY_TIMEOUT_SECONDS * 1000};"))
                     except Exception:
                         pass
                     res = conn.execute(text(sql))

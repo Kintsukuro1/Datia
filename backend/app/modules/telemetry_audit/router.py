@@ -13,6 +13,12 @@ from app.modules.telemetry_audit.schemas import AuditLogsPage, AuditLogOut
 
 router = APIRouter()
 
+# Tope de filas del export CSV. `audit_logs` crece para siempre y no hay politica
+# de retencion, asi que un export sin limite construye el archivo entero en
+# memoria antes de devolverlo. El listado paginado de arriba si usa
+# `offset`/`limit` en SQL y no tiene este problema.
+EXPORT_MAX_ROWS = 50_000
+
 def _apply_audit_filters(
     query,
     start_date: Optional[datetime.datetime] = None,
@@ -99,7 +105,7 @@ def export_audit_logs_csv(
         validation_status=validation_status
     )
 
-    logs = filtered_query.order_by(AuditLog.timestamp.desc()).all()
+    logs = filtered_query.order_by(AuditLog.timestamp.desc()).limit(EXPORT_MAX_ROWS).all()
 
     output = io.StringIO()
     output.write('\ufeff')

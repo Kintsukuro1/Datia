@@ -3,10 +3,12 @@ import time
 import re
 import sqlite3
 from typing import List, Dict, Set, Any, Optional, Tuple
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import discard_failed_transaction
 from app.modules.admin_catalog.models import RoleTablePermission, RoleColumnPermission, ColumnPermissionType, SemanticCatalog, CorporateConnection, DatabaseType
+from app.modules.catalog.services.schema_inspector import SchemaInspector
 from app.modules.auth.models import Role
 
 class DynamicSchemaPruningService:
@@ -106,21 +108,23 @@ class DynamicSchemaPruningService:
 
     @classmethod
     def resolve_db_path(cls, db: Optional[Session] = None, connection_id: Optional[int] = None) -> str:
-        """Resolves target physical SQLite database path for active connection."""
+        """Resolves target physical SQLite database path for active connection.
+
+        Delega en `SchemaInspector.resolve_connection_db_path`, que ya es la
+        implementacion canonica: un `connection_id` explicito e inexistente es un
+        404, no un fallback silencioso. Esta era una copia de la misma escalera de
+        fallback que NO hacia el 404, o sea que dos rutas del mismo sistema
+        trataban el mismo `connection_id` caido de forma distinta.
+        """
         if db is not None:
             try:
-                conn = None
-                if connection_id:
-                    conn = db.query(CorporateConnection).filter(CorporateConnection.id == connection_id).first()
-                if not conn:
-                    conn = db.query(CorporateConnection).filter(CorporateConnection.is_active == True).order_by(CorporateConnection.id.desc()).first()
-                    if not conn:
-                        conn = db.query(CorporateConnection).order_by(CorporateConnection.id.desc()).first()
-                if conn and conn.db_type == DatabaseType.SQLITE:
-                    if conn.host and os.path.exists(conn.host):
-                        return conn.host
-                    if conn.database_name and os.path.exists(conn.database_name):
-                        return conn.database_name
+                db_path, _conn = SchemaInspector.resolve_connection_db_path(db, connection_id)
+                return db_path
+            except HTTPException:
+                # Un id explicito inexistente es un 404 del cliente, no una falla de
+                # base de datos: dejarlo pasar tal cual en vez de convertirlo en
+                # RuntimeError, que el usuario veria como 500.
+                raise
             except Exception as ex:
                 # Fallar aqui significa que NO sabemos a que base del cliente
                 # apuntan los permisos ya calculados. Devolver `SQLITE_DB_PATH`
@@ -180,6 +184,21 @@ class DynamicSchemaPruningService:
         return set(cls.get_physical_cache(
             f"tables|{cls._physical_key(target)}", lambda: cls._introspect_tables(target)
         ))
+
+    @staticmethod
+    def _truncate(text: str, limit: int) -> str:
+        """Recorta a `limit` caracteres contando los 3 de la elipsis.
+
+        Antes eran dos numeros que solo concordaban por memoria: `len(x) > 60`
+        con `x[:57]`. Subir el limite a 80 sin tocar el 57 dejaba el recorte en 57
+        y la columna nunca llegaba al tope nuevo, sin ningun sintoma visible.
+
+        ponytail: no configurable. Es un tope de largo de TEXTO para que quepa en
+        el prompt; si un dia hay que moverlo, se cambia el `limit` de la llamada.
+        """
+        if len(text) <= limit:
+            return text
+        return text[: limit - 3] + "..."
 
     @classmethod
     def _introspect_tables(cls, target: Any) -> Set[str]:
@@ -577,8 +596,14 @@ class DynamicSchemaPruningService:
             try:
                 if connection_id:
                     conn_record = db.query(CorporateConnection).filter(CorporateConnection.id == connection_id).first()
-                    if not conn_record:
-                        conn_record = db.query(CorporateConnection).filter(CorporateConnection.is_uploaded == False).first()
+                # Sin paso por `is_uploaded`: ese atajo caia en la conexion de plataforma,
+                # que en una base normal esta APAGADA (`is_active=False`). Medido sobre
+                # datos reales: con la 1 no-uploadada y apagada y la 2 subida y activa,
+                # un `connection_id` inexistente devolvia la 1 desde esta linea mientras
+                # el resto del sistema resolvia la 2. Es decir, la misma peticion
+                # introspeccionaba dos bases distintas segun por donde entrara.
+                # El orden que queda es el de `SchemaInspector.resolve_connection_db_path`
+                # y el de `engine.py`: id explicito, luego la activa, luego la ultima.
                 if not conn_record:
                     conn_record = db.query(CorporateConnection).filter(CorporateConnection.is_active == True).order_by(CorporateConnection.id.desc()).first()
                 if not conn_record:
@@ -691,9 +716,7 @@ class DynamicSchemaPruningService:
                     samples = pc.get("samples", [])[:2]
                     clean_samples = []
                     for s in samples:
-                        s_str = str(s).strip()
-                        if len(s_str) > 25:
-                            s_str = s_str[:22] + "..."
+                        s_str = cls._truncate(str(s).strip(), 25)
                         if not s_str.replace('.', '', 1).isdigit():
                             clean_samples.append(repr(s_str))
                         else:
@@ -706,9 +729,7 @@ class DynamicSchemaPruningService:
                     if desc:
                         desc_lower = desc.lower()
                         if not (desc_lower.startswith("registro de datos tipo") or desc_lower in cls.NON_FORMULAS):
-                            if len(desc) > 60:
-                                desc = desc[:57] + "..."
-                            details += f" - {desc}"
+                            details += f" - {cls._truncate(desc, 60)}"
 
                     if syns:
                         details += f" (Sinónimos: {syns})"
@@ -724,7 +745,7 @@ class DynamicSchemaPruningService:
                             desc = (entry.description or "").strip()
                             if desc.lower().startswith("registro de datos tipo") or desc.lower() in cls.NON_FORMULAS:
                                 desc = ""
-                            line = f"{c_name}" + (f" - {desc[:57]}..." if len(desc) > 60 else (f" - {desc}" if desc else ""))
+                            line = f"{c_name}" + (f" - {cls._truncate(desc, 60)}" if desc else "")
                             if entry.synonyms:
                                 line += f" (Sinónimos: {entry.synonyms})"
                             col_lines.append(line)

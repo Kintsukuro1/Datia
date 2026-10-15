@@ -1,12 +1,26 @@
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+# Tope de la pregunta. `question` entra crudo en el prompt del LLM, asi que sin
+# cota un cliente puede pedir un string arbitrariamente largo: se paga en tokens y
+# el contexto desborda, y el fallo aparece como "el modelo no respondio" en vez
+# de como un 400 que dice cual fue el problema.
+#
+# 2000 caracteres es holgado para una pregunta de negocio (unas 300 palabras).
+MAX_QUESTION_CHARS = 2000
+
+# Historial. `format_conversation_context` solo lee los ultimos 2 turnos, asi que
+# mandar mas no aporta nada y solo infla la peticion.
+MAX_HISTORY_TURNS = 20
 
 class QueryRequest(BaseModel):
-    question: str
+    question: str = Field(..., max_length=MAX_QUESTION_CHARS)
     connection_id: int = 1
     session_id: Optional[str] = None
     user_role: Optional[str] = "Economista"
-    conversation_history: Optional[List[Dict[str, Any]]] = None
+    conversation_history: Optional[List[Dict[str, Any]]] = Field(
+        default=None, max_length=MAX_HISTORY_TURNS
+    )
 
 class KPICard(BaseModel):
     title: str

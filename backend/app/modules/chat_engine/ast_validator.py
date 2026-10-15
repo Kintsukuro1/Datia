@@ -25,13 +25,26 @@ class ASTValidator:
         allowed_tables: Optional[Set[str]] = None,
         blocked_columns: Optional[Set[str]] = None,
         table_columns: Optional[Dict[str, List[str]]] = None,
-        max_limit: int = 500,
+        max_limit: Optional[int] = None,
         is_admin: bool = False
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Validates raw_sql against strict security rules and returns:
         (is_valid: bool, sanitized_sql_or_error: str, metadata: dict)
+
+        `max_limit` es el techo de filas del guardarrai y sale de
+        `settings.DEFAULT_ROW_LIMIT`. Antes era el literal 500 aqui, con
+        `settings` importado en la linea 3 y sin usarse: cambiar la variable de
+        entorno no hacia nada. Todo SQL del chat, del predictor y del
+        autodiagnostico pasa por esta funcion, asi que este es el unico lugar
+        donde el limite se decide.
+
+        El default es `None` y NO `settings.DEFAULT_ROW_LIMIT`: un default de
+        parametro se evalua UNA vez, al importar el modulo, asi que un
+        `patch.object(settings, "DEFAULT_ROW_LIMIT", X)` de un test no tendria
+        ningun efecto sobre el. Resolverlo aqui lo lee en cada llamada.
         """
+        max_limit = settings.DEFAULT_ROW_LIMIT if max_limit is None else max_limit
         if not raw_sql or not raw_sql.strip():
             raise ASTValidationError("La consulta SQL está vacía.")
 

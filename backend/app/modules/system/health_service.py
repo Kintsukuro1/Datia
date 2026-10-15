@@ -83,9 +83,18 @@ class HealthService:
         if primary_url:
             candidates.append((provider or "auto", primary_url))
 
+        # El llama.cpp se toma de la constante del modulo `llm_service` para no repetir
+        # el puerto en dos archivos. Ojo: esta tabla sondea PUERTOS CONVENCIONALES
+        # de servidores locales (8080 / 11434 / 1234), que no son los endpoints
+        # configurados: `OPENAI_COMPATIBLE_URL` apunta a 8000, que es la propia API
+        # de Datia. Derivarla de `settings` cambiaria el sondeo.
+        from app.modules.chat_engine.llm_service import LLAMA_CPP_BASE_URL
+
         fallbacks = [
-            ("llama_cpp", "http://127.0.0.1:8080"),
-            ("llama_cpp", "http://localhost:8080"),
+            ("llama_cpp", LLAMA_CPP_BASE_URL),
+            # Gemelo `localhost`: un servidor local puede estar escuchando en una
+            # sola de las dos formas, y por eso se prueban las dos.
+            ("llama_cpp", LLAMA_CPP_BASE_URL.replace("127.0.0.1", "localhost", 1)),
             ("ollama", "http://localhost:11434"),
             ("ollama", "http://127.0.0.1:11434"),
             ("openai_compatible", "http://localhost:1234"),

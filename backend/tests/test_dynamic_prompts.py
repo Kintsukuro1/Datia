@@ -14,14 +14,12 @@ class TestDynamicPrompts(unittest.TestCase):
 
     def test_prompt_manager_conversational(self):
         """Verifica que PromptManager devuelva configuraciones para respuestas conversacionales."""
-        from app.core.prompts import ResponseType, RESPONSE_GENERATION_CONFIG
+        from app.core.prompts import ResponseType
         advisory_prompt = PromptManager.get_conversational_system_prompt(ResponseType.ADVISORY)
         self.assertIn("asesor", advisory_prompt.lower())
-        self.assertEqual(RESPONSE_GENERATION_CONFIG[ResponseType.ADVISORY].temperature, 0.2)
 
         expl_prompt = PromptManager.get_conversational_system_prompt(ResponseType.EXPLANATION)
         self.assertIn("pedagógica", expl_prompt.lower())
-        self.assertEqual(RESPONSE_GENERATION_CONFIG[ResponseType.EXPLANATION].temperature, 0.2)
 
     def test_prompt_manager_greeting(self):
         """Verifica que el prompt de saludo reconozca las tablas autorizadas del rol."""

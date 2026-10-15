@@ -2,10 +2,6 @@
  * Centralized Application Constants for Frontend
  */
 
-export const DEFAULT_LLM_PROVIDER = 'llama_cpp';
-export const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:8080';
-export const DEFAULT_LLM_MODEL = 'qwen2.5-coder:7b';
-
 /**
  * Defaults por proveedor LLM: URL y modelo que se ofrecen al cambiar de
  * proveedor en el panel de ajustes.
@@ -15,15 +11,64 @@ export const DEFAULT_LLM_MODEL = 'qwen2.5-coder:7b';
  * copia se podia desincronizar. El diagnostico la recorre para probar cada
  * servidor via backend; `llm_service.ts` ya no la conoce.
  */
-export const LLM_PROVIDER_DEFAULTS: Record<string, { url: string; model: string }> = {
-  llama_cpp: { url: 'http://127.0.0.1:8080', model: 'Qwen3.8-27B' },
+export const LLM_PROVIDER_DEFAULTS = {
+  llama_cpp: { url: 'http://127.0.0.1:8080', model: 'qwen2.5-coder:7b' },
   ollama: { url: 'http://localhost:11434', model: 'qwen2.5-coder:7b' },
   openai_compatible: { url: 'http://localhost:1234', model: 'local-model' },
 };
 
+export type LLMProviderKey = keyof typeof LLM_PROVIDER_DEFAULTS;
+
+export const DEFAULT_LLM_PROVIDER: LLMProviderKey = 'llama_cpp';
+
+/**
+ * URL y modelo iniciales, DERIVADOS de la tabla de arriba en vez de repetidos.
+ *
+ * Antes eran dos literales mas que NO coincidian con la fila de `llama_cpp`: el
+ * formulario abria mostrando `qwen2.5-coder:7b`, pero en cuanto el admin tocaba
+ * el desplegable de proveedor, `handleProviderChange` cargaba
+ * `LLM_PROVIDER_DEFAULTS[provider]` y saltaba a `Qwen3.8-27B` para el MISMO
+ * proveedor. "Guardar" persistia el que hubiera salido en ese momento.
+ *
+ * El modelo de la fila es `qwen2.5-coder:7b`, que es lo que el backend tiene en
+ * `settings.OLLAMA_MODEL` y lo que dice tu `.env`. La tabla decia 27B: si el
+ * servidor que corres es otro, cambiala ACA y en un solo lugar.
+ *
+ * `DEFAULT_LLM_PROVIDER` esta tipado como `LLMProviderKey`, no como `string`,
+ * para que cambiarlo a una clave inexistente sea un ERROR DE COMPILACION y no
+ * un `undefined.url` reventando en carga de modulo.
+ *
+ * `DEFAULT_OLLAMA_URL` conserva el nombre aunque apunte a llama.cpp y no a
+ * Ollama: es el nombre del campo `ollama_url` de `AppSettings`, que es lo que
+ * viaja al backend y lo que se persiste en localStorage.
+ */
+export const DEFAULT_OLLAMA_URL = LLM_PROVIDER_DEFAULTS[DEFAULT_LLM_PROVIDER].url;
+export const DEFAULT_LLM_MODEL = LLM_PROVIDER_DEFAULTS[DEFAULT_LLM_PROVIDER].model;
+
 export const DEFAULT_POSTGRES_HOST = 'localhost';
 export const DEFAULT_POSTGRES_PORT = 5432;
 export const DEFAULT_POSTGRES_DB = 'democratizacion_metadatos';
+
+/**
+ * Nombre legible de cada proveedor LLM.
+ *
+ * La misma ternaria `prov === 'llama_cpp' ? 'llama.cpp' : ...` estaba en
+ * `SettingsPage` y en `SystemHealthPopover`, pero el fallback para el caso no
+ * cubierto era distinto en cada una ('OpenAI Compatible' vs 'IA Local'), asi que
+ * el mismo proveedor se nombraba de dos formas segun la pantalla.
+ *
+ * El backend (`system/router.py`, `health_service.py`) tiene su propia copia en
+ * Python: compartir un mapa entre los dos lenguajes no vale el costo.
+ */
+export const PROVIDER_LABELS: Record<string, string> = {
+  llama_cpp: 'llama.cpp',
+  ollama: 'Ollama',
+  openai_compatible: 'OpenAI Compatible',
+  custom: 'IA Local',
+};
+
+export const getProviderLabel = (provider?: string | null): string =>
+  PROVIDER_LABELS[String(provider)] ?? PROVIDER_LABELS.custom;
 
 export interface CorporateRoleDefinition {
   name: string;

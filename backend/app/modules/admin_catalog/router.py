@@ -399,7 +399,6 @@ def test_metadata_db_connectivity(
     result = HealthService.check_db_connectivity(
         host=test_in.server,
         port=test_in.port,
-        timeout=3.0,
         db_type="POSTGRESQL",
         database_name=test_in.db_name
     )
