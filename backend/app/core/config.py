@@ -34,6 +34,22 @@ class Settings(BaseSettings):
     # Para recuperarlo en local, pon ENABLE_API_DOCS=true en el `.env`.
     ENABLE_API_DOCS: Optional[bool] = None
 
+    # Siembra de la demo al arrancar (`init_db` y `setup_postgres_full`): usuarios
+    # con clave conocida (admin/admin123 y las demas del README), la base de
+    # negocio de demostracion, su conector y la matriz de permisos que la
+    # sustenta. En una instalacion real eso deja cuentas ACTIVAS con claves
+    # publicadas, asi que el default es apagado en production. Una maquina demo
+    # lo prende explicito con DEMO_MODE=true en su `.env` (docker-compose lo
+    # interpola).
+    DEMO_MODE: Optional[bool] = None
+
+    @property
+    def DEMO_MODE_EFFECTIVE(self) -> bool:
+        """Sin valor explicito: encendido fuera de production. Mismo criterio que ENABLE_API_DOCS."""
+        if self.DEMO_MODE is not None:
+            return self.DEMO_MODE
+        return self.ENVIRONMENT.lower() != "production"
+
     # Cuantos turnos de historial acepta el chat como maximo.
     # Vive en Settings (y no junto al schema) porque es un limite de la
     # plataforma, no del contrato de un endpoint.

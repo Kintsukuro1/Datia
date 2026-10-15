@@ -74,6 +74,12 @@ import pytest
 TEST_DB = os.environ.get("DATIA_TEST_DB") or "democratizacion_metadatos_test"
 os.environ["POSTGRES_DB"] = TEST_DB
 
+# La suite DEPENDE del seed demo (cuenta admin, conector de plataforma, matriz
+# de permisos) y NO del .env del operador, que puede decir ENVIRONMENT=production
+# (como el .env raiz de este repo) y con eso apagar el seed por default.
+# `setdefault` respeta un DEMO_MODE explicito si alguien corre la suite sin demo.
+os.environ.setdefault("DEMO_MODE", "true")
+
 # Nombre de base interpolado en DDL (`CREATE DATABASE` no admite bind parameters),
 # asi que se valida en vez de confiar: sale del entorno.
 assert re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", TEST_DB), f"nombre de base invalido: {TEST_DB}"

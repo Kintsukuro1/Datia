@@ -196,6 +196,8 @@ def init_db(db: Session):
     """
     Creates all database tables in PostgreSQL/SQLite and seeds initial default roles and admin.
     """
+    from app.core.config import settings
+
     Base.metadata.create_all(bind=engine)
     ensure_schema_migrations(engine)
 
@@ -311,33 +313,37 @@ def init_db(db: Session):
         {"username": "consultor", "email": "consultor@empresa.com", "pwd": "consultor123", "is_admin": False, "role": _role(db, ROLE_USUARIO)},
     ]
 
-    for u_info in demo_users:
-        existing_user = db.query(User).filter(User.username == u_info["username"]).first()
-        if not existing_user:
-            hashed_pwd = get_password_hash(u_info["pwd"])
-            new_user = User(
-                username=u_info["username"],
-                email=u_info["email"],
-                hashed_password=hashed_pwd,
-                is_admin=u_info["is_admin"],
-                is_active=True,
-                role_id=u_info["role"].id if u_info["role"] else None
-            )
-            db.add(new_user)
-        elif u_info["role"] and existing_user.role_id is None:
-            # Solo backfill de rol. Una cuenta existente NO se toca mas: revertir
-            # su contrasena en cada arranque deshacia los cambios del admin,
-            # reactivaba cuentas desactivadas y ponia el lockout en cero, con lo
-            # que un reinicio de Docker hacia la fuerza bruta infinitamente
-            # reutilizable.
-            existing_user.role_id = u_info["role"].id
-    db.commit()
+    # Con la demo apagada no se siembra ninguna de estas cuentas: son las del
+    # README, con clave conocida, y en una instalacion real quedarian activas.
+    # La lista de arriba es inerte; solo el loop siembra.
+    if settings.DEMO_MODE_EFFECTIVE:
+        for u_info in demo_users:
+            existing_user = db.query(User).filter(User.username == u_info["username"]).first()
+            if not existing_user:
+                hashed_pwd = get_password_hash(u_info["pwd"])
+                new_user = User(
+                    username=u_info["username"],
+                    email=u_info["email"],
+                    hashed_password=hashed_pwd,
+                    is_admin=u_info["is_admin"],
+                    is_active=True,
+                    role_id=u_info["role"].id if u_info["role"] else None
+                )
+                db.add(new_user)
+            elif u_info["role"] and existing_user.role_id is None:
+                # Solo backfill de rol. Una cuenta existente NO se toca mas: revertir
+                # su contrasena en cada arranque deshacia los cambios del admin,
+                # reactivaba cuentas desactivadas y ponia el lockout en cero, con lo
+                # que un reinicio de Docker hacia la fuerza bruta infinitamente
+                # reutilizable.
+                existing_user.role_id = u_info["role"].id
+        db.commit()
 
     import os
-    from app.core.config import settings
     from app.core.security import encrypt_credential
 
-    if engine.dialect.name != "postgresql":
+    # La demo SQLite es el dataset de la demo: con la demo apagada no se genera.
+    if settings.DEMO_MODE_EFFECTIVE and engine.dialect.name != "postgresql":
         db_path = settings.SQLITE_DB_PATH
         if not os.path.exists(db_path):
             try:
@@ -350,8 +356,11 @@ def init_db(db: Session):
             except Exception:
                 pass
 
+    # El conector de plataforma apunta a la base de negocio de la demo. Con la
+    # demo apagada no se crea: una instalacion real administra sus conectores a
+    # mano desde el panel.
     std_conn = db.query(CorporateConnection).filter(CorporateConnection.is_uploaded == False).first()
-    if not std_conn:
+    if settings.DEMO_MODE_EFFECTIVE and not std_conn:
         if engine.dialect.name == "postgresql":
             std_conn = CorporateConnection(
                 name="Base de Datos Corporativa (Demo)",
@@ -447,32 +456,36 @@ def init_db(db: Session):
 
     primary_conn = None
     standard_connections = db.query(CorporateConnection).filter(CorporateConnection.is_uploaded == False).all()
-    for s_conn in standard_connections:
-        s_schema = "public" if (s_conn.db_type == DatabaseType.POSTGRESQL or str(s_conn.db_type).lower() == "postgresql") else "main"
-        for r_obj, tbl_list in role_table_mappings:
-            if r_obj:
-                for tbl in tbl_list:
-                    existing_perm = db.query(RoleTablePermission).filter(
-                        RoleTablePermission.role_id == r_obj.id,
-                        RoleTablePermission.connection_id == s_conn.id,
-                        RoleTablePermission.table_name == tbl
-                    ).first()
-                    if existing_perm:
-                        existing_perm.granted_by_admin = True
-                    else:
-                        # Esta matriz SI es una decision explicita de la demo (los
-                        # 8 roles y las tablas declaradas arriba), asi que las
-                        # filas se marcan como concedidas por un admin: es lo que
-                        # las distingue del auto-grant y las protege de la
-                        # migracion de default-deny.
-                        db.add(RoleTablePermission(
-                            role_id=r_obj.id,
-                            connection_id=s_conn.id,
-                            schema_name=s_schema,
-                            table_name=tbl,
-                            is_allowed=True,
-                            granted_by_admin=True
-                        ))
+    # Con la demo apagada no se siembra la matriz declarada: es la gobernanza de
+    # la demo y sin conector de plataforma (el de arriba) no hay a que asignarla.
+    # Ademas evita volver a concederla sobre un conector de una demo anterior.
+    if settings.DEMO_MODE_EFFECTIVE:
+        for s_conn in standard_connections:
+            s_schema = "public" if (s_conn.db_type == DatabaseType.POSTGRESQL or str(s_conn.db_type).lower() == "postgresql") else "main"
+            for r_obj, tbl_list in role_table_mappings:
+                if r_obj:
+                    for tbl in tbl_list:
+                        existing_perm = db.query(RoleTablePermission).filter(
+                            RoleTablePermission.role_id == r_obj.id,
+                            RoleTablePermission.connection_id == s_conn.id,
+                            RoleTablePermission.table_name == tbl
+                        ).first()
+                        if existing_perm:
+                            existing_perm.granted_by_admin = True
+                        else:
+                            # Esta matriz SI es una decision explicita de la demo (los
+                            # 8 roles y las tablas declaradas arriba), asi que las
+                            # filas se marcan como concedidas por un admin: es lo que
+                            # las distingue del auto-grant y las protege de la
+                            # migracion de default-deny.
+                            db.add(RoleTablePermission(
+                                role_id=r_obj.id,
+                                connection_id=s_conn.id,
+                                schema_name=s_schema,
+                                table_name=tbl,
+                                is_allowed=True,
+                                granted_by_admin=True
+                            ))
     # Commit antes de revocar. Los DELETE de abajo y los INSERT de arriba harian
     # flush en el mismo orden de la sesion, y el borrado podria alcanzar filas que
     # el propio seed de este arranque acaba de sembrar: el `in_` de la revocacion

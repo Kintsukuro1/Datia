@@ -406,6 +406,17 @@ def setup_metadata_database():
                 db.add(Role(name=r["name"], description=r["description"]))
         db.commit()
 
+        # De aca para abajo es seed demo: usuarios con claves conocidas, el
+        # conector a la base de negocio (que con DEMO_MODE apagado ni se creo),
+        # su matriz de permisos y el catalogo semantico. La metadata de
+        # plataforma (dominios y roles) ya quedo sembrada arriba, siempre.
+        if not settings.DEMO_MODE_EFFECTIVE:
+            logger.info(
+                "DEMO_MODE apagado: se omite el seed de demo "
+                "(usuarios, conector de negocio, permisos y catalogo)."
+            )
+            return
+
         admin_role = db.query(Role).filter(Role.name.in_(["Administrador de Plataforma", "Administrador"])).first()
         financiero_role = db.query(Role).filter(Role.name.in_(["Analista Financiero & Comercial", "Economista"])).first()
         ti_role = db.query(Role).filter(Role.name.in_(["Ingeniero de Infraestructura & TI", "TI"])).first()
@@ -606,12 +617,15 @@ def run() -> bool:
         logger.warning("No se pudo contactar al servidor PostgreSQL. Omitiendo auto-inicialización.")
         return False
 
-    # 1. Ensure databases exist
+    # 1. La metadata es plataforma: se crea siempre.
     create_database_if_not_exists(METADATA_DB)
-    create_database_if_not_exists(BUSINESS_DB)
 
-    # 2. Setup business database with data
-    setup_business_database()
+    # 2. La base de negocio es el dataset de la demo. Con DEMO_MODE apagado no
+    #    se crea ni se carga: en una instalacion real el cliente trae la suya y
+    #    estos datos son de demostracion.
+    if settings.DEMO_MODE_EFFECTIVE:
+        create_database_if_not_exists(BUSINESS_DB)
+        setup_business_database()
 
     # 3. Setup metadata database with governance & active connection
     setup_metadata_database()
