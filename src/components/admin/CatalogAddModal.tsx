@@ -24,13 +24,15 @@ export const CatalogAddModal: React.FC<CatalogAddModalProps> = ({
   const [formColumn, setFormColumn] = useState('');
   const [formDesc, setFormDesc] = useState('');
   const [formFormula, setFormFormula] = useState('');
+  // Arriba del early return: si este useState vive debajo, el primer render con
+  // isOpen=false monta 5 hooks y el siguiente con isOpen=true monta 6, y React
+  // aborta con "Rendered more hooks than during the previous render" al abrir.
+  const [isSaving, setIsSaving] = useState(false);
 
   // Dialog semantics, Escape, focus containment and focus restore.
   const modalRef = useModalA11y<HTMLDivElement>(isOpen, onClose);
 
   if (!isOpen) return null;
-
-  const [isSaving, setIsSaving] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
