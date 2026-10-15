@@ -164,13 +164,28 @@ class TestSinkAcceptsLegitimateUrls(unittest.TestCase):
         self.assertTrue(validate_llm_base_url(_L._as_base_url(settings.OPENAI_COMPATIBLE_URL)))
 
     def test_docker_compose_default_ollama_url_passes(self):
-        """El valor por defecto del compose, leido del archivo, no del .env local."""
+        """El valor EFECTIVO del compose, leido del archivo, no del .env local.
+
+        La linea puede venir como `${OLLAMA_BASE_URL:-<url>}` (default
+        interpolado) o como literal, que es como quedo fijada en
+        docker-compose.yml:61 para que un `.env` del host no la pise; en ambos
+        casos se valida la URL efectiva.
+        """
         import os
         import re
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         compose = os.path.join(root, "docker-compose.yml")
         with open(compose, encoding="utf-8") as fh:
-            m = re.search(r"OLLAMA_BASE_URL:-\s*(\S+)\}", fh.read())
+            content = fh.read()
+        # Anclado a la entrada YAML (`- OLLAMA_BASE_URL=...`): el comentario que
+        # explica el valor literal tambien menciona la variable y no debe contar.
+        m = re.search(
+            r"^\s*-\s+OLLAMA_BASE_URL=\$\{OLLAMA_BASE_URL:-\s*(\S+?)\}",
+            content, re.MULTILINE,
+        ) or re.search(
+            r"^\s*-\s+OLLAMA_BASE_URL=\s*[\"']?(\S+?)[\"']?\s*$",
+            content, re.MULTILINE,
+        )
         self.assertIsNotNone(m, "no se encontro el default de OLLAMA_BASE_URL en el compose")
         self.assertTrue(validate_llm_base_url(m.group(1)), m.group(1))
 

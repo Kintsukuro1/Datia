@@ -103,6 +103,8 @@ def ensure_schema_migrations(eng):
                     pending.append("ALTER TABLE corporate_connections ADD COLUMN is_uploaded BOOLEAN DEFAULT 0 NOT NULL")
                 if "null_policy" not in conn_cols:
                     pending.append("ALTER TABLE corporate_connections ADD COLUMN null_policy VARCHAR(50) DEFAULT 'open'")
+                if "detected_tables" not in conn_cols:
+                    pending.append("ALTER TABLE corporate_connections ADD COLUMN detected_tables TEXT NULL")
                 if pending:
                     with eng.begin() as conn:
                         _safe_alter(conn, pending)

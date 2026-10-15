@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -67,11 +68,47 @@ class ConnectorDomainService:
         ).update({CorporateConnection.is_active: False}, synchronize_session=False)
 
     @classmethod
-    def list_connectors(cls, db: Session) -> List[CorporateConnection]:
-        return db.query(CorporateConnection).order_by(CorporateConnection.created_at.desc()).all()
+    def connector_to_out(cls, db: Session, conn: CorporateConnection) -> CorporateConnectionOut:
+        """Arma la respuesta de un conector, incluidos los campos que NO son columnas.
+
+        `detected_tables` (persistido como JSON) y `requires_permission_review`
+        (True mientras la conexion no tenga ninguna fila de permiso) vivian solo
+        en la respuesta del upload: al recargar, GET /connectors los perdia y la
+        matriz de permisos del admin quedaba vacia.
+        """
+        tables = None
+        if conn.detected_tables:
+            try:
+                parsed = json.loads(conn.detected_tables)
+                tables = parsed if isinstance(parsed, list) else None
+            except (TypeError, ValueError):
+                tables = None
+        has_permissions = db.query(RoleTablePermission).filter(
+            RoleTablePermission.connection_id == conn.id
+        ).count() > 0
+        return CorporateConnectionOut(
+            id=conn.id,
+            name=conn.name,
+            db_type=conn.db_type,
+            host=conn.host,
+            port=conn.port,
+            database_name=conn.database_name,
+            username=conn.username,
+            is_active=conn.is_active,
+            is_uploaded=conn.is_uploaded,
+            requires_permission_review=bool(tables) and not has_permissions,
+            detected_tables=tables,
+            null_policy=conn.null_policy,
+            created_at=conn.created_at,
+        )
 
     @classmethod
-    def create_connector(cls, db: Session, conn_in: CorporateConnectionCreate) -> CorporateConnection:
+    def list_connectors(cls, db: Session) -> List[CorporateConnectionOut]:
+        conns = db.query(CorporateConnection).order_by(CorporateConnection.created_at.desc()).all()
+        return [cls.connector_to_out(db, c) for c in conns]
+
+    @classmethod
+    def create_connector(cls, db: Session, conn_in: CorporateConnectionCreate) -> CorporateConnectionOut:
         existing = db.query(CorporateConnection).filter(CorporateConnection.name == conn_in.name).first()
         if existing:
             raise HTTPException(
@@ -135,7 +172,7 @@ class ConnectorDomainService:
 
         CatalogDomainService.seed_catalog_heuristics_for_connection(db, new_conn.id, new_conn.host)
 
-        return new_conn
+        return cls.connector_to_out(db, new_conn)
 
     @classmethod
     async def upload_database_file(
@@ -295,7 +332,8 @@ class ConnectorDomainService:
                 username=settings.POSTGRES_USER,
                 encrypted_password=encrypt_credential(settings.POSTGRES_PASSWORD),
                 is_active=True,
-                is_uploaded=True
+                is_uploaded=True,
+                detected_tables=json.dumps(detected_tables)
             )
         else:
             new_conn = CorporateConnection(
@@ -307,7 +345,8 @@ class ConnectorDomainService:
                 username="admin",
                 encrypted_password="",
                 is_active=True,
-                is_uploaded=True
+                is_uploaded=True,
+                detected_tables=json.dumps(detected_tables)
             )
         db.add(new_conn)
         db.commit()
@@ -343,23 +382,10 @@ class ConnectorDomainService:
             db, new_conn.id, target_path if not is_postgres_active else None, only_tables=detected_tables
         )
 
-        return CorporateConnectionOut(
-            id=new_conn.id,
-            name=new_conn.name,
-            db_type=new_conn.db_type,
-            host=new_conn.host,
-            port=new_conn.port,
-            database_name=new_conn.database_name,
-            username=new_conn.username,
-            is_active=new_conn.is_active,
-            is_uploaded=new_conn.is_uploaded,
-            requires_permission_review=True,
-            detected_tables=detected_tables,
-            created_at=new_conn.created_at
-        )
+        return cls.connector_to_out(db, new_conn)
 
     @classmethod
-    def update_connector(cls, db: Session, conn_id: int, conn_in: CorporateConnectionUpdate) -> CorporateConnection:
+    def update_connector(cls, db: Session, conn_id: int, conn_in: CorporateConnectionUpdate) -> CorporateConnectionOut:
         conn = db.query(CorporateConnection).filter(CorporateConnection.id == conn_id).first()
         if not conn:
             raise HTTPException(
@@ -397,10 +423,10 @@ class ConnectorDomainService:
             cls._activate_exclusively(db, conn.id)
             db.commit()
             db.refresh(conn)
-        return conn
+        return cls.connector_to_out(db, conn)
 
     @classmethod
-    def toggle_connector_active(cls, db: Session, conn_id: int) -> CorporateConnection:
+    def toggle_connector_active(cls, db: Session, conn_id: int) -> CorporateConnectionOut:
         conn = db.query(CorporateConnection).filter(CorporateConnection.id == conn_id).first()
         if not conn:
             raise HTTPException(
@@ -417,7 +443,7 @@ class ConnectorDomainService:
             cls._activate_exclusively(db, conn.id)
             db.commit()
             db.refresh(conn)
-        return conn
+        return cls.connector_to_out(db, conn)
 
     @classmethod
     def delete_connector(cls, db: Session, conn_id: int) -> Dict[str, Any]:

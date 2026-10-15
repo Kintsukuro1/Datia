@@ -81,6 +81,11 @@ class TestDefaultDenyPermissions(unittest.TestCase):
             RoleTablePermission.connection_id == connection_id
         ).all()
 
+    def _list_connectors(self):
+        res = self.client.get("/api/v1/connectors", headers=self.headers)
+        self.assertEqual(res.status_code, 200, res.text)
+        return res.json()
+
     def _role(self, name):
         return self.db.query(Role).filter(Role.name == name).first()
 
@@ -128,6 +133,49 @@ class TestDefaultDenyPermissions(unittest.TestCase):
                 for r in roles if r.id == p.role_id
             ]
             self.assertEqual(granted, [])
+        finally:
+            if conn_id:
+                self.client.delete(f"/api/v1/connectors/{conn_id}", headers=self.headers)
+
+    def test_upload_tables_and_review_flag_survive_reload(self):
+        """`detected_tables` y el flag tienen que sobrevivir al reload.
+
+        Vivieron solo en la respuesta del POST /upload: al recargar, el frontend
+        arma la matriz de permisos con `detected_tables` del GET /connectors, y
+        con la lista vacia el dataset quedaba inaccesible para todos y sin via
+        de concesion en la UI.
+        """
+        conn_id = None
+        try:
+            body = self._upload_csv("Default Deny Reload")
+            conn_id = body["id"]
+            tables = body["detected_tables"]
+            self.assertTrue(tables)
+            self.assertTrue(body["requires_permission_review"])
+
+            listed = [c for c in self._list_connectors() if c["id"] == conn_id]
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(listed[0]["detected_tables"], tables)
+            self.assertTrue(
+                listed[0]["requires_permission_review"],
+                "Sin tablas ni flag la UI no puede ofrecer conceder el acceso.",
+            )
+
+            role = self._role("Analista Financiero & Comercial")
+            res = self.client.put(
+                "/api/v1/permissions",
+                params={"connection_id": conn_id, "role_id": role.id,
+                        "table_names": [tables[0]], "is_allowed": "true"},
+                headers=self.headers,
+            )
+            self.assertEqual(res.status_code, 200, res.text)
+
+            listed = [c for c in self._list_connectors() if c["id"] == conn_id]
+            self.assertFalse(listed[0]["requires_permission_review"])
+            self.assertEqual(
+                listed[0]["detected_tables"], tables,
+                "Conceder una tabla no puede alterar la lista de tablas detectadas.",
+            )
         finally:
             if conn_id:
                 self.client.delete(f"/api/v1/connectors/{conn_id}", headers=self.headers)

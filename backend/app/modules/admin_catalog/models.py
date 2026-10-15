@@ -23,6 +23,10 @@ class CorporateConnection(Base):
     is_active = Column(Boolean, default=True)
     is_uploaded = Column(Boolean, default=False)
     null_policy = Column(String(50), default="open")
+    # JSON array de tablas detectadas al subir el dataset. Se persiste para que
+    # GET /connectors devuelva la lista con la que el admin arma la matriz de
+    # permisos: sin esto, al recargar la pagina la matriz quedaba vacia.
+    detected_tables = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
