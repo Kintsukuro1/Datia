@@ -1,7 +1,9 @@
+import contextvars
 import httpx
 import json
 import re
 import ipaddress
+from contextlib import contextmanager
 from urllib.parse import urlsplit
 from typing import AsyncIterator, List, Optional, Tuple
 from app.core.config import settings
@@ -41,6 +43,12 @@ _LAN_NETWORKS = tuple(
 # mas la tabla de sondeo de `HealthService`. Lo que coincide es el puerto; el
 # host y el path varian segun donde corra el servidor.
 LLAMA_CPP_BASE_URL = "http://127.0.0.1:8080"
+
+# Config LLM de ESTA request (D1: Ajustes -> /chat/query*). ContextVar y no
+# atributo de clase: dos requests concurrentes con servidores distintos no
+# pueden pisarse, y el valor muere con la request.
+_REQUEST_LLM_BASE_URL: contextvars.ContextVar = contextvars.ContextVar("datia_request_llm_base_url", default=None)
+_REQUEST_LLM_MODEL: contextvars.ContextVar = contextvars.ContextVar("datia_request_llm_model", default=None)
 
 
 def _is_lan_host(hostname: str) -> bool:
@@ -203,6 +211,18 @@ class LLMService:
     # cambia durante la vida del proceso, y descubrirlo otra vez en cada llamada
     # seria un GET extra al servidor por cada pregunta del chat.
     _resolved_models: dict = {}
+
+    @classmethod
+    @contextmanager
+    def request_config(cls, base_url=None, model_name=None):
+        """Scope de la config LLM que trae la request. Default para generate_completion/stream_completion."""
+        token_url = _REQUEST_LLM_BASE_URL.set((base_url or "").strip() or None)
+        token_model = _REQUEST_LLM_MODEL.set((model_name or "").strip() or None)
+        try:
+            yield
+        finally:
+            _REQUEST_LLM_BASE_URL.reset(token_url)
+            _REQUEST_LLM_MODEL.reset(token_model)
 
     @classmethod
     def _clean_thinking_tags(cls, text: str) -> str:
@@ -381,7 +401,6 @@ class LLMService:
         system_prompt: str = PromptManager.DEFAULT_SYSTEM_PROMPT,
         temperature: float = 0.1,
         max_tokens: int = 300,
-        provider: Optional[str] = None,
         base_url: Optional[str] = None,
         model_name: Optional[str] = None,
         stop: Optional[List[str]] = None
@@ -394,7 +413,7 @@ class LLMService:
         intencion, que pide una sola palabra: sin esto gasta hasta `max_tokens`
         emitiendola y a veces sigue con una frase que ya no se lee.
         """
-        effective_model = model_name or settings.OLLAMA_MODEL
+        effective_model = model_name or _REQUEST_LLM_MODEL.get() or settings.OLLAMA_MODEL
 
         # El `base_url` del caller se valida ACA, en el sink, y no solo en el
         # router: esta clase no tiene por que confiar en quien la invoca, y es lo
@@ -402,6 +421,10 @@ class LLMService:
         # por olvido. Si viene mal, se corta antes de emitir una sola request, en
         # vez de ignorarla en silencio y caer a los defaults (eso seria reportar
         # un resultado que nunca se midio).
+        #
+        # Sin `base_url` explicito se usa el de la request (Ajustes): queda
+        # sujeto a la misma validacion de abajo.
+        base_url = base_url or _REQUEST_LLM_BASE_URL.get()
         if base_url:
             base_url = validate_llm_base_url(base_url)
 
@@ -556,8 +579,11 @@ class LLMService:
         Solo se emite texto real del modelo. Este metodo no fabrica progreso:
         si no hay tokens, no hay yield.
         """
-        effective_model = model_name or settings.OLLAMA_MODEL
+        effective_model = model_name or _REQUEST_LLM_MODEL.get() or settings.OLLAMA_MODEL
 
+        # Mismo default por request que `generate_completion`, misma validacion
+        # en el sink: el stream tambien puede correr contra el servidor de Ajustes.
+        base_url = base_url or _REQUEST_LLM_BASE_URL.get()
         if base_url:
             base_url = validate_llm_base_url(base_url)
 

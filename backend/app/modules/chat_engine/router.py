@@ -33,6 +33,7 @@ from app.modules.chat_engine.schemas import (
 )
 from app.modules.chat_engine import forecast_service
 from app.modules.chat_engine.engine import QueryEngine
+from app.modules.chat_engine.llm_service import LLMService, validate_llm_base_url
 from app.modules.chat_engine.llm_diagnostic_router import llm_diagnostic_router
 
 from app.core.constants import ADMIN_ROLES, ROLE_ADMINISTRADOR
@@ -67,6 +68,22 @@ def _resolve_target_database(db: Session, connection_id: int) -> str:
 # data-dictionary` y `/system/anomalies` no).
 
 
+def _validated_request_llm_base_url(query_in: QueryRequest) -> Optional[str]:
+    """Config LLM de Ajustes que trae la request, pasada por la allowlist anti-SSRF.
+
+    Una sola definicion para `/query` y `/query/stream`: el 400 sale ANTES de
+    tocar el motor (en el stream, antes de abrir el stream: adentro de un
+    generador ya no hay status HTTP que devolver). El sink la valida de nuevo;
+    misma politica, dos puertas.
+    """
+    if not query_in.llm_base_url:
+        return None
+    try:
+        return validate_llm_base_url(query_in.llm_base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+
+
 @router.post("/query", response_model=QueryResponse)
 async def process_chat_query(
     query_in: QueryRequest,
@@ -78,6 +95,7 @@ async def process_chat_query(
     Invokes Local LLM, applies RBAC permissions & AST Guardrail validation.
     Persists audit log of approval or rejection with result snapshot.
     """
+    request_llm_base_url = _validated_request_llm_base_url(query_in)
     conn_id = query_in.connection_id or 1
     target_db_name = _resolve_target_database(db, conn_id)
     user_role_name = _require_assigned_role(
@@ -85,15 +103,19 @@ async def process_chat_query(
     )
 
     try:
-        response = await QueryEngine.execute_query(
-            question=query_in.question,
-            user_role=user_role_name,
-            is_admin=current_user.is_admin,
-            db=db,
-            role_id=current_user.role_id,
-            connection_id=conn_id,
-            conversation_history=query_in.conversation_history
-        )
+        # La config LLM viaja por ContextVar alrededor de TODO el motor: sus
+        # 7 call-sites de `LLMService.generate_completion/stream_completion`
+        # la leen como default sin threadear parametros por cada uno.
+        with LLMService.request_config(request_llm_base_url, query_in.llm_model):
+            response = await QueryEngine.execute_query(
+                question=query_in.question,
+                user_role=user_role_name,
+                is_admin=current_user.is_admin,
+                db=db,
+                role_id=current_user.role_id,
+                connection_id=conn_id,
+                conversation_history=query_in.conversation_history
+            )
 
 
         sql_gen = response.traceability.sql_executed if response.traceability else None
@@ -194,6 +216,9 @@ async def process_chat_query_stream(
     el historial del navegador; no hace falta.
     """
     conn_id = query_in.connection_id or 1
+    # Validar ANTES de abrir el stream: adentro del generador las cabeceras ya
+    # se enviaron y una URL rechazada solo podria viajar como evento `error`.
+    request_llm_base_url = _validated_request_llm_base_url(query_in)
     # Antes de abrir el stream: el corte de rol tiene que ser un 403 HTTP de
     # verdad. Adentro del generador las cabeceras ya se enviaron y un rechazo
     # solo puede viajar como evento `error`, que el cliente no distingue de
@@ -222,16 +247,20 @@ async def process_chat_query_stream(
             """Corre el motor y publica el resultado. Nunca propaga excepciones."""
             try:
                 target_db_name = _resolve_target_database(stream_db, conn_id)
-                response = await QueryEngine.execute_query(
-                    question=query_in.question,
-                    user_role=user_role_name,
-                    is_admin=is_admin,
-                    db=stream_db,
-                    role_id=role_id,
-                    connection_id=conn_id,
-                    conversation_history=query_in.conversation_history,
-                    narrative_sink=push_delta
-                )
+                # El `with` va DENTRO del task y no en el handler: el handler ya
+                # retorno cuando este generador corre. El ContextVar setea el
+                # contexto de ESTE task, que es donde corren los 7 call-sites.
+                with LLMService.request_config(request_llm_base_url, query_in.llm_model):
+                    response = await QueryEngine.execute_query(
+                        question=query_in.question,
+                        user_role=user_role_name,
+                        is_admin=is_admin,
+                        db=stream_db,
+                        role_id=role_id,
+                        connection_id=conn_id,
+                        conversation_history=query_in.conversation_history,
+                        narrative_sink=push_delta
+                    )
 
                 # La auditoria se persiste sobre la MISMA logica que usa
                 # `POST /chat/query`. Un stream no puede dejar de registrar lo que
