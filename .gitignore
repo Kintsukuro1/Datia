@@ -68,3 +68,6 @@ backend/*.db
 backend/*.sqlite
 backend/*.sqlite3
 data_sources/
+
+# Diagramas locales de DOCS (HTML/PNG generados; quitar esta regla cuando algun .md los referencie)
+DOCS/imagenes/
