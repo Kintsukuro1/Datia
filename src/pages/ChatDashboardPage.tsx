@@ -21,6 +21,7 @@ import {
   X,
   Sparkles,
   BarChart3,
+  RefreshCw,
 } from 'lucide-react';
 import { queryService } from '../features/chat/services/query_service';
 import { PredictionPanel } from '../features/dashboard/components/PredictionPanel';
@@ -52,6 +53,7 @@ export const ChatDashboardPage: React.FC = () => {
     threadsError,
     activeThreadId,
     pendingPrompt,
+    pendingError,
     prediction,
     predictionError,
     loadingAudit,
@@ -486,25 +488,38 @@ export const ChatDashboardPage: React.FC = () => {
                         <Bot className="w-3 h-3" />
                         <span>DATIA IA</span>
                         <span className="text-slate-400 dark:text-slate-500">•</span>
-                        <span className="text-slate-600 dark:text-slate-400 font-normal flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse" />
-                          Procesando con IA Local
-                        </span>
+                        {pendingError ? (
+                          <span className="text-rose-600 dark:text-rose-400 font-normal flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                            Sin respuesta
+                          </span>
+                        ) : (
+                          <span className="text-slate-600 dark:text-slate-400 font-normal flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse" />
+                            Procesando con IA Local
+                          </span>
+                        )}
                       </div>
-                      <div className="flex items-center space-x-2 text-xs text-slate-700 dark:text-slate-300">
-                        <span className="inline-block w-2 h-2 rounded-full bg-brand-500 dark:bg-cyan-400 animate-bounce" />
-                        <span className="inline-block w-2 h-2 rounded-full bg-brand-500 dark:bg-cyan-400 animate-bounce [animation-delay:0.2s]" />
-                        <span className="inline-block w-2 h-2 rounded-full bg-brand-500 dark:bg-cyan-400 animate-bounce [animation-delay:0.4s]" />
-                        <span className="text-brand-700 dark:text-cyan-300 text-xs pl-1 font-medium animate-fadeIn">
-                          Analizando tu pregunta con el modelo local
-                        </span>
-                        {/* Lo unico que el navegador sabe con certeza: que sigue
-                            corriendo y cuanto lleva. Sin barra de progreso: no
-                            hay forma de saber cuanto falta sin streaming. */}
-                        <span className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums pl-1">
-                          {elapsedSeconds}s
-                        </span>
-                      </div>
+                      {pendingError ? (
+                        <p className="text-xs sm:text-sm leading-relaxed text-rose-700 dark:text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg px-2.5 py-2 animate-fadeIn">
+                          {pendingError}
+                        </p>
+                      ) : (
+                        <div className="flex items-center space-x-2 text-xs text-slate-700 dark:text-slate-300">
+                          <span className="inline-block w-2 h-2 rounded-full bg-brand-500 dark:bg-cyan-400 animate-bounce" />
+                          <span className="inline-block w-2 h-2 rounded-full bg-brand-500 dark:bg-cyan-400 animate-bounce [animation-delay:0.2s]" />
+                          <span className="inline-block w-2 h-2 rounded-full bg-brand-500 dark:bg-cyan-400 animate-bounce [animation-delay:0.4s]" />
+                          <span className="text-brand-700 dark:text-cyan-300 text-xs pl-1 font-medium animate-fadeIn">
+                            Analizando tu pregunta con el modelo local
+                          </span>
+                          {/* Lo unico que el navegador sabe con certeza: que sigue
+                              corriendo y cuanto lleva. Sin barra de progreso: no
+                              hay forma de saber cuanto falta sin streaming. */}
+                          <span className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums pl-1">
+                            {elapsedSeconds}s
+                          </span>
+                        </div>
+                      )}
 
                       {/* Narrativa en vivo. Solo aparece cuando el modelo YA
                           produjo estos tokens: no es una animación ni una
@@ -518,7 +533,7 @@ export const ChatDashboardPage: React.FC = () => {
                         </div>
                       )}
 
-                      {longWaitNotice && (
+                      {longWaitNotice && !pendingError && (
                         <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-2 animate-fadeIn">
                           La primera respuesta con un modelo local puede tardar entre 8 y 25 segundos: el motor encadena varias
                           llamadas al LLM en CPU antes de poder responder. No está colgado. Podés seguir esperando o
@@ -526,21 +541,40 @@ export const ChatDashboardPage: React.FC = () => {
                         </p>
                       )}
 
-                      <div className="flex items-center justify-between gap-2 pt-0.5">
-                        <span className="text-[10px] text-slate-500 dark:text-slate-400">
-                          El motor no informa en qué etapa está hasta que responda.
-                        </span>
-                        <button
-                          type="button"
-                          onClick={handleCancelPrompt}
-                          aria-label="Cancelar la consulta en curso"
-                          title="Dejar de esperar. El servidor puede seguir trabajando: esto corta la espera, no el trabajo."
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-[11px] font-semibold text-slate-700 dark:text-slate-300 hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
-                        >
-                          <X className="w-3 h-3" />
-                          <span>Cancelar</span>
-                        </button>
-                      </div>
+                      {pendingError ? (
+                        <div className="flex items-center justify-between gap-2 pt-0.5">
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                            La pregunta quedó en el hilo; no hace falta volver a escribirla.
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (pendingPrompt) void handleSendPrompt(pendingPrompt);
+                            }}
+                            aria-label="Reintentar la misma pregunta"
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-brand-600/10 border border-brand-500/40 text-[11px] font-semibold text-brand-700 dark:text-brand-400 hover:bg-brand-600/20 transition-colors cursor-pointer"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Reintentar</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-2 pt-0.5">
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                            El motor no informa en qué etapa está hasta que responda.
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleCancelPrompt}
+                            aria-label="Cancelar la consulta en curso"
+                            title="Dejar de esperar. El servidor puede seguir trabajando: esto corta la espera, no el trabajo."
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-[11px] font-semibold text-slate-700 dark:text-slate-300 hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
+                          >
+                            <X className="w-3 h-3" />
+                            <span>Cancelar</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

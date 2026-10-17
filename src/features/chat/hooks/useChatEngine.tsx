@@ -178,6 +178,12 @@ function useChatEngineInternal() {
   const [threadsLoaded, setThreadsLoaded] = useState(false);
   const [threadsError, setThreadsError] = useState<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+  // La pregunta que quedo SIN respuesta (timeout del navegador o fallo de la
+  // consulta) se conserva en pantalla junto a este motivo: el hilo mantiene la
+  // pregunta visible con un boton para reintentar, en vez de vaciarse y
+  // devolver la pantalla a la bienvenida como si la pregunta no hubiera
+  // existido. `null` = no hay fallo que mostrar.
+  const [pendingError, setPendingError] = useState<string | null>(null);
 
   // Predicciones: estado aparte del hilo, porque NO son un `QueryResult`.
   // `null` = todavia no se pidio ninguna; un error va en su propio campo para no
@@ -413,6 +419,7 @@ function useChatEngineInternal() {
     setIsGenerating(false);
     setPromptInput('');
     setPendingPrompt(null);
+    setPendingError(null);
     setActiveTraceability(null);
     setActiveThreadId(null);
     setTimeout(() => {
@@ -501,6 +508,7 @@ function useChatEngineInternal() {
     // exportadores leyeran campos que no existen.
     if (isPredictionQuestion(trimmed)) {
       setPendingPrompt(trimmed);
+      setPendingError(null);
       setPromptInput('');
       setIsGenerating(true);
       setPredictionError(null);
@@ -556,6 +564,7 @@ function useChatEngineInternal() {
     }
 
     setPendingPrompt(trimmed);
+    setPendingError(null);
     setPromptInput('');
     setIsGenerating(true);
     setElapsedSeconds(0);
@@ -563,6 +572,10 @@ function useChatEngineInternal() {
 
     const startedAt = Date.now();
     let timedOut = false;
+    // Motivo del fallo del intento, si lo hubo. Se decide en el `catch` y lo
+    // aplica el `finally` (que corre siempre), para conservar la pregunta en
+    // pantalla en vez de vaciarla.
+    let attemptError: string | null = null;
 
     const timeoutId = setTimeout(() => {
       if (abortControllerRef.current === controller) {
@@ -689,10 +702,17 @@ function useChatEngineInternal() {
             'info',
             `Cancelaste la consulta a los ${Math.round((Date.now() - startedAt) / 1000)} s. La espera en este navegador se cortó, pero la petición ya había llegado al servidor y el motor local puede seguir trabajándola hasta terminar. La conversación no cambió.`
           );
+          return;
         }
+        // Timeout: el aviso ya lo dio el temporizador; la pregunta NO se tira.
+        // `attemptError` hace que el `finally` la conserve en pantalla con el
+        // motivo y el boton de reintentar.
+        attemptError = `El motor local no respondió en ${REQUEST_TIMEOUT_MS / 1000} s. Podés reintentar la misma pregunta o reformularla.`;
         return;
       }
-      notify('error', err.message || 'Error al conectar con la base de datos o el motor LLM local.');
+      const errorMessage = err.message || 'Error al conectar con la base de datos o el motor LLM local.';
+      attemptError = errorMessage;
+      notify('error', errorMessage);
     } finally {
       clearTimeout(timeoutId);
       // Mismo guard que arriba: sin esto el `finally` de un intento ya
@@ -708,7 +728,16 @@ function useChatEngineInternal() {
       // empiece el siguiente: `handleCancelPrompt` y `handleNewThread`.
       if (abortControllerRef.current !== controller) return;
       setIsGenerating(false);
-      setPendingPrompt(null);
+      if (attemptError) {
+        // La pregunta se conserva: el hilo queda con la pregunta visible, el
+        // motivo del fallo y el boton para reintentar. Antes `pendingPrompt` se
+        // vaciaba siempre y la pantalla volvia a la bienvenida como si la
+        // pregunta nunca hubiera existido.
+        setPendingError(attemptError);
+      } else {
+        setPendingPrompt(null);
+        setPendingError(null);
+      }
       // La narrativa parcial nunca sobrevive al intento: o la reemplazo el
       // resultado completo, o se cae el stream y se va por `sendQuery`. Lo que
       // se descarto no se guarda en ningun lado (ni el estado ni el buffer).
@@ -738,6 +767,7 @@ function useChatEngineInternal() {
     controller.abort();
     setIsGenerating(false);
     setPendingPrompt(null);
+    setPendingError(null);
     // Lo que se habia leido del stream no es una respuesta: es texto sin
     // confirmar. Cancelar no lo deja pegado en el chat.
     discardStreamingNarrative();
@@ -822,6 +852,7 @@ function useChatEngineInternal() {
     activeThread,
     sidebarThreads,
     pendingPrompt,
+    pendingError,
     prediction,
     predictionError,
     loadingAudit,
@@ -860,6 +891,7 @@ function useChatEngineInternal() {
     activeThread,
     sidebarThreads,
     pendingPrompt,
+    pendingError,
     prediction,
     predictionError,
     loadingAudit,
