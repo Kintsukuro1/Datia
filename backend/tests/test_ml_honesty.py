@@ -1,0 +1,244 @@
+"""Proyecciones ML: el limite de confianza viaja con el numero, o no se publica.
+
+Que se verifica aca
+-------------------
+El motor (`ml_models`) ya tiene sus pruebas con numeros fijos; aca se cubre la
+capa de SERVICIO que lo publica por HTTP, sin base de datos:
+
+1. La serie real de 9 meses publica naive y lo declara (`beats_naive=False`):
+   los otros tres metodos se calcularon y perdieron.
+2. Los pasos sin backtest propio no se disfrazan de medidos: los pasos 1-3 con
+   evidencia escasa (`reliable=False`) y los 4-6 heredando banda
+   (`extrapolated=True`), con el periodo futuro calculado por la calculadora.
+3. El analisis solo puede elegir columnas REALES: un nombre inventado, un tipo
+   equivocado, un horizonte fuera de la lista o un JSON roto caen a la
+   heuristica declarada (`analysis_source="heuristica"`).
+4. La narrativa tiene contrato y respaldo: sin LLM se publica la plantilla
+   determinista, que dice los mismos hechos (metodo, periodos, MAPE, pasos sin
+   evidencia) y nunca queda vacia.
+5. La estimacion es instantanea y honesta: reusa la velocidad YA medida por el
+   wizard (`medido`, con piso), y sin medicion declara 60 s `fallback` en vez de
+   un numero con formato de medicion que nadie midio.
+
+El contrapunto end-to-end (RBAC, enmascarado, gates) vive en
+`test_ml_service_rbac.py`.
+"""
+
+import asyncio
+import time
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from pydantic import ValidationError
+
+from app.modules.chat_engine.forecast_calculator import normalize_period
+from app.modules.chat_engine.forecast_service import resolve_columns
+from app.modules.ml_forecast import ml_service
+from app.modules.ml_forecast.ml_models import build_projection
+from app.modules.ml_forecast.schemas import ProjectionEstimateRequest, ProjectionRequest
+
+# La misma serie de `test_prediction_honesty.py`: 9 meses con el quiebre de mayo.
+SERIE_VALORES = [
+    9_761_026, 8_524_173, 7_319_140, 11_712_796, 17_599_629,
+    20_179_434, 23_380_686, 20_237_007, 22_545_032,
+]
+PERIODOS = [f"2026-{mes:02d}" for mes in range(1, 10)]
+
+COLS = [
+    {"name": "fecha", "type": "date", "is_pk": False},
+    {"name": "valor", "type": "numeric", "is_pk": False},
+    {"name": "descripcion", "type": "text", "is_pk": False},
+]
+
+_LLM = "app.modules.chat_engine.llm_service.LLMService.generate_completion"
+
+
+def _payload_proyectado(horizon=6):
+    """Lo que `run_projection` arma sobre esta serie, sin la parte de base."""
+    projection = build_projection(SERIE_VALORES, horizon)
+    normalized = [normalize_period(p) for p in PERIODOS]
+    return {
+        **projection,
+        "steps": ml_service._with_periods(projection["steps"], normalized),
+        "has_gaps": ml_service._has_gaps(normalized),
+    }
+
+
+# --- 1 y 2: la serie real, publicada sin adornos ------------------------------
+
+def test_la_serie_real_publica_naive_y_lo_declara():
+    projection = build_projection(SERIE_VALORES, 6)
+    assert projection["available"] is True
+    assert projection["method"] == "naive"
+    assert projection["beats_naive"] is False
+    assert projection["mape"] == 9.0
+    assert projection["n_periods"] == 9
+    # Los cuatro candidatos se calcularon: el naive gano, no fue el unico.
+    assert set(projection["mape_by_method"]) == {"naive", "mean", "ols_trend", "holt_damped"}
+    assert projection["mape_by_method"]["naive"] == min(projection["mape_by_method"].values())
+
+
+def test_los_pasos_sin_evidencia_se_declaran_y_heredan_banda():
+    steps = build_projection(SERIE_VALORES, 6)["steps"]
+    assert [s["n_backtests"] for s in steps] == [3, 2, 1, 0, 0, 0]
+    assert [s["extrapolated"] for s in steps] == [False, False, False, True, True, True]
+    assert [s["reliable"] for s in steps] == [False] * 6
+    # La banda heredada es la del ultimo paso medido, y un paso heredado no
+    # publica MAPE propio: no hubo medicion de ESE paso.
+    assert [s["band_pct"] for s in steps] == [15.5, 3.7, 10.5, 10.5, 10.5, 10.5]
+    assert all(s["mape"] is None for s in steps[3:])
+
+
+def test_los_pasos_llevan_periodo_futuro_con_cruce_de_ano():
+    payload = _payload_proyectado(6)
+    assert [s["period"] for s in payload["steps"]] == [
+        "2026-10", "2026-11", "2026-12", "2027-01", "2027-02", "2027-03",
+    ]
+
+
+def test_has_gaps_detecta_hueco_y_eje_ilegible():
+    assert ml_service._has_gaps([normalize_period(p) for p in PERIODOS]) is False
+    sin_mayo = [p for p in PERIODOS if p != "2026-05"]
+    assert ml_service._has_gaps([normalize_period(p) for p in sin_mayo]) is True
+    assert ml_service._has_gaps(["2026-01", None]) is True
+    assert ml_service._has_gaps([]) is False  # una serie vacia no tiene eje, no huecos
+
+
+# --- 3: las columnas las elige el backend, no el texto del LLM ----------------
+
+def _analizar(respuesta_o_excepcion, horizonte=6):
+    if isinstance(respuesta_o_excepcion, Exception):
+        mock = AsyncMock(side_effect=respuesta_o_excepcion)
+    else:
+        mock = AsyncMock(return_value=respuesta_o_excepcion)
+    with patch(_LLM, new=mock):
+        return asyncio.run(ml_service.analyze_question(
+            "proyecta los ingresos", "movimientos", COLS, resolve_columns(COLS), horizonte))
+
+
+def test_el_analisis_solo_acepta_nombres_reales():
+    # Nombres inventados, tipos equivocados, respuestas que no son un objeto:
+    # nada de eso se "arregla", se descarta entero.
+    assert ml_service._validate_llm_choice(
+        {"metric_column": "ingresos_totales", "date_column": "fecha"}, COLS) is None
+    assert ml_service._validate_llm_choice(
+        {"metric_column": "descripcion", "date_column": "fecha"}, COLS) is None
+    assert ml_service._validate_llm_choice(
+        {"metric_column": "valor", "date_column": "descripcion"}, COLS) is None
+    assert ml_service._validate_llm_choice("no es un objeto", COLS) is None
+
+    # Una eleccion valida se canonicaliza al nombre REAL de los metadatos.
+    elegido = ml_service._validate_llm_choice(
+        {"metric_column": "Valor", "date_column": "FECHA", "horizon": 12}, COLS)
+    assert elegido == {"metric_column": "valor", "date_column": "fecha", "horizon": 12}
+    # Horizonte fuera de la lista: se ignora (no se recorta), decide el pedido.
+    assert ml_service._validate_llm_choice(
+        {"metric_column": "valor", "date_column": "fecha", "horizon": 18}, COLS
+    )["horizon"] is None
+    # El fallback heuristico tambien resuelve un nombre real (el unico numerico).
+    assert resolve_columns(COLS)["value_col"] == "valor"
+
+
+def test_el_analisis_inventado_cae_a_heuristica_declarada():
+    out = _analizar('{"metric_column": "ingresos_totales", "date_column": "fecha", "horizon": 6}')
+    assert out["source"] == "heuristica"
+    assert (out["metric_column"], out["date_column"]) == ("valor", "fecha")
+    assert out["table"] == "movimientos"
+    assert out["horizon"] == 6
+
+
+def test_el_analisis_valido_se_publica_como_llm():
+    out = _analizar('{"metric_column": "valor", "date_column": "fecha", "horizon": 3}')
+    assert out["source"] == "llm"
+    assert out["horizon"] == 3  # la lista cerrada lo permite
+
+
+def test_el_analisis_con_horizonte_invalido_conserva_el_del_pedido():
+    out = _analizar('{"metric_column": "valor", "date_column": "fecha", "horizon": 18}')
+    assert out["source"] == "llm"
+    assert out["horizon"] == 6
+
+
+def test_el_analisis_con_json_roto_o_sin_llm_cae_a_heuristica():
+    assert _analizar("```json\n{roto\n```")["source"] == "heuristica"
+    assert _analizar("")["source"] == "heuristica"
+    assert _analizar(RuntimeError("servidor apagado"))["source"] == "heuristica"
+
+
+# --- 4: la narrativa tiene contrato y respaldo --------------------------------
+
+def test_la_plantilla_dice_los_mismos_hechos_que_el_llm_podria_citar():
+    texto = ml_service._template_narration(_payload_proyectado(6))
+    assert texto.strip()
+    assert "naive" in texto
+    assert "9 periodos" in texto
+    assert "9.0%" in texto
+    assert "pasos 4, 5, 6" in texto   # extrapolados: banda heredada, no medida
+    assert "pasos 1, 2, 3" in texto   # evidencia escasa: reliable=False
+    assert "no es una promesa de precision futura" in texto
+
+
+def test_la_narrativa_sin_llm_publica_plantilla_nunca_vacia():
+    payload = _payload_proyectado(6)
+    for caida in (RuntimeError("apagado"), None, "   "):
+        if isinstance(caida, Exception):
+            mock = AsyncMock(side_effect=caida)
+        else:
+            mock = AsyncMock(return_value=caida)
+        with patch(_LLM, new=mock):
+            texto, fuente = asyncio.run(ml_service.narrate(payload))
+        assert fuente == "plantilla", caida
+        assert texto == ml_service._template_narration(payload)
+
+
+def test_la_narrativa_con_llm_publica_su_texto():
+    with patch(_LLM, new=AsyncMock(return_value="Lectura en dos frases.")):
+        assert asyncio.run(ml_service.narrate(_payload_proyectado(6))) == (
+            "Lectura en dos frases.", "llm")
+
+
+# --- 5: la estimacion no mide, reusa lo medido --------------------------------
+
+def test_estimate_sin_medicion_declara_fallback():
+    from app.modules.catalog.services import enrich_estimator
+
+    with patch.dict(enrich_estimator._SPEED_CACHE, {}, clear=True):
+        assert ml_service.estimate_seconds("proyecta los ingresos", 6) == {
+            "estimated_seconds": 60.0,
+            "source": "fallback",
+        }
+
+
+def test_estimate_con_medicion_no_llama_al_llm():
+    from app.modules.catalog.services import enrich_estimator
+    from app.modules.chat_engine.llm_service import LLMService
+
+    cache = {("", ""): (100.0, time.time())}
+    with patch.dict(enrich_estimator._SPEED_CACHE, cache, clear=True), \
+         patch.object(LLMService, "generate_completion",
+                      new=AsyncMock(side_effect=AssertionError("la estimacion no puede llamar al LLM"))):
+        out = ml_service.estimate_seconds("proyecta los ingresos", 6)
+
+    assert out["source"] == "medido"
+    assert 5.0 <= out["estimated_seconds"] < 60.0
+
+
+def test_estimate_ignora_una_medicion_vencida():
+    from app.modules.catalog.services import enrich_estimator
+
+    vencida = {("", ""): (100.0, time.time() - enrich_estimator._SPEED_CACHE_TTL_S - 60)}
+    with patch.dict(enrich_estimator._SPEED_CACHE, vencida, clear=True):
+        assert ml_service.estimate_seconds("proyecta", 6)["source"] == "fallback"
+
+
+# --- el borde del contrato ----------------------------------------------------
+
+def test_horizonte_solo_3_6_12():
+    for valido in (3, 6, 12):
+        assert ProjectionRequest(question="proyecta", horizon=valido).horizon == valido
+        assert ProjectionEstimateRequest(question="proyecta", horizon=valido).horizon == valido
+    for invalido in (0, 5, 13):
+        with pytest.raises(ValidationError):
+            ProjectionRequest(question="proyecta", horizon=invalido)
+        with pytest.raises(ValidationError):
+            ProjectionEstimateRequest(question="proyecta", horizon=invalido)

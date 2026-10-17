@@ -209,7 +209,13 @@ def _run_guarded_sql(
         user_role=user_role, is_admin=is_admin, db=db, role_id=role_id, connection_id=connection_id
     )
     if masked:
-        rows = mask_rows(rows, masked)
+        # `mask_rows` enmascara IN-PLACE y devuelve CUANTAS celdas toco (int).
+        # Asignar el retorno aca pisaba las filas con ese contador: cualquier rol
+        # con una columna enmascarada recibia un int donde esperaba la lista, el
+        # forecast de `/predict` moria con un TypeError interno y
+        # `/ml/projections/run` respondia 500. El enmascarado ya ocurrio; el
+        # contador es informativo y nadie lo consume (mismo uso que engine.py).
+        mask_rows(rows, masked)
 
     return rows, secured
 

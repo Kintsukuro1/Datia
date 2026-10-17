@@ -5,6 +5,7 @@ from app.modules.chat_engine.llm_diagnostic_router import llm_diagnostic_router
 from app.modules.admin_catalog.router import router as admin_catalog_router
 from app.modules.telemetry_audit.router import router as audit_router
 from app.modules.system.router import router as system_router
+from app.modules.ml_forecast.router import router as ml_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router, prefix="/auth", tags=["Autenticación & Usuarios"])
@@ -13,3 +14,4 @@ api_router.include_router(llm_diagnostic_router, prefix="/llm", tags=["Motor LLM
 api_router.include_router(admin_catalog_router, prefix="", tags=["Catálogo, Conectores e Informes"])
 api_router.include_router(audit_router, prefix="/audit", tags=["Auditoría & Compliance"])
 api_router.include_router(system_router, prefix="/system", tags=["Estado del Sistema"])
+api_router.include_router(ml_router, prefix="/ml", tags=["Proyecciones ML"])
