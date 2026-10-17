@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, createContext, useContext } from 'react';
 import { useAuth } from '../../auth/context/AuthContext';
 import { useNotifications } from '../../../context/NotificationContext';
 import { QueryResult, PredictionResult } from '../../../types';
@@ -80,7 +80,7 @@ export interface FullThread {
   results: QueryResult[];
 }
 
-export function useChatEngine() {
+function useChatEngineInternal() {
   const { user, settings } = useAuth();
   const { notify } = useNotifications();
   const [promptInput, setPromptInput] = useState('');
@@ -449,6 +449,9 @@ export function useChatEngine() {
   // Keyboard shortcuts (Ctrl+N, Ctrl+K)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // El provider vive toda la sesion, tambien fuera del chat: sin este guard
+      // Ctrl+N/Ctrl+K actuarian en /admin y /settings.
+      if (!window.location.hash.startsWith('#/chat')) return;
       if ((e.ctrlKey || e.metaKey) && (e.key === 'n' || e.key === 'N')) {
         e.preventDefault();
         handleNewThread();
@@ -788,9 +791,9 @@ export function useChatEngine() {
   // El objeto que devuelve el hook es una referencia nueva en cada render, y eso
   // invalida cualquier `React.memo` o comparacion por referencia aguas abajo
   // aunque no haya cambiado nada. Se congela mientras ninguna entrada cambie.
-  // No se envuelve el hook en un contexto ni se agrega estado: el hook ya
-  // expone todo lo que la pagina necesita, solo falta que las referencias sean
-  // estables. `longWaitNotice` se calcula aca para que sea un booleano y no una
+  // El hook ya expone todo lo que la pagina necesita, solo falta que las
+  // referencias sean estables. `longWaitNotice` se calcula aca para que sea un
+  // booleano y no una
   // expresion suelta imposible de comparar.
   const longWaitNotice = elapsedSeconds >= LONG_WAIT_NOTICE_SECONDS;
 
@@ -871,5 +874,23 @@ export function useChatEngine() {
     handleEditPrompt,
     handleFeedback,
   ]);
+}
+
+// El motor vive en un provider montado en ProtectedLayout (AppRouter), no en
+// ChatDashboardPage: asi navegar a otra ruta no destruye el estado (hilos, hilo
+// activo, pregunta pendiente, stream, reloj) y al volver la conversacion sigue
+// ahi. Antes el estado moria con la pagina y desaparecia hasta que la respuesta
+// en vuelo terminaba de persistirse en el servidor.
+const ChatEngineContext = createContext<ReturnType<typeof useChatEngineInternal> | null>(null);
+
+export function ChatEngineProvider({ children }: { children: React.ReactNode }) {
+  const engine = useChatEngineInternal();
+  return <ChatEngineContext.Provider value={engine}>{children}</ChatEngineContext.Provider>;
+}
+
+export function useChatEngine() {
+  const engine = useContext(ChatEngineContext);
+  if (!engine) throw new Error('useChatEngine requiere ChatEngineProvider (montado en ProtectedLayout).');
+  return engine;
 }
 

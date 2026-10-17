@@ -5,6 +5,7 @@ import { Header } from '../../shared/layout/Header';
 import { ToastContainer } from '../../components/shared/ToastContainer';
 import { MandatoryPasswordChangeModal } from '../../components/auth/MandatoryPasswordChangeModal';
 import { LoginPage } from '../../pages/LoginPage';
+import { ChatEngineProvider } from '../../features/chat/hooks/useChatEngine';
 
 // Antes las cuatro paginas eran imports estaticos: entrar a /login descargaba
 // Admin, Settings y todo ECharts (~1 MB) sin que el usuario los fuera a pedir.
@@ -62,7 +63,7 @@ const ProtectedLayout: React.FC<{ children: React.ReactNode }> = ({ children }) 
     <div className="flex flex-col h-screen bg-[var(--app-bg)] text-[var(--app-text)] overflow-hidden font-sans">
       <Header />
       <main className="flex-1 overflow-hidden relative flex flex-col min-h-0">
-        {children}
+        <ChatEngineProvider>{children}</ChatEngineProvider>
       </main>
       <ToastContainer />
     </div>
