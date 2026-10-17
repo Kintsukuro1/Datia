@@ -22,11 +22,9 @@ jobs:
     name: Backend Tests (pytest)
     runs-on: ubuntu-latest
 
-    # Sin este bloque la suite corria contra el fallback SQLite de
-    # `app/core/database.py` (lineas 22-38): otra demo y otro motor, que es como
-    # `test_transaction_hygiene.py` se saltea en vez de demostrar el sintoma
-    # `InFailedSqlTransaction`. Con el servicio, la corrida de CI es la misma que
-    # la de la maquina del dev.
+    # El servicio de PostgreSQL es obligatorio: `app/core/database.py` ya no
+    # tiene fallback a SQLite, asi que sin el la suite ni siquiera arranca.
+    # Con el servicio, la corrida de CI es la misma que la de la maquina del dev.
     #
     # Los nombres coinciden EXACTAMENTE con los campos de `app/core/config.py`
     # porque `Settings.model_config` va con `case_sensitive=True`. En CI no hay

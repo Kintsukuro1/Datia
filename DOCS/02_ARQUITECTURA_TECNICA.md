@@ -28,7 +28,7 @@ El sistema está concebido como una **aplicación web autocontenida (self-hosted
 │    - Motor de RBAC y Filtrado de Esquemas por Rol                             │
 │    - Analizador AST / SQL Guardrail (Parser sintáctico de Solo Lectura)       │
 │    - Catálogo Semántico de Datos (Metadatos, Sinónimos, Reglas de Negocio)    │
-│    - Base de Datos de Configuración (PostgreSQL en despliegue, SQLite local)   │
+│    - Base de Datos de Configuración (PostgreSQL)                               │
 ├───────────────────────────────────────────────────────────────────────────────┤
 │ 3. CAPA DE INTELIGENCIA LOCAL (LOCAL LLM ADAPTER)                             │
 │    - Conector Agnóstico HTTP/Local (Ollama / llama.cpp / LM Studio / vLLM)    │
@@ -37,7 +37,7 @@ El sistema está concebido como una **aplicación web autocontenida (self-hosted
 │    - Generador de Resumen Ejecutivo y Recomendación de Gráficos (Text-to-Viz) │
 ├───────────────────────────────────────────────────────────────────────────────┤
 │ 4. CAPA DE ACCESO A DATOS CORPORATIVOS (DB CONNECTORS POOL)                   │
-│    - Conectores Relacionales Nativos: PostgreSQL, SQLite                     │
+│    - Conectores Relacionales Nativos: PostgreSQL                             │
 │    - Conexiones de Solo Lectura (`READ ONLY`) con Pool de Conexiones          │
 │    - Mecanismo de Límites de Filas (Row Limits) y Tiempos de Espera (Timeouts)│
 └───────────────────────────────────────────────────────────────────────────────┘
@@ -59,7 +59,7 @@ El sistema está concebido como una **aplicación web autocontenida (self-hosted
 
 ### 2.2. Capa de Backend Core y Gobernanza
 - **Gestión de Identidades:** Almacén de credenciales locales (hashing seguro con **bcrypt**, `backend/app/core/security.py`) con caducidad de sesiones locales. Argon2 no está implementado.
-- **Almacén Local de Metadatos:** Base de datos SQLite embebida que guarda:
+- **Almacén de Metadatos:** Base de datos PostgreSQL que guarda:
   - Definición de usuarios y asignación de roles.
   - Matriz de permisos (dominios temáticos, tablas permitidas, columnas enmascaradas).
   - Catálogo semántico (descripción de tablas, nombres amigables de columnas, sinónimos y fórmulas).
@@ -79,7 +79,7 @@ El sistema está concebido como una **aplicación web autocontenida (self-hosted
   - Soporte para alternar modelos fácilmente desde la configuración (ej. `qwen2.5-coder:7b/14b/32b`, `llama3.3:70b`, `llama3.1:8b`, `deepseek-coder`).
 - **Pipeline de Inferencia:**
   1. **Schema Pruning Dinámico:** El backend filtra el catálogo semántico y genera una definición compacta en formato DDL o JSON semántico **únicamente con las tablas y columnas autorizadas para el usuario en sesión**.
-  2. **Prompt de Generación SQL:** Se envía la pregunta del usuario + esquema filtrado + reglas de dialecto SQL específico del motor (Postgres, SQLite).
+  2. **Prompt de Generación SQL:** Se envía la pregunta del usuario + esquema filtrado + reglas de dialecto SQL específico del motor (PostgreSQL).
   3. **Validación y Retry Loop:** Si el SQL falla la validación AST o la ejecución en BD, el error se realimenta localmente al LLM con un máximo de 2 reintentos para autocorrección.
   4. **Text-to-Viz & Síntesis:** Una vez obtenidos los datos tabulares, un segundo prompt ligero pide al LLM:
      - Tipo de gráfico más idóneo (barras, líneas, dona, KPI).
@@ -89,9 +89,9 @@ El sistema está concebido como una **aplicación web autocontenida (self-hosted
 ### 2.4. Capa de Conectores de Bases de Datos Corporativas
 - **Controladores Nativos Soportados (implementados):**
   - PostgreSQL: `psycopg[binary]` (v3 precompilado)
-  - SQLite: `sqlite3` (librería estándar integrada)
+  - SQLite no tiene conector de conexión: `sqlite3` se usa solo para importar archivos `.sqlite` a PostgreSQL.
 
-- **Controladores planificados, no implementados:** MySQL / MariaDB (`pymysql`) y Microsoft SQL Server (`pymssql` / `pyodbc`). No hay driver en `backend/requirements.txt`, ni valor en `DatabaseType` (`backend/app/modules/admin_catalog/models.py`), ni rama en `core/database.py:build_engine_for_connector` — hoy solo construye motores Postgres y SQLite.
+- **Controladores planificados, no implementados:** MySQL / MariaDB (`pymysql`) y Microsoft SQL Server (`pymssql` / `pyodbc`). No hay driver en `backend/requirements.txt`, ni valor en `DatabaseType` (`backend/app/modules/admin_catalog/models.py`), ni rama en `core/database.py:build_engine_for_connector` — hoy solo construye el motor PostgreSQL.
 
   *(Nota: Driver Oracle excluido intencionalmente por ADR-001 para preservar distribución zero-config sin binarios nativos externos).*
 - **Seguridad en la Conexión:**

@@ -87,7 +87,7 @@ describe('getDataDictionary: ningun diccionario inventado', () => {
     const payload = {
       connection_id: 1,
       connection_name: 'Ventas',
-      db_type: 'sqlite',
+      db_type: 'postgresql',
       tables: [],
       total_tables: 0,
       total_columns: 0,

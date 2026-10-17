@@ -3,7 +3,7 @@ import { apiClient } from '../../../shared/api/api_client';
 export interface CorporateConnection {
   id: number;
   name: string;
-  db_type: 'postgresql' | 'mssql' | 'mysql' | 'oracle' | 'sqlite';
+  db_type: 'postgresql' | 'mssql' | 'mysql' | 'oracle';
   host: string;
   port: number;
   database_name: string;
@@ -17,7 +17,7 @@ export interface CorporateConnection {
 
 export interface ConnectionFormData {
   name: string;
-  db_type: 'postgresql' | 'mssql' | 'mysql' | 'oracle' | 'sqlite';
+  db_type: 'postgresql' | 'mssql' | 'mysql' | 'oracle';
   host: string;
   port: number;
   database_name: string;

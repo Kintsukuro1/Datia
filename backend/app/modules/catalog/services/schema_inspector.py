@@ -1,12 +1,8 @@
-import os
-import sqlite3
-from contextlib import closing
-from typing import List, Optional, Any, Dict, Tuple
+from typing import List, Optional, Any, Dict
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
-from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
+from app.modules.admin_catalog.models import CorporateConnection
 
 
 class SchemaIntrospectionError(RuntimeError):
@@ -22,21 +18,21 @@ class SchemaIntrospectionError(RuntimeError):
 
 class SchemaInspector:
     """
-    Encapsulates physical database introspection (PostgreSQL, SQLite, etc.)
-    and connection database path resolution.
+    Encapsulates physical database introspection (PostgreSQL)
+    and connection resolution.
     """
 
     IGNORED_TABLES = {
-        "sqlite_sequence", "roles", "domains", "corporate_connections",
+        "roles", "domains", "corporate_connections",
         "users", "role_domain_links", "role_table_permissions",
         "role_column_permissions", "semantic_catalog", "audit_logs",
         "user_sessions", "alembic_version"
     }
 
     @classmethod
-    def resolve_connection_db_path(cls, db: Session, connection_id: Optional[int]) -> Tuple[str, CorporateConnection]:
+    def resolve_connection(cls, db: Session, connection_id: Optional[int]) -> CorporateConnection:
         """
-        Resolves local file path or connection object based on connection_id.
+        Resolves the CorporateConnection that the request targets.
 
         Un `connection_id` explicito e inexistente es ERROR, no fallback. Antes
         caia en silencio a "la conexion no-uploadada" y el caller terminaba
@@ -58,234 +54,111 @@ class SchemaInspector:
             if not conn:
                 conn = db.query(CorporateConnection).order_by(CorporateConnection.id.desc()).first()
 
-        if conn and conn.db_type == DatabaseType.SQLITE:
-            # Una ruta CONFIGURADA que ya no existe es error, no fallback a la
-            # base demo de la plataforma: con el fallback silencioso el
-            # diccionario, el catalogo y el chat leian `demo_corporativa.db`
-            # creyendo que era la base pedida. El fallback de abajo queda solo
-            # para la rama historica sin ruta configurada. `isinstance(str)`
-            # distingue una ruta real de los mocks que usan los tests.
-            configured_path: Optional[str] = None
-            for candidate in (conn.host, conn.database_name):
-                if isinstance(candidate, str) and candidate:
-                    if configured_path is None:
-                        configured_path = candidate
-                    if os.path.exists(candidate):
-                        return candidate, conn
-            if configured_path:
-                raise SchemaIntrospectionError(
-                    f"La conexión '{conn.name}' apunta al archivo '{configured_path}', que no existe en disco."
-                )
-
-        db_path = settings.SQLITE_DB_PATH
         if not conn:
-            conn = CorporateConnection(
-                id=1,
-                name="Base de Datos Corporativa",
-                db_type=DatabaseType.SQLITE,
-                host=db_path,
-                port=0,
-                database_name=os.path.basename(db_path),
-                username="admin",
-                is_active=True
+            # Sin conexiones no hay base que introspeccionar. Antes se fabricaba
+            # una conexion SQLite falsa sobre la demo interna y el diccionario
+            # respondia las tablas de OTRA base como si fueran del cliente.
+            raise SchemaIntrospectionError(
+                "No hay ninguna conexión corporativa registrada. Registra una en Administración, pestaña Conexiones."
             )
-        return db_path, conn
+        return conn
 
     @classmethod
-    def introspect_connection_metadata(cls, conn_obj: Optional[CorporateConnection], db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    def introspect_connection_metadata(cls, conn_obj: CorporateConnection) -> List[Dict[str, Any]]:
         """
         Introspects tables and columns with data types, nullability, primary keys, and sample values
-        for both SQLite and PostgreSQL (or other SQLAlchemy-supported RDBMS).
+        for a PostgreSQL corporate connection.
         """
+        from sqlalchemy import inspect as sa_inspect, text
+        from app.core.database import connector_engine
+
         tables_metadata: List[Dict[str, Any]] = []
 
-        # 1. PostgreSQL / Remote RDBMS
-        if conn_obj and conn_obj.db_type != DatabaseType.SQLITE:
-            from sqlalchemy import inspect as sa_inspect, text
-            from app.core.database import connector_engine
-
-            try:
-                # `connector_engine` y no `build_engine_for_connector`: este ultimo
-                # devuelve el engine crudo y el pool de sockets (5+10) queda
-                # huerfano cuando se sale del bloque. Cada peticion del diccionario
-                # abria uno. Ver el docstring de `connector_engine`.
-                with connector_engine(conn_obj) as eng:
-                    inspector = sa_inspect(eng)
-                    all_schemas = [s for s in inspector.get_schema_names() if s not in ("information_schema", "pg_catalog", "pg_toast")]
-                    target_schema = "public" if "public" in all_schemas else (all_schemas[0] if all_schemas else None)
-
-                    table_names = inspector.get_table_names(schema=target_schema)
-                    active_tables = [t for t in table_names if t.lower() not in cls.IGNORED_TABLES]
-
-                    if conn_obj:
-                        from app.core.database import SessionLocal
-                        from app.modules.admin_catalog.models import RoleTablePermission, CorporateConnection
-                        _s = SessionLocal()
-                        try:
-                            if conn_obj.is_uploaded:
-                                assigned = _s.query(RoleTablePermission.table_name).filter(RoleTablePermission.connection_id == conn_obj.id).all()
-                                if assigned:
-                                    assigned_set = {r[0].lower() for r in assigned if r[0]}
-                                    active_tables = [t for t in active_tables if t.lower() in assigned_set]
-                            else:
-                                uploaded_conn_ids = [c[0] for c in _s.query(CorporateConnection.id).filter(CorporateConnection.is_uploaded == True).all()]
-                                if uploaded_conn_ids:
-                                    uploaded_tables = _s.query(RoleTablePermission.table_name).filter(RoleTablePermission.connection_id.in_(uploaded_conn_ids)).all()
-                                    uploaded_set = {r[0].lower() for r in uploaded_tables if r[0]}
-                                    active_tables = [t for t in active_tables if t.lower() not in uploaded_set]
-                        finally:
-                            _s.close()
-
-                    with eng.connect() as connection:
-                        for tbl in active_tables:
-                            try:
-                                schema_prefix = f'"{target_schema}".' if target_schema else ""
-                                cnt_res = connection.execute(text(f'SELECT COUNT(*) FROM {schema_prefix}"{tbl}"')).scalar()
-                                row_count = int(cnt_res or 0)
-                            except Exception:
-                                row_count = 0
-
-                            cols_info = inspector.get_columns(tbl, schema=target_schema)
-                            pk_info = inspector.get_pk_constraint(tbl, schema=target_schema)
-                            pk_cols = set(pk_info.get("constrained_columns", [])) if pk_info else set()
-
-                            cols_data = []
-                            for col in cols_info:
-                                col_name = col["name"]
-                                col_type = str(col["type"])
-                                is_pk = col_name in pk_cols
-                                is_null = col.get("nullable", True)
-                                def_val = str(col.get("default", "")) if col.get("default") is not None else None
-
-                                sample_vals = []
-                                try:
-                                    samples_res = connection.execute(
-                                        text(f'SELECT DISTINCT "{col_name}" FROM {schema_prefix}"{tbl}" WHERE "{col_name}" IS NOT NULL LIMIT 3')
-                                    ).fetchall()
-                                    sample_vals = [str(r[0]) for r in samples_res if r[0] is not None]
-                                except Exception:
-                                    pass
-
-                                cols_data.append({
-                                    "name": col_name,
-                                    "data_type": col_type,
-                                    "is_pk": is_pk,
-                                    "is_nullable": is_null,
-                                    "default_value": def_val,
-                                    "sample_values": sample_vals
-                                })
-
-                            tables_metadata.append({
-                                "table_name": tbl,
-                                "schema_name": target_schema or "public",
-                                "row_count": row_count,
-                                "columns": cols_data
-                            })
-            except SchemaIntrospectionError:
-                raise
-            except Exception as ex:
-                # No se devuelve `[]`: el caller no puede distinguir "no se pudo
-                # conectar" de "la base no tiene tablas" y respondia 200 con
-                # total_tables=0, diciendoselo al usuario como un hecho.
-                raise SchemaIntrospectionError(
-                    f"No se pudo introspeccionar la conexión {getattr(conn_obj, 'name', conn_obj)}: {ex}"
-                ) from ex
-
-            return tables_metadata
-
-        # 2. SQLite local file
-        target_path = db_path
-        configured_path: Optional[str] = None
-        if not target_path and conn_obj:
-            # `database_name` antes que `host`, igual que el codigo historico de
-            # esta rama (al reves que `resolve_connection_db_path`): se mantiene
-            # la preferencia con la que resolvia aca.
-            for candidate in (conn_obj.database_name, conn_obj.host):
-                if isinstance(candidate, str) and candidate:
-                    if configured_path is None:
-                        configured_path = candidate
-                    if os.path.exists(candidate):
-                        target_path = candidate
-                        break
-
-        if not target_path and configured_path:
-            # Misma regla que `resolve_connection_db_path`: ruta configurada que
-            # no existe en disco = error. Antes caia en silencio a
-            # `settings.SQLITE_DB_PATH` y este metodo devolvia las tablas de
-            # OTRA base (la demo de la plataforma) como si fueran de la pedida.
-            raise SchemaIntrospectionError(
-                f"La conexión '{conn_obj.name}' apunta al archivo '{configured_path}', que no existe en disco."
-            )
-
-        if not target_path:
-            target_path = settings.SQLITE_DB_PATH
-
-        if not target_path or not os.path.exists(target_path):
-            # Antes `return tables_metadata` ([]): indistinguible de "la base no
-            # tiene tablas" y el caller respondia 200 con total_tables=0.
-            raise SchemaIntrospectionError(
-                f"No se pudo leer el archivo SQLite '{target_path}': no existe en disco."
-            )
-
         try:
-            # `closing`, no el `with sqlite3.connect(...)`: ese context manager
-            # es de TRANSACCION (commit/rollback), no de recurso. La conexion
-            # quedaba abierta con su handle del fichero tomado.
-            with closing(sqlite3.connect(target_path)) as sqlite_conn:
-                sqlite_cursor = sqlite_conn.cursor()
-                raw_tables = [
-                    r[0] for r in sqlite_cursor.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
-                    ).fetchall()
-                ]
-                active_tables = [t for t in raw_tables if t.lower() not in cls.IGNORED_TABLES]
+            # `connector_engine` y no `build_engine_for_connector`: este ultimo
+            # devuelve el engine crudo y el pool de sockets (5+10) queda
+            # huerfano cuando se sale del bloque. Cada peticion del diccionario
+            # abria uno. Ver el docstring de `connector_engine`.
+            with connector_engine(conn_obj) as eng:
+                inspector = sa_inspect(eng)
+                all_schemas = [s for s in inspector.get_schema_names() if s not in ("information_schema", "pg_catalog", "pg_toast")]
+                target_schema = "public" if "public" in all_schemas else (all_schemas[0] if all_schemas else None)
 
-                for tbl in active_tables:
+                table_names = inspector.get_table_names(schema=target_schema)
+                active_tables = [t for t in table_names if t.lower() not in cls.IGNORED_TABLES]
+
+                if conn_obj:
+                    from app.core.database import SessionLocal
+                    from app.modules.admin_catalog.models import RoleTablePermission, CorporateConnection
+                    _s = SessionLocal()
                     try:
-                        row_count_res = sqlite_cursor.execute(f'SELECT COUNT(*) FROM "{tbl}"').fetchone()
-                        row_count = row_count_res[0] if row_count_res else 0
-                    except Exception:
-                        row_count = 0
+                        if conn_obj.is_uploaded:
+                            assigned = _s.query(RoleTablePermission.table_name).filter(RoleTablePermission.connection_id == conn_obj.id).all()
+                            if assigned:
+                                assigned_set = {r[0].lower() for r in assigned if r[0]}
+                                active_tables = [t for t in active_tables if t.lower() in assigned_set]
+                        else:
+                            uploaded_conn_ids = [c[0] for c in _s.query(CorporateConnection.id).filter(CorporateConnection.is_uploaded == True).all()]
+                            if uploaded_conn_ids:
+                                uploaded_tables = _s.query(RoleTablePermission.table_name).filter(RoleTablePermission.connection_id.in_(uploaded_conn_ids)).all()
+                                uploaded_set = {r[0].lower() for r in uploaded_tables if r[0]}
+                                active_tables = [t for t in active_tables if t.lower() not in uploaded_set]
+                    finally:
+                        _s.close()
 
-                    cols_info = sqlite_cursor.execute(f'PRAGMA table_info("{tbl}")').fetchall()
-                    cols_data = []
-
-                    for col in cols_info:
-                        col_name = col[1]
-                        col_type = col[2] or "TEXT"
-                        not_null = bool(col[3])
-                        default_val = str(col[4]) if col[4] is not None else None
-                        is_pk = bool(col[5])
-
-                        sample_vals = []
+                with eng.connect() as connection:
+                    for tbl in active_tables:
                         try:
-                            samples_raw = sqlite_cursor.execute(
-                                f'SELECT DISTINCT "{col_name}" FROM "{tbl}" WHERE "{col_name}" IS NOT NULL AND "{col_name}" != \'\' LIMIT 3'
-                            ).fetchall()
-                            sample_vals = [str(s[0]) for s in samples_raw if s[0] is not None]
+                            schema_prefix = f'"{target_schema}".' if target_schema else ""
+                            cnt_res = connection.execute(text(f'SELECT COUNT(*) FROM {schema_prefix}"{tbl}"')).scalar()
+                            row_count = int(cnt_res or 0)
                         except Exception:
-                            pass
+                            row_count = 0
 
-                        cols_data.append({
-                            "name": col_name,
-                            "data_type": col_type,
-                            "is_pk": is_pk,
-                            "is_nullable": not not_null,
-                            "default_value": default_val,
-                            "sample_values": sample_vals
+                        cols_info = inspector.get_columns(tbl, schema=target_schema)
+                        pk_info = inspector.get_pk_constraint(tbl, schema=target_schema)
+                        pk_cols = set(pk_info.get("constrained_columns", [])) if pk_info else set()
+
+                        cols_data = []
+                        for col in cols_info:
+                            col_name = col["name"]
+                            col_type = str(col["type"])
+                            is_pk = col_name in pk_cols
+                            is_null = col.get("nullable", True)
+                            def_val = str(col.get("default", "")) if col.get("default") is not None else None
+
+                            sample_vals = []
+                            try:
+                                samples_res = connection.execute(
+                                    text(f'SELECT DISTINCT "{col_name}" FROM {schema_prefix}"{tbl}" WHERE "{col_name}" IS NOT NULL LIMIT 3')
+                                ).fetchall()
+                                sample_vals = [str(r[0]) for r in samples_res if r[0] is not None]
+                            except Exception:
+                                pass
+
+                            cols_data.append({
+                                "name": col_name,
+                                "data_type": col_type,
+                                "is_pk": is_pk,
+                                "is_nullable": is_null,
+                                "default_value": def_val,
+                                "sample_values": sample_vals
+                            })
+
+                        tables_metadata.append({
+                            "table_name": tbl,
+                            "schema_name": target_schema or "public",
+                            "row_count": row_count,
+                            "columns": cols_data
                         })
-
-                    tables_metadata.append({
-                        "table_name": tbl,
-                        "schema_name": "main",
-                        "row_count": row_count,
-                        "columns": cols_data
-                    })
+        except SchemaIntrospectionError:
+            raise
         except Exception as ex:
-            # Mismo criterio que la rama Postgres: un fichero ilegible o
-            # corrupto no es una base sin tablas.
+            # No se devuelve `[]`: el caller no puede distinguir "no se pudo
+            # conectar" de "la base no tiene tablas" y respondia 200 con
+            # total_tables=0, diciendoselo al usuario como un hecho.
             raise SchemaIntrospectionError(
-                f"No se pudo leer el archivo SQLite '{target_path}': {ex}"
+                f"No se pudo introspeccionar la conexión {getattr(conn_obj, 'name', conn_obj)}: {ex}"
             ) from ex
 
         return tables_metadata

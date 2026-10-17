@@ -23,9 +23,6 @@ un `connection_id` fijo de la base: el endpoint solo entra en su bloque
 best-effort si la conexion que se le pide responde.
 """
 
-import os
-import sqlite3
-import tempfile
 import unittest
 
 from fastapi.testclient import TestClient
@@ -34,9 +31,11 @@ from sqlalchemy.exc import DBAPIError
 
 from sqlalchemy.orm import Session
 
+from conftest import create_temp_pg_database, drop_temp_pg_database, pg_source_conn_attrs
+
 from app.core.constants import SYSTEM_STATUS_DEGRADED
 from app.core.database import engine, discard_failed_transaction, SessionLocal
-from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
+from app.modules.admin_catalog.models import CorporateConnection
 from app.modules.catalog.services.null_manager import NullManagerService
 from app.modules.chat_engine.engine import QueryEngine
 from main import app
@@ -159,9 +158,16 @@ class TestEndpointsSurviveTheirOwnSwallowedFailure(unittest.TestCase):
 
     CONN_NAME = "tx-hygiene-best-effort"
 
+    @classmethod
+    def setUpClass(cls):
+        cls.pg_db = create_temp_pg_database("txhyg")
+
+    @classmethod
+    def tearDownClass(cls):
+        drop_temp_pg_database(cls.pg_db)
+
     def setUp(self):
         self.client = TestClient(app)
-        self._tmpdir = tempfile.TemporaryDirectory()
         self._setup_db = SessionLocal()
 
     def tearDown(self):
@@ -176,7 +182,6 @@ class TestEndpointsSurviveTheirOwnSwallowedFailure(unittest.TestCase):
         ).delete(synchronize_session=False)
         self._setup_db.commit()
         self._setup_db.close()
-        self._tmpdir.cleanup()
 
     def _h(self):
         resp = self.client.post(
@@ -193,7 +198,7 @@ class TestEndpointsSurviveTheirOwnSwallowedFailure(unittest.TestCase):
         return probe
 
     def _connexion_alcanzable(self):
-        """Crea un SQLite temporal y devuelve el id de la conexion que lo apunta.
+        """Crea una conexion alcanzable (base PostgreSQL desechable) y devuelve su id.
 
         `/system/anomalies` solo entra en su bloque best-effort si `target_conn`
         responde (`if target_conn and is_reachable`), y la fila la elige el
@@ -203,20 +208,13 @@ class TestEndpointsSurviveTheirOwnSwallowedFailure(unittest.TestCase):
         inyectar nada. Por eso el test crea su propia conexion en vez de confiar en
         un id fijo.
 
-        `is_active=False` a proposito: la puerta mira la fila que pedio el
+        `is_active=False` a proposito: la puerta mira la fila que pidio el
         `connection_id`, no las activas, y asi el test no mete una conexion
         alcanzable en el panel de salud del resto de la suite.
         """
-        path = os.path.join(self._tmpdir.name, "mejor_esfuerzo.sqlite")
-        sqlite3.connect(path).close()  # el fichero tiene que existir: el health lo abre
         row = CorporateConnection(
             name=self.CONN_NAME,
-            db_type=DatabaseType.SQLITE,
-            host=path,
-            port=0,
-            database_name=os.path.basename(path),
-            username="admin",
-            encrypted_password="",
+            **pg_source_conn_attrs(self.pg_db),
             is_active=False,
             is_uploaded=True,
         )

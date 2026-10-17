@@ -7,7 +7,7 @@ def _backend_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def _root_dir() -> str:
-    """Project root holding data_sources/ and the metadata DB.
+    """Project root holding data_sources/.
 
     Derived from the checkout layout normally, so a fresh clone works with no
     configuration. In Docker the backend is copied to /app, whose parent is /,
@@ -85,15 +85,21 @@ class Settings(BaseSettings):
     # Studio lo ignora; en ambos hace falta arrancar el servidor con la
     # ventana que se quiera de verdad.
     LLM_NUM_CTX: int = 32768
+
+    # --- Enriquecimiento de catalogo con IA (knobs de hardware) --------------
+    # Una llamada al modelo por LOTE de columnas (no por tabla entera ni por
+    # columna). El lote chico evita los dos cortes que perdian la tabla completa:
+    # truncado por `max_tokens` (JSON sin cerrar = inusable) y timeout por
+    # llamada en CPU lenta. El tamano efectivo del lote ademas baja solo, con la
+    # velocidad medida del modelo (ver `CatalogEnricher._columns_per_call`):
+    # estos valores son el techo y los fences.
+    LLM_ENRICH_COLUMNS_PER_CALL: int = 6
+    LLM_ENRICH_TABLE_TIMEOUT_S: float = 120.0
+    LLM_ENRICH_TOTAL_BUDGET_S: float = 360.0
     
     # Security Defaults
     DEFAULT_ROW_LIMIT: int = 500
     QUERY_TIMEOUT_SECONDS: int = 15
-
-    # Path to Dedicated Metadata Database (Users, Roles, Connectors, Sessions, Audit, Catalog)
-    @property
-    def METADATA_DB_PATH(self) -> str:
-        return os.path.join(_root_dir(), "datia_metadata.db")
 
     # Path to Uploaded and Structured Data Sources
     @property
@@ -101,11 +107,6 @@ class Settings(BaseSettings):
         p = os.path.join(_root_dir(), "data_sources")
         os.makedirs(p, exist_ok=True)
         return p
-
-    # Path to SQLite Demo Database (Centralized)
-    @property
-    def SQLITE_DB_PATH(self) -> str:
-        return os.path.join(_backend_dir(), "demo_corporativa.db")
 
 
     model_config = SettingsConfigDict(

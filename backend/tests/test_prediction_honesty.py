@@ -251,11 +251,14 @@ class TestGeneratedSqlIsReadOnly(unittest.TestCase):
             self.assertNotIn(prohibido, sql.upper())
         self._assert_select_only(sql)
 
-    def test_dialecto_sqlite_no_usa_string_agg(self):
+    def test_no_hay_rama_sqlite(self):
+        """El motor unico es PostgreSQL: pedir otro dialecto no cambia el SQL
+        (antes emitia GROUP_CONCAT/strftime para SQLite)."""
         sql = build_retention_sql("t", "fecha", "monto", "cliente", dialect="sqlite")
-        self.assertIn("GROUP_CONCAT", sql)
-        self.assertIn("strftime", sql)
-        self._assert_select_only(sql, dialect="sqlite")
+        self.assertIn("STRING_AGG", sql)
+        self.assertNotIn("GROUP_CONCAT", sql)
+        self.assertIn("TO_CHAR", sql)
+        self._assert_select_only(sql)
 
     def test_identificadores_se_neutralizan(self):
         """Un nombre de tabla con comillas no puede cerrar la sentencia.

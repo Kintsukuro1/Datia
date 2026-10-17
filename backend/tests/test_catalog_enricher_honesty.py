@@ -7,9 +7,6 @@ Cubre:
   3. Dos columnas homónimas en schema1/schema2 NO colisionan.
   4. must_change_password realmente bloquea la API.
 """
-import os
-import sqlite3
-import tempfile
 import unittest
 import uuid
 import asyncio
@@ -17,6 +14,13 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+
+from conftest import (
+    create_temp_pg_database,
+    drop_temp_pg_database,
+    pg_source_conn_attrs,
+    pg_source_engine,
+)
 
 from main import app
 from app.core.database import SessionLocal
@@ -54,22 +58,26 @@ class TestCatalogEnricher(unittest.TestCase):
         init_db(db)
         db.close()
 
+        # Fuente desechable: base PostgreSQL real con la tabla que se enriquece.
+        cls.pg_db = create_temp_pg_database("enrich")
+        eng = pg_source_engine(cls.pg_db)
+        try:
+            from sqlalchemy import text
+            with eng.begin() as c:
+                c.execute(text("CREATE TABLE ventas (monto INTEGER, fecha TEXT)"))
+        finally:
+            eng.dispose()
+
+    @classmethod
+    def tearDownClass(cls):
+        drop_temp_pg_database(cls.pg_db)
+
     def setUp(self):
         self.db = SessionLocal()
-        tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-        tmp.close()
-        self.sqlite_path = tmp.name
-        conn = sqlite3.connect(self.sqlite_path)
-        conn.execute("CREATE TABLE ventas (monto INTEGER, fecha TEXT)")
-        conn.commit()
-        conn.close()
 
         self.conn = CorporateConnection(
             name=f"enrich_test_{uuid.uuid4().hex[:8]}",
-            db_type=DatabaseType.SQLITE,
-            host=self.sqlite_path,
-            port=0,
-            database_name=os.path.basename(self.sqlite_path),
+            **pg_source_conn_attrs(self.pg_db),
             is_active=True,
         )
         self.db.add(self.conn)
@@ -82,10 +90,6 @@ class TestCatalogEnricher(unittest.TestCase):
         self.db.delete(self.conn)
         self.db.commit()
         self.db.close()
-        try:
-            os.unlink(self.sqlite_path)
-        except OSError:
-            pass
 
     def _items(self):
         return self.db.query(SemanticCatalog).filter(
@@ -123,14 +127,10 @@ class TestCatalogEnricher(unittest.TestCase):
     # ------------------------------------- BUG 1b: ruta configurada inexistente
 
     def _add_broken_connection(self):
-        """Conexion SQLite activa cuya ruta configurada no existe en disco."""
-        missing = self.sqlite_path + ".missing"
+        """Conexion Postgres activa que apunta a una base que no existe."""
         broken = CorporateConnection(
             name=f"enrich_broken_{uuid.uuid4().hex[:8]}",
-            db_type=DatabaseType.SQLITE,
-            host=missing,
-            port=0,
-            database_name=missing,
+            **pg_source_conn_attrs(f"no_existe_{uuid.uuid4().hex[:8]}"),
             is_active=True,
         )
         self.db.add(broken)
@@ -152,14 +152,20 @@ class TestCatalogEnricher(unittest.TestCase):
         finally:
             db.close()
 
-    def test_explicit_broken_connection_is_502_not_a_false_success(self):
-        """`resolve_connection_db_path` lanza porque la ruta configurada no
-        existe: la conexion pedida no esta y eso es 502, no un enrich vacio."""
+    def test_explicit_broken_connection_reports_the_failure_honestly(self):
+        """La conexion pedida no se puede leer: success=False nombrando la
+        conexion, no un "enriquecido: 0 campos"."""
         broken = self._add_broken_connection()
+        resp = _run_enrich(self.db, AutoEnrichRequest(connection_id=broken.id))
+        self.assertFalse(resp.success, resp.message)
+        self.assertEqual(resp.enriched_count, 0)
+        self.assertIn(broken.name, resp.message)
+
+    def test_unknown_connection_id_is_404(self):
+        """Un id explicito que no existe es 404, no un barrido silencioso."""
         with self.assertRaises(HTTPException) as ctx:
-            _run_enrich(self.db, AutoEnrichRequest(connection_id=broken.id))
-        self.assertEqual(ctx.exception.status_code, 502)
-        self.assertIn(broken.host, ctx.exception.detail)
+            _run_enrich(self.db, AutoEnrichRequest(connection_id=999999))
+        self.assertEqual(ctx.exception.status_code, 404)
 
     def test_all_active_scan_reports_the_broken_connection_without_throwing(self):
         broken = self._add_broken_connection()
@@ -188,7 +194,7 @@ class TestCatalogEnricher(unittest.TestCase):
         """Una descripción escrita por un admin sobrevive al enrich, aun con el flag True."""
         curated = SemanticCatalog(
             connection_id=self.conn.id,
-            schema_name="main",
+            schema_name="public",
             table_name="ventas",
             column_name="monto",
             friendly_name="Monto NETO de venta",
@@ -222,7 +228,7 @@ class TestCatalogEnricher(unittest.TestCase):
         """El enrich sigue rellenando lo que está vacío."""
         partial = SemanticCatalog(
             connection_id=self.conn.id,
-            schema_name="main",
+            schema_name="public",
             table_name="ventas",
             column_name="monto",
             description="Solo esto lo escribió alguien",

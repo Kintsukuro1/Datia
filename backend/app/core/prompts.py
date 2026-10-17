@@ -90,21 +90,13 @@ def _wrap_data_block(content: str) -> str:
 # ------------------------------
 # `engine.py` ya sabia el dialecto de la conexion y se lo pasaba al validador AST
 # y al executor, pero NO se lo pasaba al LLM. Un modelo entrenado mayormente
-# sobre Postgres y SQL estandar escribe `EXTRACT(YEAR FROM fecha)`,
-# `ILIKE`, `DATE_TRUNC` o `STRING_AGG` contra un SQLite, la consulta revienta en
-# la ejecucion y entra `execute_with_self_healing`, que vuelve a llamar al LLM.
-# Son 60-180 s de CPU gastados en un error que el backend ya anticipaba antes de
-# preguntar.
+# sobre Postgres y SQL estandar escribe sintaxis de otros motores, la consulta
+# revienta en la ejecucion y entra `execute_with_self_healing`, que vuelve a
+# llamar al LLM. Son 60-180 s de CPU gastados en un error que el backend ya
+# anticipaba antes de preguntar.
 #
 # La regla no es decorativa: es la que evita el viaje completo de autocorreccion.
 DIALECT_RULES: Dict[str, str] = {
-    "sqlite": (
-        "DIALECTO SQLITE: entrecomilla los identificadores con comillas dobles "
-        "(\"mi_columna\"). Para extraer el año o el mes de una fecha de texto usa "
-        "strftime('%Y', columna) y strftime('%m', columna); NO uses EXTRACT, "
-        "DATE_TRUNC, TO_CHAR ni ILIKE, que no existen aquí. Para concatenar dentro "
-        "de un agregado usa group_concat(columna, ', ') y no string_agg."
-    ),
     "postgres": (
         "DIALECTO POSTGRESQL: entrecomilla los identificadores con comillas dobles "
         "(\"mi_columna\"), necesario para los que varían de las minúsculas en el "
@@ -137,7 +129,7 @@ class PromptManager:
     # 1. Text-to-SQL Generation Prompt
     # -----------------------------------------------------------------
     @staticmethod
-    def get_text_to_sql_system_prompt(user_role: str, allowed_tables: Set[str], dialect: str = "sqlite") -> str:
+    def get_text_to_sql_system_prompt(user_role: str, allowed_tables: Set[str], dialect: str = "postgres") -> str:
         tables_str = ", ".join(sorted(allowed_tables)) if allowed_tables else "Ninguna"
         is_admin_user = user_role in ADMIN_ROLES
         if is_admin_user:
@@ -151,16 +143,13 @@ class PromptManager:
                 f"   <acceso_denegado>Acceso denegado: El perfil '{user_role}' no tiene autorización para acceder a estos datos.</acceso_denegado>"
             )
 
-        # El fallback NO es decorativo: sin esta linea, un dialecto fuera del
-        # diccionario emitiria una regla "8." vacia entre la 7 y la 9, y el
-        # modelo leeria un hueco en vez de una precaucion. Los dialectos que
-        # `ASTValidator.ALLOWED_DIALECTS` acepta y aqui no tienen reglas
-        # (tsql, mysql, oracle) se diferencian de Postgres justo en lo que el
-        # modelo daria por sentado, asi que callarse es peor que la cautela.
-        dialect_rule = DIALECT_RULES.get(dialect) or (
-            f"DIALECTO {dialect}: no asumas sintaxis de otros motores. Usa las funciones "
-            f"y operadores propios de {dialect} y evita los que no existen en él."
-        )
+        # El motor unico es PostgreSQL: un dialecto fuera del diccionario (resto
+        # de una conexion SQLite vieja, un caller con un default rancio) no
+        # puede describirle al LLM un motor que no es el que va a ejecutar. La
+        # consulta saldria con sintaxis de otro motor y moriria en la ejecucion.
+        if dialect not in DIALECT_RULES:
+            dialect = "postgres"
+        dialect_rule = DIALECT_RULES[dialect]
 
         return (
             "Eres un generador de SQL de solo lectura especializado en analítica de datos relacionales.\n"
@@ -231,8 +220,11 @@ class PromptManager:
         allowed_tables: Set[str],
         few_shot_examples: str = "",
         conversation_context: str = "",
-        dialect: str = "sqlite",
+        dialect: str = "postgres",
     ) -> str:
+        # Mismo criterio que el system prompt: el unico motor es PostgreSQL.
+        if dialect not in DIALECT_RULES:
+            dialect = "postgres"
         tables_str = ", ".join(sorted(allowed_tables)) if allowed_tables else "Ninguna"
         parts = [
             f"Rol: {user_role} — Motor: {dialect}",

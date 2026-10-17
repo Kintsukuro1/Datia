@@ -56,27 +56,23 @@ if (process.platform === 'win32') {
   } catch (_) {}
 }
 
-console.log(`[DB-BOOTSTRAP] Verificando bases de datos PostgreSQL y datos base...`);
-const setupScript = path.join(backendDir, 'scripts', 'setup_postgres_full.py');
-try {
-  spawnSync(pythonCmd, [setupScript], {
-    cwd: path.join(__dirname, '..'),
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      PYTHONPATH: backendDir,
-      PYTHONUNBUFFERED: '1',
-    },
-  });
-} catch (err) {
-  console.warn(`[DB-BOOTSTRAP] Aviso durante la verificación de base de datos: ${err.message}`);
-}
+// El bootstrap de PostgreSQL (crear bases, sembrar datos) lo hace el propio
+// backend en su startup (`main.py` -> `setup_postgres_full.run()`); correrlo
+// tambien aca lo ejecutaba dos veces por arranque.
 
 console.log(`\n[BACKEND-RUNNER] Ejecutando backend FastAPI con: ${pythonCmd}`);
 
 const child = spawn(pythonCmd, ['main.py'], {
   cwd: backendDir,
   stdio: 'inherit',
+  env: {
+    ...process.env,
+    // Acentos correctos cuando la salida pasa por un pipe (concurrently,
+    // redirecciones): sin esto Python escribe cp1252 y el receptor lo decodifica
+    // como UTF-8, dejando los acentos rotos en los logs.
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUNBUFFERED: '1',
+  },
 });
 
 child.on('exit', (code) => {

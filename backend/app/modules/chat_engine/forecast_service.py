@@ -99,11 +99,10 @@ def resolve_columns(cols: List[Dict[str, Any]]) -> Dict[str, Optional[str]]:
 
 
 def _quote(identifier: str, dialect: str = "postgres") -> str:
-    """Comillas dobles, que SQLite y Postgres comparten para identificadores.
+    """Comillas dobles para identificadores PostgreSQL.
 
     `dialect` no se usa: se mantiene en la firma para que el punto de llamada
-    pase el contexto explicito y quede claro que la decision es valida en los dos
-    motores, no un descuido.
+    pase el contexto explicito y quede claro que la decision es deliberada.
     """
     safe = "".join(ch for ch in identifier if ch.isalnum() or ch == "_")
     if not safe:
@@ -121,10 +120,7 @@ def build_series_sql(table: str, date_col: str, value_col: str, dialect: str = "
     "ingresos", no "neto".
     """
     t, d, v = _quote(table, dialect), _quote(date_col, dialect), _quote(value_col, dialect)
-    if dialect == "sqlite":
-        period_expr = f"strftime('%Y-%m', {d})"
-    else:
-        period_expr = f"TO_CHAR({d}, 'YYYY-MM')"
+    period_expr = f"TO_CHAR({d}, 'YYYY-MM')"
     return (
         f"SELECT {period_expr} AS periodo, SUM({v}) AS valor "
         f"FROM {t} WHERE {v} > 0 GROUP BY 1 ORDER BY 1 LIMIT {settings.DEFAULT_ROW_LIMIT}"
@@ -144,12 +140,8 @@ def build_retention_sql(table: str, date_col: str, value_col: str, entity_col: s
     """
     t, d, v, e = (_quote(table, dialect), _quote(date_col, dialect),
                   _quote(value_col, dialect), _quote(entity_col, dialect))
-    if dialect == "sqlite":
-        period_expr = f"strftime('%Y-%m', {d})"
-        agg = "GROUP_CONCAT"
-    else:
-        period_expr = f"TO_CHAR({d}, 'YYYY-MM')"
-        agg = "STRING_AGG"
+    period_expr = f"TO_CHAR({d}, 'YYYY-MM')"
+    agg = "STRING_AGG"
     return (
         f"SELECT {e} AS entidad, "
         f"{agg}(DISTINCT {period_expr}, ',' ORDER BY {period_expr}) AS meses, "
@@ -292,7 +284,7 @@ def _load_fact_table(db: Session, connection: CorporateConnection, is_admin: boo
             raise ForecastUnavailable("Ninguna tabla autorizada contiene filas.")
 
         cols = DynamicSchemaPruningService.get_physical_table_columns(
-            best[1], db_path=connection, include_samples=False
+            best[1], connection, include_samples=False
         )
         budget["fact_table"] = (best[1], cols)
         return best[1], cols
@@ -311,7 +303,7 @@ def run_forecast(
     if not connection:
         raise ForecastUnavailable(f"No existe la conexion {connection_id}.")
 
-    dialect = "sqlite" if str(getattr(connection, "db_type", "")).lower() == "sqlite" else "postgres"
+    dialect = "postgres"
     table, cols = _load_fact_table(db, connection, is_admin, user_role, role_id, connection_id, dialect, budget)
     resolved = resolve_columns(cols)
 
@@ -385,7 +377,7 @@ def run_retention(
     if not connection:
         raise ForecastUnavailable(f"No existe la conexion {connection_id}.")
 
-    dialect = "sqlite" if str(getattr(connection, "db_type", "")).lower() == "sqlite" else "postgres"
+    dialect = "postgres"
     table, cols = _load_fact_table(db, connection, is_admin, user_role, role_id, connection_id, dialect, budget)
     resolved = resolve_columns(cols)
 
@@ -454,7 +446,7 @@ def audit_data_quality(
         connection = db.query(CorporateConnection).filter(CorporateConnection.id == connection_id).first()
         if not connection:
             return findings
-        dialect = "sqlite" if str(getattr(connection, "db_type", "")).lower() == "sqlite" else "postgres"
+        dialect = "postgres"
         table, cols = _load_fact_table(db, connection, is_admin, user_role, role_id, connection_id, dialect, budget)
         resolved = resolve_columns(cols)
         t = _quote(table, dialect)
@@ -472,10 +464,7 @@ def audit_data_quality(
     period_col = _match_name(cols, ("periodo", "period", "mes_periodo"), lambda c: True)
     if date_col and period_col:
         try:
-            if dialect == "sqlite":
-                expr = "strftime('%Y-%m', \"{d}\")".format(d=date_col)
-            else:
-                expr = f"TO_CHAR({_quote(date_col)}, 'YYYY-MM')"
+            expr = f"TO_CHAR({_quote(date_col)}, 'YYYY-MM')"
             rows = SQLExecutor.execute_raw_sql(
                 connection,
                 f"SELECT COUNT(*) AS n FROM {t} WHERE {_quote(period_col)} IS NOT NULL "

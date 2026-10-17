@@ -1,12 +1,11 @@
 import unittest
-import os
-import sqlite3
 import json
 import itertools
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
+
+from conftest import create_temp_pg_database, drop_temp_pg_database, pg_source_engine
 
 from main import app
 from app.core.database import Base, get_db
@@ -27,8 +26,13 @@ from app.core.constants import (
     ROLE_USUARIO
 )
 
-TEST_DB_URL = "sqlite:///./test_self_healing_and_roles.db"
-test_engine = create_engine(TEST_DB_URL, connect_args={"check_same_thread": False})
+# Base PostgreSQL desechable propia y NO la metadata compartida de la suite: esa
+# ya trae el seed de corridas anteriores y no probaria nada sobre lo que `init_db`
+# siembra en una base fresca. El `engine` global no se redirige a proposito:
+# `init_db` lo usa para `ensure_schema_migrations`, igual que en el resto de los
+# tests.
+TEST_DB_NAME = create_temp_pg_database("selfheal")
+test_engine = pg_source_engine(TEST_DB_NAME)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 def override_get_db():
@@ -51,12 +55,11 @@ class TestSelfHealingAndCorporateRoles(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        Base.metadata.drop_all(bind=test_engine)
-        if os.path.exists("./test_self_healing_and_roles.db"):
-            try:
-                os.remove("./test_self_healing_and_roles.db")
-            except Exception:
-                pass
+        # El override se registra al importar el modulo: sin esto quedaria activo
+        # para el resto de la suite (los TestClient de otros archivos).
+        app.dependency_overrides.pop(get_db, None)
+        test_engine.dispose()
+        drop_temp_pg_database(TEST_DB_NAME)
 
     def setUp(self):
         self.client = TestClient(app)

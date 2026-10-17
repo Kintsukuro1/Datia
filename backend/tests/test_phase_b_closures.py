@@ -11,12 +11,18 @@ Cierres mecanicos de la Fase B. 4 bugs, todos verificados:
 """
 import asyncio
 import inspect
-import os
-import sqlite3
-import tempfile
 import unittest
 import uuid
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
+
+from sqlalchemy import text
+
+from conftest import (
+    create_temp_pg_database,
+    drop_temp_pg_database,
+    pg_source_conn_attrs,
+    pg_source_engine,
+)
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -31,100 +37,96 @@ from app.modules.admin_catalog.schemas import AutoEnrichRequest, ReportExportDat
 from app.modules.auth.models import User, UserSession
 from app.modules.catalog.services.catalog_enricher import CatalogEnricher
 from app.modules.catalog.services.connector_service import ConnectorDomainService
-from app.modules.catalog.services.schema_inspector import (
-    SchemaInspector,
-    SchemaIntrospectionError,
-)
 from app.modules.reports.data_compiler import ReportDataCompiler
 
 
 class TestEnrichWithDeadConnection(unittest.TestCase):
-    """BUG 1: leer una conexion caida no puede terminar en 500."""
+    """BUG 1: leer una conexion caida no puede terminar en 500.
+
+    La conexion "caida" es real: apunta a una base PostgreSQL que no existe, asi
+    que la introspeccion falla como falla en produccion (sin mocks del inspector).
+    """
 
     @classmethod
     def setUpClass(cls):
         db = SessionLocal()
         init_db(db)
         db.close()
+        cls.pg_db = create_temp_pg_database("dead")
+
+    @classmethod
+    def tearDownClass(cls):
+        drop_temp_pg_database(cls.pg_db)
 
     def setUp(self):
         self.db = SessionLocal()
-        tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-        tmp.close()
-        self.sqlite_path = tmp.name
-        sqlite3.connect(self.sqlite_path).close()
-        self.conn = CorporateConnection(
-            name=f"dead_conn_{uuid.uuid4().hex[:8]}",
-            db_type=DatabaseType.SQLITE,
-            host=self.sqlite_path,
-            port=0,
-            database_name="dead.db",
-            is_active=True,
-        )
-        self.db.add(self.conn)
-        self.db.commit()
+        self.conns = []
 
     def tearDown(self):
-        self.db.query(SemanticCatalog).filter(
-            SemanticCatalog.connection_id == self.conn.id
-        ).delete(synchronize_session=False)
-        self.db.delete(self.conn)
+        for conn in self.conns:
+            self.db.query(SemanticCatalog).filter(
+                SemanticCatalog.connection_id == conn.id
+            ).delete(synchronize_session=False)
+            self.db.delete(conn)
         self.db.commit()
         self.db.close()
 
+    def _make_conn(self, database_name):
+        conn = CorporateConnection(
+            name=f"probe_conn_{uuid.uuid4().hex[:8]}",
+            **pg_source_conn_attrs(database_name),
+            is_active=True,
+        )
+        self.db.add(conn)
+        self.db.commit()
+        self.conns.append(conn)
+        return conn
+
     def test_auto_enrich_reports_failure_not_500(self):
-        """`SchemaIntrospectionError` Specifically: la conexion caida se reporta."""
-        with patch.object(
-            SchemaInspector,
-            "introspect_connection_metadata",
-            side_effect=SchemaIntrospectionError("connection refused"),
-        ):
-            resp = asyncio.run(
-                CatalogEnricher.auto_enrich_catalog(
-                    self.db, AutoEnrichRequest(connection_id=self.conn.id)
-                )
+        """`SchemaIntrospectionError`: la conexion caida se reporta, no da 500."""
+        missing_db = f"tmp_no_existe_{uuid.uuid4().hex[:8]}"
+        conn = self._make_conn(missing_db)
+
+        resp = asyncio.run(
+            CatalogEnricher.auto_enrich_catalog(
+                self.db, AutoEnrichRequest(connection_id=conn.id)
             )
+        )
 
         self.assertFalse(resp.success, resp.message)
         self.assertEqual(resp.enriched_count, 0)
-        self.assertIn("connection refused", resp.message)
+        self.assertIn(missing_db, resp.message)
+        self.assertIn(conn.name, resp.message)
 
     def test_seed_does_not_raise_on_dead_connection(self):
         """La siembra no propaga: sus 3 llamadores ya persistieron la conexion,
         asi que propagar seria un 500 por algo que si se creo."""
-        with patch.object(
-            SchemaInspector,
-            "introspect_connection_metadata",
-            side_effect=SchemaIntrospectionError("connection refused"),
-        ):
-            seeded = CatalogEnricher.seed_catalog_heuristics_for_connection(
-                self.db, self.conn.id, self.sqlite_path
-            )
+        conn = self._make_conn(f"tmp_no_existe_{uuid.uuid4().hex[:8]}")
+
+        seeded = CatalogEnricher.seed_catalog_heuristics_for_connection(self.db, conn.id)
 
         self.assertEqual(seeded, 0)
         self.assertEqual(
             self.db.query(SemanticCatalog).filter(
-                SemanticCatalog.connection_id == self.conn.id
+                SemanticCatalog.connection_id == conn.id
             ).count(),
             0,
         )
 
     def test_seed_still_seeds_when_readable(self):
         """Contraparte: la guarda no dejo de sembrar."""
-        tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-        tmp.close()
-        path = tmp.name
-        con = sqlite3.connect(path)
-        con.execute("CREATE TABLE ventas (monto INTEGER)")
-        con.commit()
-        con.close()
+        eng = pg_source_engine(self.pg_db)
         try:
-            seeded = CatalogEnricher.seed_catalog_heuristics_for_connection(
-                self.db, self.conn.id, path
-            )
-            self.assertEqual(seeded, 1)
+            with eng.begin() as c:
+                c.execute(text("DROP TABLE IF EXISTS probe_ventas_efimeras"))
+                c.execute(text("CREATE TABLE probe_ventas_efimeras (monto INTEGER)"))
         finally:
-            os.unlink(path)
+            eng.dispose()
+
+        conn = self._make_conn(self.pg_db)
+        seeded = CatalogEnricher.seed_catalog_heuristics_for_connection(self.db, conn.id)
+
+        self.assertEqual(seeded, 1)
 
 
 class TestFindingsWithoutRawData(unittest.TestCase):
@@ -223,13 +225,11 @@ class TestPlatformDbsProtection(unittest.TestCase):
         create = self._delete_with_mock_pg("democratizacion_metadatos")
         create.assert_not_called()
 
-    def test_metadata_db_protected_even_with_empty_metadata_path(self):
-        """El caso que rompia: METADATA_DB_PATH vacio + POSTGRES_DB con otro
-        nombre. Antes el `and` metia "" en el set y la base quedaba desprotegida."""
-        with patch.object(
-            type(settings), "METADATA_DB_PATH",
-            new_callable=PropertyMock, return_value="",
-        ), patch.object(settings, "POSTGRES_DB", "otra_base_de_plataforma"):
+    def test_metadata_db_protected_even_with_a_different_postgres_db(self):
+        """El caso que rompia: POSTGRES_DB con otro nombre + la base de metadata
+        protegida por una lista que se derivaba de una ruta de archivo. Con esa
+        ruta vacia entraba "" al set y la base quedaba desprotegida."""
+        with patch.object(settings, "POSTGRES_DB", "otra_base_de_plataforma"):
             create = self._delete_with_mock_pg("democratizacion_metadatos")
         create.assert_not_called()
 

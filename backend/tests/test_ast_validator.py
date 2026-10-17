@@ -24,7 +24,7 @@ class TestASTValidator(unittest.TestCase):
 
     def test_generate_sql_explanation(self):
         sql = "SELECT dim_clientes.nombre, SUM(fact_ventas.monto) FROM fact_ventas JOIN dim_clientes ON fact_ventas.cliente_id = dim_clientes.id WHERE fact_ventas.monto > 100 GROUP BY dim_clientes.nombre ORDER BY SUM(fact_ventas.monto) DESC LIMIT 10"
-        explanation = ASTValidator.generate_sql_explanation(sql, dialect="sqlite")
+        explanation = ASTValidator.generate_sql_explanation(sql, dialect="postgresql")
         self.assertIn("fact_ventas", explanation)
         self.assertIn("dim_clientes", explanation)
         self.assertIn("suma", explanation.lower())

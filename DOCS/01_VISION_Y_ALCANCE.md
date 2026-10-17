@@ -118,13 +118,13 @@ sequenceDiagram
 
 **Implementado:** el sistema se conecta a las bases de datos relacionales corporativas soportadas mediante drivers nativos universales:
 - **PostgreSQL** (`psycopg[binary]`)
-- **SQLite 3** (nativo embebido)
+- **SQLite 3** (importación): un archivo `.sqlite` subido se convierte a una base PostgreSQL dedicada (`import_sqlite_to_postgres`); no hay conexión directa a SQLite.
 
 **No implementado (visión de producto, fuera del alcance actual):**
 - **MySQL / MariaDB** (`pymysql`) — no hay driver en `backend/requirements.txt` ni rama que lo construya en `core/database.py:build_engine_for_connector`.
 - **Microsoft SQL Server (MSSQL)** (`pymssql` / `pyodbc`) — misma razón: sin driver y sin rama en el builder.
 
-Ambos están igualmente ausentes de `DatabaseType` en `backend/app/modules/admin_catalog/models.py`, que solo admite `POSTGRESQL` y `SQLITE`. Implementarlos requiere añadir el driver, el valor en el enum y la rama correspondiente en el builder.
+Ambos están igualmente ausentes de `DatabaseType` en `backend/app/modules/admin_catalog/models.py`, que solo admite `POSTGRESQL`. Implementarlos requiere añadir el driver, el valor en el enum y la rama correspondiente en el builder.
 
 *(Nota: Oracle Database fue excluida deliberadamente por razones de portabilidad y dependencias nativas complejas; consultar ADR-001 en Documento 06).*
 

@@ -61,7 +61,7 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
   };
 
   return (
-    <div className="glass-panel rounded-2xl sm:rounded-3xl p-3 border border-white/10 shadow-2xl space-y-2.5 font-sans relative group transition-all">
+    <div className="glass-panel rounded-2xl sm:rounded-3xl p-3 shadow-2xl space-y-2.5 font-sans relative group transition-all">
       {/* Collapsible Smart Query Builder */}
       {showBuilder && (
         <div className="p-3 rounded-2xl bg-white dark:bg-zinc-900/95 border border-indigo-500/30 shadow-xl space-y-3 animate-fadeIn">
@@ -196,12 +196,12 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
           onKeyDown={handleKeyDown}
           disabled={isGenerating}
           aria-label="Pregunta analítica sobre datos corporativos"
-          className="w-full bg-white dark:bg-dark-base/80 text-xs sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 rounded-xl px-3.5 py-2.5 resize-none focus:outline-none border border-slate-300 dark:border-transparent transition-colors scrollbar-thin scrollbar-thumb-dark-border font-sans leading-relaxed"
+          className="w-full bg-app-card/70 text-xs sm:text-sm text-app-text placeholder:text-app-muted rounded-xl px-3.5 py-2.5 resize-none focus:outline-none border border-app-border transition-colors scrollbar-thin font-sans leading-relaxed"
         />
       </div>
 
       {/* Toolbar & Action Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-1 pt-1 border-t border-dark-border/60">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1 pt-1 border-t border-app-border/60">
         {/* Left Items: Active DB Badge & Model Pill */}
         <div className="flex flex-wrap items-center gap-2">
           {/* Smart Builder Toggle Button */}
@@ -220,7 +220,7 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
           </button>
 
           {/* Active Database Badge */}
-          <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-xl bg-dark-base/90 border border-dark-border/80 text-[11px] font-medium text-gray-300 shadow-xs">
+          <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-xl bg-app-surface border border-app-border text-[11px] font-medium text-app-muted shadow-xs">
             <Database className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
             <span className="truncate max-w-[140px] sm:max-w-[200px] font-semibold">{activeDatabaseName}</span>
           </div>
@@ -246,7 +246,7 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
             disabled={!promptInput.trim() || isGenerating}
             aria-label="Enviar consulta a DATIA"
             title="Enviar consulta"
-            className="p-2.5 rounded-xl bg-brand-600 hover:bg-brand-500 active:scale-[0.98] text-white disabled:opacity-30 disabled:pointer-events-none transition-all shadow-sm cursor-pointer"
+            className="p-2.5 rounded-full bg-brand-600 hover:bg-brand-500 active:scale-[0.98] text-white disabled:opacity-30 disabled:pointer-events-none transition-all shadow-sm cursor-pointer"
           >
             <Send className="w-4 h-4" />
           </button>

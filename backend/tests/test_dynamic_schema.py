@@ -197,7 +197,7 @@ class TestDynamicSchema(unittest.TestCase):
             allowed_tables=allowed_tables,
             query=query,
             catalog_entries=[],
-            target_db_target=None
+            conn_record=None
         )
         self.assertIn("dim_productos", selected)
         self.assertNotIn("dim_servidores", selected)

@@ -27,7 +27,7 @@ class SQLGenerator:
         connection_id: int = 1,
         is_admin: bool = False,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
-        dialect: str = "sqlite",
+        dialect: str = "postgres",
     ) -> Tuple[Optional[str], Optional[str], Optional[str], str, bool]:
         """
         Generates candidate SQL from natural language query.

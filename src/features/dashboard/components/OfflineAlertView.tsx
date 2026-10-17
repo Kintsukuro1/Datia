@@ -106,7 +106,7 @@ export const OfflineAlertView: React.FC<OfflineAlertViewProps> = ({
       <div className="flex items-center justify-between text-[11px] text-slate-600 dark:text-zinc-400 font-mono pt-2">
         <div className="flex items-center space-x-2">
           <Database className="w-3.5 h-3.5 text-slate-600 dark:text-zinc-400" />
-          <span>Fuente BD: {(result as any).target_database || 'SQLite Corporativo'}</span>
+          <span>Fuente BD: {(result as any).target_database || 'BD Corporativa'}</span>
         </div>
         <span>Latencia: {result.traceability?.execution_time_ms || 0} ms</span>
       </div>

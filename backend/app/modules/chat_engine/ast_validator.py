@@ -15,7 +15,7 @@ class ASTValidator:
     and automatic LIMIT injection.
     """
 
-    ALLOWED_DIALECTS = {"postgres", "tsql", "mysql", "oracle", "sqlite"}
+    ALLOWED_DIALECTS = {"postgres", "tsql", "mysql", "oracle"}
 
     @classmethod
     def validate_and_secure_sql(
@@ -262,8 +262,8 @@ class ASTValidator:
         # bien en `audit_logs`, en la trazabilidad y en los exports PDF/Excel: la
         # verificacion a mano es justamente el caso de uso.
         #
-        # Verificado que no rompe la ejecucion: PostgreSQL (psycopg) y SQLite
-        # (sqlite3) aceptan igual un `;` final en un SELECT.
+        # Verificado que no rompe la ejecucion: PostgreSQL (psycopg) acepta
+        # igual un `;` final en un SELECT.
         if not sanitized_sql.rstrip().endswith(";"):
             sanitized_sql = sanitized_sql.rstrip() + ";"
 
@@ -296,7 +296,7 @@ class ASTValidator:
             return set()
 
     @classmethod
-    def generate_sql_explanation(cls, sql: str, dialect: str = "sqlite") -> str:
+    def generate_sql_explanation(cls, sql: str, dialect: str = "postgres") -> str:
         """
         Generates a human-friendly, plain-Spanish explanation of what the SQL query does
         using AST inspection without calling an LLM (Idea #39).

@@ -1,4 +1,6 @@
 import uvicorn
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
@@ -12,23 +14,6 @@ from app.db.init_db import init_db
 # apagados salvo que `ENABLE_API_DOCS` los vuelva a encender a proposito.
 _IS_PROD = settings.ENVIRONMENT.lower() == "production"
 _DOCS_ENABLED = settings.ENABLE_API_DOCS if settings.ENABLE_API_DOCS is not None else not _IS_PROD
-
-app = FastAPI(
-    title=settings.PROJECT_NAME,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json" if _DOCS_ENABLED else None,
-    docs_url="/docs" if _DOCS_ENABLED else None,
-    redoc_url="/redoc" if _DOCS_ENABLED else None,
-    description="Backend Sidecar Python para Democratización de Datos Corporativos con IA Local"
-)
-
-# CORS configuration for Vite dev server & Electron desktop app
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 def validate_startup_security():
     """Enforces production environment security checks before starting."""
@@ -62,11 +47,10 @@ def validate_startup_security():
                 "Defina CORS_ORIGINS con los origenes reales."
             )
 
-# Include API v1 router
-app.include_router(api_router, prefix=settings.API_V1_STR)
-
-@app.on_event("startup")
-def on_startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Arranque del servidor. Reemplaza a `@app.on_event("startup")`, deprecado
+    por FastAPI; el mecanismo vigente es el lifespan."""
     logger.info("Iniciando Servidor Backend FastAPI...")
     validate_startup_security()
 
@@ -88,6 +72,29 @@ def on_startup():
         logger.info("Base de datos de metadatos e identidades inicializada correctamente.")
     except Exception as e:
         logger.warning(f"Aviso de inicio de base de datos: {str(e)}. El sistema operará en modo contingencia.")
+
+    yield
+
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    openapi_url=f"{settings.API_V1_STR}/openapi.json" if _DOCS_ENABLED else None,
+    docs_url="/docs" if _DOCS_ENABLED else None,
+    redoc_url="/redoc" if _DOCS_ENABLED else None,
+    description="Backend Sidecar Python para Democratización de Datos Corporativos con IA Local",
+    lifespan=lifespan,
+)
+
+# CORS configuration for Vite dev server & Electron desktop app
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include API v1 router
+app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def root():

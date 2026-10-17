@@ -63,6 +63,42 @@ export interface GovernanceCoverage {
   };
 }
 
+/**
+ * Columnas con politica de datos (`BLOCKED` / `MASKED`) ya atribuidas a su
+ * tabla, tal como las reporta la cobertura.
+ *
+ * `readers` son los roles que PUEDEN leer la tabla: el backend solo informa una
+ * columna como bloqueada o enmascarada cuando lo esta para TODOS ellos, y una
+ * tabla sin lectores (huerfana) no informa columnas. Este helper agrupa y filtra
+ * ese mismo payload; no decide politicas — el si/no lo sigue diciendo el
+ * guardarrail del servidor.
+ */
+export interface ProtectedColumnsRow {
+  table: string;
+  readers: string[];
+  blocked: string[];
+  masked: string[];
+}
+
+export function collectProtectedColumns(
+  tables: GovernanceCoverageTable[]
+): ProtectedColumnsRow[] {
+  return tables
+    .filter(
+      (t) =>
+        // Sin lectores no hay a quien aplicarle la politica: la fila diria
+        // "aplica a los roles con acceso:" con la lista vacia.
+        t.visible_to_roles.length > 0 &&
+        (t.blocked_columns.length > 0 || t.masked_columns.length > 0)
+    )
+    .map((t) => ({
+      table: t.table,
+      readers: t.visible_to_roles,
+      blocked: t.blocked_columns,
+      masked: t.masked_columns,
+    }));
+}
+
 export const permissionService = {
   // Sin catch: si /permissions falla (403 por rol no-admin, 500) el error sube.
   // Degradar a `[]` seria afirmar "no hay ningun permiso en la BD" cuando en

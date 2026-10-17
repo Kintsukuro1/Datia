@@ -11,7 +11,6 @@
   <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Python_3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
-  <img src="https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite">
   <img src="https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
 </p>
 
@@ -28,7 +27,7 @@ flowchart LR
     C1 --> C2{"Capa 2 · Guard de dominio<br/>governance_guard"}
     C2 --> LLM["🧠 LLM local<br/>Qwen2.5-Coder-7B<br/>llama.cpp · Ollama"]
     LLM -- "SQL generado" --> C3{"Capa 3 · AST Guardrail<br/>sqlglot"}
-    C3 -- "SELECT validado" --> DB[("Bases corporativas<br/>PostgreSQL · SQLite")]
+    C3 -- "SELECT validado" --> DB[("Base corporativa<br/>PostgreSQL")]
 ```
 
 ---
@@ -42,7 +41,7 @@ flowchart LR
 | 📑 **Informes Ejecutivos Cuantitativos** | Generación automática de diagnósticos estratégicos C-Level con cifras exactas, márgenes porcentuales, hallazgos clave, recomendaciones accionables y dictamen de nivel de riesgo. |
 | 🛡️ **Gobernanza & AST Guardrail** | Análisis del árbol de sintaxis abstracta con `sqlglot` para forzar consultas de solo lectura (`SELECT` único), bloqueando cualquier comando destructivo (`DROP`, `DELETE`, `UPDATE`, `INSERT`). |
 | 🔐 **RBAC & Column-Level Security** | Enmascaramiento y bloqueo de columnas confidenciales (tokens de pago, API keys, RUTs, IBANs) según el perfil del usuario (`Economista`, `TI`, `Administrador`). |
-| ⚡ **Arquitectura Web Monorepo** | Frontend de alta gama en **React 18 + TypeScript + Vite + TailwindCSS + Apache ECharts** conectado a un backend de alto rendimiento en **Python FastAPI + SQLAlchemy + SQLite/PostgreSQL**, empaquetado para despliegue con Docker (Nginx como servidor de estáticos y proxy inverso al backend). |
+| ⚡ **Arquitectura Web Monorepo** | Frontend de alta gama en **React 18 + TypeScript + Vite + TailwindCSS + Apache ECharts** conectado a un backend de alto rendimiento en **Python FastAPI + SQLAlchemy + PostgreSQL**, empaquetado para despliegue con Docker (Nginx como servidor de estáticos y proxy inverso al backend). |
 
 ---
 
@@ -51,19 +50,19 @@ flowchart LR
 | Capa | Tecnologías |
 | :--- | :--- |
 | **Frontend** | React 18, React Router 7, TypeScript, Vite, Tailwind CSS, Lucide Icons, Apache ECharts (`echarts-for-react`) |
-| **Backend** | Python 3.10+, FastAPI, Uvicorn, SQLAlchemy, Pydantic v2, sqlglot (AST Security), SQLite3 |
-| **Bases de Datos** | PostgreSQL (`psycopg[binary]`) y SQLite3 |
+| **Backend** | Python 3.10+, FastAPI, Uvicorn, SQLAlchemy, Pydantic v2, sqlglot (AST Security) |
+| **Bases de Datos** | PostgreSQL (`psycopg[binary]`) como motor único; los archivos `.sqlite`, `.csv` y `.xlsx` se importan a PostgreSQL |
 | **IA Local** | llama.cpp / Ollama / LM Studio (API compatible con OpenAI), `Qwen2.5-Coder-7B-Instruct-GGUF` |
 | **Despliegue** | Docker + Docker Compose, Nginx como servidor de estáticos y proxy inverso |
 
 ### Fuentes de datos: implementado vs. planificado
 
-`CorporateConnection.db_type` solo admite **PostgreSQL** y **SQLite** (`backend/app/modules/admin_catalog/models.py:7`), y `backend/requirements.txt` solo trae `psycopg[binary]`. Los siguientes motores aparecen en la documentación de visión (DOCS 01/02/06) pero **no están implementados**: no hay driver en `requirements.txt` ni rama que los construya en `core/database.py:build_engine_for_connector`.
+`CorporateConnection.db_type` solo admite **PostgreSQL** (`backend/app/modules/admin_catalog/models.py:7`), y `backend/requirements.txt` solo trae `psycopg[binary]`. Los siguientes motores aparecen en la documentación de visión (DOCS 01/02/06) pero **no están implementados**: no hay driver en `requirements.txt` ni rama que los construya en `core/database.py:build_engine_for_connector`.
 
 | Motor | Estado |
 | :--- | :--- |
 | PostgreSQL | ✅ Implementado |
-| SQLite | ✅ Implementado |
+| SQLite (subida de archivo `.sqlite`) | ⬆️ Se importa a PostgreSQL al subirlo |
 | MySQL / MariaDB (`pymysql`) | ❌ No implementado |
 | Microsoft SQL Server (`pymssql` / `pyodbc`) | ❌ No implementado |
 
@@ -103,10 +102,11 @@ npm run dev
 | 📚 Backend API Docs | `http://localhost:8000/docs` |
 
 > [!NOTE]
-> **Generación local de la base de datos demo**
-> `backend/demo_corporativa.db` **no viene incluida en el repositorio** (`.gitignore` excluye `*.db`). `app/db/init_db.py` la genera en el primer arranque si no existe, **solo cuando el motor activo no es PostgreSQL** (con PostgreSQL arriba, `scripts/setup_postgres_full.py` provisiona los datos base). También se puede generar a mano con `python backend/setup_demo_db.py`.
->
-> `backend/setup_mental_health_db.py` existe, pero escribe sobre la misma `SQLITE_DB_PATH` (`demo_corporativa.db`): no hay ningún `mental_health.sqlite` en el proyecto.
+> **Datos demo**
+> La plataforma usa PostgreSQL como motor único; no hay base SQLite ni script
+> generador. `python backend/scripts/setup_postgres_full.py` crea y siembra las
+> dos bases de la demo (`democratizacion_metadatos` y `democratizacion_empresa`),
+> y `app/db/init_db.py` repite el seed en el primer arranque si hace falta.
 
 ### 4. Alternativa: Docker Compose
 

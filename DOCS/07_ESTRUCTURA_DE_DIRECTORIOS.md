@@ -82,7 +82,7 @@ democratizacion-de-datos/
 │   │       │                    # response_builder, narrative_stream, suggestions_service,
 │   │       │                    # models, schemas, router
 │   │       ├── admin_catalog/   # models, schemas, router, tabular_importer
-│   │       │   └── importers/   # base, csv, excel, postgres, sqlite
+│   │       │   └── importers/   # base, postgres (ingesta csv/excel/sqlite/sql)
 │   │       ├── catalog/services/# catalog_service, catalog_enricher, connector_service,
 │   │       │                    # null_manager, schema_inspector
 │   │       ├── reports/         # generator, data_compiler, pdf_exporter, excel_exporter, schemas
@@ -91,8 +91,6 @@ democratizacion-de-datos/
 │   ├── tests/                   # Suite pytest (~500 tests, cambia casi cada semana)
 │   ├── scripts/                 # Utilidades de operación (PostgreSQL, credenciales, RBAC)
 │   ├── main.py                  # Punto de entrada FastAPI (app, CORS, startup, /health)
-│   ├── setup_demo_db.py         # Genera demo_corporativa.db
-│   ├── setup_mental_health_db.py
 │   ├── Dockerfile
 │   ├── pyproject.toml
 │   └── requirements.txt
@@ -122,11 +120,11 @@ Lógica de inferencia y ejecución Text-to-SQL descompuesta:
 
 ### 3.2. `backend/app/modules/admin_catalog/importers/`
 Conversión e ingesta de datos tabulares:
-- `base.py`: Sanitización e inferencia de tipos SQLite.
-- `csv_importer.py`, `excel_importer.py`, `sqlite_importer.py`, `postgres_importer.py`.
+- `base.py`: Sanitización de identificadores SQL.
+- `postgres_importer.py`: `import_csv_to_postgres`, `import_excel_to_postgres`, `import_sqlite_to_postgres`, `import_sql_script_to_postgres`, inferencia de tipos y cast de valores.
 
 ### 3.3. `backend/app/core/database.py`
-Motor de metadatos (PostgreSQL con fallback a SQLite), `ensure_schema_migrations()` para
+Motor de metadatos (PostgreSQL), `ensure_schema_migrations()` para
 migraciones incrementales de columnas, y el contextmanager `connector_engine()` que
 libera el pool del conector al salir del bloque.
 

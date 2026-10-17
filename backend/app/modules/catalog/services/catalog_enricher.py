@@ -1,5 +1,7 @@
 import re
 import json
+import time
+import asyncio
 from typing import Any, List, Optional, Dict, Tuple
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_
@@ -8,8 +10,42 @@ from sqlalchemy.orm import Session
 from app.modules.admin_catalog.models import SemanticCatalog, CorporateConnection
 from app.modules.admin_catalog.schemas import AutoEnrichRequest, AutoEnrichResponse
 from app.modules.chat_engine.llm_service import LLMService
+from app.modules.chat_engine.llm_diagnostic_router import _resolve_llm_base_url
+from app.modules.system.health_service import HealthService
+from app.core.config import settings
 from app.core.logging import logger
-from app.modules.catalog.services.schema_inspector import SchemaInspector, SchemaIntrospectionError
+from app.modules.catalog.services.schema_inspector import SchemaInspector
+
+# --- Limites del enriquecimiento con IA ---------------------------------------
+# El enricher original hacia UNA llamada al LLM POR COLUMNA, sin cota, y colgo
+# el wizard de ingreso 30+ minutos en inferencia CPU (commit c4cb6bc, que lo
+# reemplazo por heuristicas y dejo la opcion "IA" sin IA). Estos son los fences
+# que hacen viable la version real: UNA llamada por LOTE de columnas, techo por
+# llamada, presupuesto total, corte temprano tras fallos consecutivos, y
+# heuristica como baseline de lo que no llegue.
+#
+# El lote (y no la tabla entera) es deliberado: un JSON de 15 columnas (~1000
+# tokens) en CPU supera el techo por llamada o se trunca por `max_tokens`, y en
+# ambos casos la tabla PIERDE toda la IA por una sola llamada que no termino
+# (caso real del wizard con un 7B Q4 en CPU). Con lotes chicos cada llamada
+# termina, y un lote que falla no condena a los demas de la misma tabla.
+#
+# Son knobs de hardware (viven en `settings`): en una maquina con GPU se pueden
+# subir sin tocar el resto de la logica. El tamano efectivo del lote baja solo
+# con la velocidad medida del modelo (ver `_columns_per_call`).
+LLM_TABLE_TIMEOUT_S = settings.LLM_ENRICH_TABLE_TIMEOUT_S
+LLM_TOTAL_BUDGET_S = settings.LLM_ENRICH_TOTAL_BUDGET_S
+LLM_COLUMNS_PER_CALL = settings.LLM_ENRICH_COLUMNS_PER_CALL
+LLM_MAX_CONSECUTIVE_FAILURES = 2
+LLM_TOKENS_PER_COLUMN = 90
+LLM_MAX_TOKENS_CAP = 2048
+
+LLM_SYSTEM_PROMPT = (
+    "Eres un especialista en gobernanza de datos, catalogos semanticos y ERPs "
+    "corporativos (SAP, Oracle, AS/400). Reconoce y traduce con precision "
+    "acronimos tecnicos y codigos alemanes de SAP (ej. BKPF, BSEG, BUKRS, WRBTR, "
+    "MATNR, KUNNR, VBELN). Responde UNICAMENTE con un JSON valido, sin texto adicional."
+)
 
 class CatalogEnricher:
     """
@@ -272,7 +308,6 @@ class CatalogEnricher:
         cls,
         db: Session,
         connection_id: int,
-        db_path: Optional[str] = None,
         only_tables: Optional[List[str]] = None
     ) -> int:
         """
@@ -281,7 +316,7 @@ class CatalogEnricher:
         """
         conn_obj = db.query(CorporateConnection).filter(CorporateConnection.id == connection_id).first()
         try:
-            tables_meta = SchemaInspector.introspect_connection_metadata(conn_obj, db_path)
+            tables_meta = SchemaInspector.introspect_connection_metadata(conn_obj)
         except Exception as ex:
             # `SchemaInspector` propaga `SchemaIntrospectionError` en vez de devolver
             # [] (no se puede leer != base vacia). Esta siembra es best-effort y sus
@@ -334,41 +369,245 @@ class CatalogEnricher:
 
         return seeded_count
 
+    @staticmethod
+    def _build_table_prompt(table_name: str, columns: List[Dict[str, Any]]) -> str:
+        """Prompt batch de UNA tabla: todas sus columnas en un solo JSON array.
+
+        Los `sample_values` NO se incluyen a proposito: este texto persiste en
+        `SemanticCatalog.description` y sale por dos rutas que el enmascarado no
+        cubre (el diccionario de datos y el schema prompt del chat). Mandarlos al
+        modelo era la via por la que valores de columnas MASKED se filtraban en
+        claro. El admin sigue viendo las muestras en la mesa de revision.
+        """
+        cols_desc = "; ".join(f"{c['name']} | {c.get('data_type', '')}" for c in columns)
+        return (
+            f"Tabla: '{table_name}'. Columnas (nombre | tipo): {cols_desc}.\n"
+            "Genera para CADA una de las columnas listadas una entrada con "
+            "'friendly_name' (nombre de negocio en espanol), 'description' "
+            "(descripcion funcional clara) y 'business_formula' (formula o regla "
+            "de calculo sugerida).\n"
+            "Responde UNICAMENTE con un JSON array, sin texto adicional, con la forma: "
+            '[{"column": "<nombre exacto>", "friendly_name": "...", '
+            '"description": "...", "business_formula": "..."}]'
+        )
+
+    @staticmethod
+    def _parse_table_entries(raw: Optional[str]) -> Dict[str, Dict[str, str]]:
+        """Extrae el JSON array de la respuesta del modelo, indexado por columna.
+
+        El modelo suele envolver el JSON en texto; se busca el primer array. Una
+        respuesta que no parsea devuelve {} y la tabla entera cae a heuristica:
+        no hay field-by-field para una respuesta rota.
+        """
+        if not raw:
+            return {}
+        match = re.search(r"\[[\s\S]*\]", raw)
+        if not match:
+            return {}
+        try:
+            data = json.loads(match.group(0))
+        except Exception:
+            return {}
+        if not isinstance(data, list):
+            return {}
+        entries: Dict[str, Dict[str, str]] = {}
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            col = str(item.get("column", "") or "").strip().lower()
+            if not col:
+                continue
+            entries[col] = {
+                "friendly_name": str(item.get("friendly_name", "") or "").strip(),
+                "description": str(item.get("description", "") or "").strip(),
+                "business_formula": str(item.get("business_formula", "") or "").strip(),
+            }
+        return entries
+
+    @classmethod
+    def _llm_replacement_allowed(cls, current: Optional[str], heuristic_value: Optional[str]) -> bool:
+        """Puede la IA pisar este campo?
+
+        Si (vacio, o el texto actual ES exactamente el placeholder que produce
+        `heuristic_enrich`). Un texto escrito a mano no coincide con la plantilla
+        y sobrevive, aunque `is_ai_generated` diga True: ese flag no distingue
+        humano de maquina (el seeder lo marca siempre), y tratarlo como permiso
+        para sobreescribir borraba trabajo curado (bug que cubre
+        test_admin_curated_description_is_not_overwritten).
+
+        Techo conocido: si las plantillas heuristicas cambian de redaccion en el
+        futuro, los placeholders viejos dejan de matchear y se protegen como si
+        fueran curados. Preferible (no se pisa nada) a lo inverso.
+        """
+        current_text = (current or "").strip()
+        if not current_text:
+            return True
+        return current_text == (heuristic_value or "").strip()
+
+    @staticmethod
+    def _chunk_columns(columns: List[Dict[str, Any]], chunk_size: int) -> List[List[Dict[str, Any]]]:
+        """Parte las columnas de una tabla en lotes de a lo sumo `chunk_size`."""
+        size = max(1, int(chunk_size))
+        return [columns[i:i + size] for i in range(0, len(columns), size)]
+
+    @staticmethod
+    def _columns_per_call(tokens_per_second: Optional[float]) -> int:
+        """Columnas por llamada: las que entren en el techo por llamada.
+
+        Con la velocidad medida (tokens/s, la misma cache que usa la estimacion
+        del wizard) se calcula cuantos tokens de salida entran en
+        `LLM_TABLE_TIMEOUT_S` con 50% de margen (el modelo puede estar mas
+        lento ese dia). Sin medicion, el techo configurado. Minimo 2 columnas:
+        de a una llamada multiplicaria los prompts sin necesidad.
+        """
+        if not tokens_per_second or tokens_per_second <= 0:
+            return LLM_COLUMNS_PER_CALL
+        affordable = int((LLM_TABLE_TIMEOUT_S * tokens_per_second * 0.5) / LLM_TOKENS_PER_COLUMN)
+        return max(2, min(LLM_COLUMNS_PER_CALL, affordable))
+
+    @classmethod
+    async def _resolve_chunk_size(cls, llm_base_url: Optional[str], llm_model_name: Optional[str]) -> int:
+        """Columnas por llamada, ajustadas a la velocidad medida del modelo."""
+        # Import local: `enrich_estimator` importa constantes de este modulo.
+        from app.modules.catalog.services.enrich_estimator import EnrichEstimator
+
+        try:
+            tps = await EnrichEstimator.measure_tokens_per_second(llm_base_url, llm_model_name)
+        except Exception:
+            tps = None
+        return cls._columns_per_call(tps)
+
+    @classmethod
+    async def _enrich_columns_with_llm(
+        cls,
+        existing_index,
+        tbl_info: Dict[str, Any],
+        columns: List[Dict[str, Any]],
+    ) -> Tuple[Optional[bool], int]:
+        """Enriquece UN LOTE de columnas de una tabla con UNA llamada al modelo.
+
+        Devuelve `(resultado, aplicados)`:
+          - (None, 0)  no habia nada elegible: no vale gastar una llamada.
+          - (False, 0) el modelo no respondio o devolvio algo inusable.
+          - (True, n)  n columnas recibieron descripcion del modelo.
+        """
+        tbl = tbl_info["table_name"]
+        schema_name = tbl_info["schema_name"]
+        if not columns:
+            return None, 0
+
+        eligible = False
+        for col in columns:
+            row = cls._lookup_existing(existing_index, tbl, col["name"], schema_name)
+            if row is None:
+                continue
+            heur = cls.heuristic_enrich(
+                tbl, col["name"], col.get("data_type", ""), col.get("sample_values") or []
+            )
+            for field in ("friendly_name", "description", "business_formula"):
+                if cls._llm_replacement_allowed(getattr(row, field, None), heur[field]):
+                    eligible = True
+                    break
+            if eligible:
+                break
+        if not eligible:
+            return None, 0
+
+        prompt = cls._build_table_prompt(tbl, columns)
+        max_tokens = min(LLM_MAX_TOKENS_CAP, LLM_TOKENS_PER_COLUMN * len(columns) + 128)
+        try:
+            raw = await asyncio.wait_for(
+                LLMService.generate_completion(
+                    prompt,
+                    system_prompt=LLM_SYSTEM_PROMPT,
+                    max_tokens=max_tokens,
+                    temperature=0.2,
+                ),
+                timeout=LLM_TABLE_TIMEOUT_S,
+            )
+        except Exception as ex:
+            logger.warning("Enriquecimiento IA: la tabla %s no obtuvo respuesta: %s", tbl, ex)
+            return False, 0
+
+        entries = cls._parse_table_entries(raw)
+        if not entries:
+            logger.warning("Enriquecimiento IA: la tabla %s devolvio JSON inusable.", tbl)
+            return False, 0
+
+        applied = 0
+        for col in columns:
+            entry = entries.get(col["name"].strip().lower())
+            if not entry:
+                continue
+            row = cls._lookup_existing(existing_index, tbl, col["name"], schema_name)
+            if row is None:
+                continue
+            heur = cls.heuristic_enrich(
+                tbl, col["name"], col.get("data_type", ""), col.get("sample_values") or []
+            )
+            touched = False
+            for field in ("friendly_name", "description", "business_formula"):
+                value = entry.get(field) or ""
+                if value and cls._llm_replacement_allowed(getattr(row, field, None), heur[field]):
+                    setattr(row, field, value)
+                    touched = True
+            if touched:
+                row.is_ai_generated = True
+                applied += 1
+        return True, applied
+
     @classmethod
     async def auto_enrich_catalog(cls, db: Session, req: Optional[AutoEnrichRequest] = None) -> AutoEnrichResponse:
         conn_req_id = req.connection_id if req else None
 
-        targets: List[Tuple[CorporateConnection, str]] = []
-        # Antes se inicializaba mas abajo; ahora la resolucion de ruta tambien
-        # puede fallar (una ruta configurada inexistente ya no cae a la base
-        # demo) y ese fallo se reporta, no se traga.
+        # Fase IA: opt-in y con puerta de conectividad. Contra un LLM caido, el
+        # probe TCP decide en ~1s y evita pagar la cadena completa de timeouts
+        # (varios segundos) por tabla antes de rendirse. El probe NO garantiza
+        # que una inferencia responda: por eso los fallos por tabla siguen
+        # contando y cortando.
+        llm_requested = bool(req and req.use_llm)
+        llm_base_url: Optional[str] = None
+        llm_model_name: Optional[str] = None
+        llm_skip_note = ""
+        if req and req.use_llm:
+            llm_model_name = req.model_name
+            if req.base_url:
+                # Misma validacion anti-SSRF que /system/health: un host fuera
+                # del loopback se rechaza ANTES de emitir una sola request.
+                llm_base_url = _resolve_llm_base_url(req.base_url)
+            try:
+                probe = await HealthService.check_llm_connectivity(
+                    base_url=llm_base_url,
+                    model_name=llm_model_name,
+                    timeout=2.0,
+                )
+            except Exception as ex:
+                probe = {"success": False, "message": str(ex)}
+            if not probe.get("success"):
+                llm_skip_note = (
+                    " El modelo de IA local no respondió al chequeo de conectividad, "
+                    "así que el catálogo quedó con reglas heurísticas."
+                )
+
+        llm_enabled = llm_requested and not llm_skip_note
+
+        targets: List[CorporateConnection] = []
         failed_connections: List[str] = []
         if conn_req_id:
             conn_obj = db.query(CorporateConnection).filter(CorporateConnection.id == conn_req_id).first()
-            if conn_obj:
-                try:
-                    db_path, _ = SchemaInspector.resolve_connection_db_path(db, conn_req_id)
-                except SchemaIntrospectionError as ex:
-                    # Pidieron ESA base y no esta: mismo corte que el diccionario
-                    # de datos (502), no un 200 con "0 campos enriquecidos".
-                    raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail=str(ex)
-                    )
-                targets.append((conn_obj, db_path))
+            if not conn_obj:
+                # Un id explicito que no existe es 404, no un barrido silencioso
+                # de cero campos (mismo corte que el diccionario de datos).
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Conexión corporativa {conn_req_id} no encontrada.",
+                )
+            targets.append(conn_obj)
         else:
             active_conns = db.query(CorporateConnection).filter(CorporateConnection.is_active == True).all()
             if not active_conns:
                 active_conns = db.query(CorporateConnection).all()
-            for c_obj in active_conns:
-                try:
-                    db_path, _ = SchemaInspector.resolve_connection_db_path(db, c_obj.id)
-                except SchemaIntrospectionError as ex:
-                    # Barrido: una conexion rota no puede tirar el request ni
-                    # perderse en silencio (mismo idioma que el try de abajo).
-                    failed_connections.append(f"{getattr(c_obj, 'name', c_obj.id)}: {ex}")
-                    continue
-                targets.append((c_obj, db_path))
+            targets = list(active_conns)
 
         if not targets and not failed_connections:
             raise HTTPException(
@@ -377,14 +616,24 @@ class CatalogEnricher:
             )
 
         total_enriched_count = 0
-        last_conn_id = targets[0][0].id if targets else None
+        llm_enriched_count = 0
+        llm_consecutive_failures = 0
+        llm_stopped_early = False
+        # Por que se corto la fase: "budget" (se agoto el tiempo) o "failures"
+        # (el modelo fallo lotes seguidos). Los mensajes difieren: decir "limite
+        # de tiempo" cuando el modelo respondio basura seria mentir.
+        llm_cut_reason: Optional[str] = None
+        # El presupuesto es del request entero, no por conexion: un barrido de N
+        # conexiones no puede multiplicar el techo por N.
+        llm_phase_started_at = time.time() if llm_enabled else None
+        last_conn_id = targets[0].id if targets else None
 
-        for conn_obj, db_path in targets:
+        for conn_obj in targets:
             conn_id = conn_obj.id
             last_conn_id = conn_id
             existing_index = cls._load_existing_index(db, conn_id)
             try:
-                tables_meta = SchemaInspector.introspect_connection_metadata(conn_obj, db_path)
+                tables_meta = SchemaInspector.introspect_connection_metadata(conn_obj)
             except Exception as ex:
                 # No se puede leer la conexión no es lo mismo que "no hay nada que
                 # enriquecer". Antes se tragaba el fallo y respondía 0 campos.
@@ -442,6 +691,42 @@ class CatalogEnricher:
                         cls._register_new(existing_index, new_cat)
                         total_enriched_count += 1
 
+            # --- Fase IA: despues de la heuristica, que es la baseline. --------
+            # Lo que el modelo aplique pisa solo placeholders heuristicos (ver
+            # `_llm_replacement_allowed`); si nada llega, el catalogo ya quedo
+            # usable gracias a la pasada de arriba.
+            if llm_enabled:
+                with LLMService.request_config(llm_base_url, llm_model_name):
+                    chunk_size = await cls._resolve_chunk_size(llm_base_url, llm_model_name)
+                    # Unidades de trabajo: (tabla, lote de columnas). El
+                    # presupuesto y el corte temprano se evaluan por lote, no
+                    # por tabla: un lote que falla no condena a los demas de la
+                    # misma tabla.
+                    units = [
+                        (tbl_info, chunk)
+                        for tbl_info in tables_meta
+                        for chunk in cls._chunk_columns(tbl_info.get("columns") or [], chunk_size)
+                    ]
+                    for tbl_info, chunk in units:
+                        if time.time() - llm_phase_started_at > LLM_TOTAL_BUDGET_S:
+                            llm_stopped_early = True
+                            llm_cut_reason = "budget"
+                            break
+                        if llm_consecutive_failures >= LLM_MAX_CONSECUTIVE_FAILURES:
+                            llm_stopped_early = True
+                            llm_cut_reason = "failures"
+                            break
+                        result, applied = await cls._enrich_columns_with_llm(existing_index, tbl_info, chunk)
+                        if result is None:
+                            # Nada elegible (todo curado o vacio): no es un fallo
+                            # del modelo y no debe cortar la fase.
+                            continue
+                        if result:
+                            llm_consecutive_failures = 0
+                            llm_enriched_count += applied
+                        else:
+                            llm_consecutive_failures += 1
+
         db.commit()
 
         # Query all items for the target connection(s)
@@ -478,14 +763,55 @@ class CatalogEnricher:
         else:
             message = (
                 "No se enriqueció ningún campo porque no se pudo leer la metadata de las "
-                f"conciones indicadas ({len(failed_connections)} conexión(es)): "
+                f"conexiones indicadas ({len(failed_connections)} conexión(es)): "
                 + " | ".join(failed_connections)
             )
             success = False
+
+        # El resultado de la IA se declara aparte del heurístico: si el modelo no
+        # respondió o no llegó, el mensaje lo dice en vez de dejar creer que la
+        # descripción que se ve salió del modelo.
+        if llm_requested:
+            if llm_skip_note:
+                message += llm_skip_note
+            elif llm_stopped_early and llm_cut_reason == "budget":
+                if llm_enriched_count > 0:
+                    message += (
+                        f" La IA alcanzó a describir {llm_enriched_count} campo(s) antes de "
+                        "agotar su límite de tiempo; el resto quedó con reglas heurísticas."
+                    )
+                else:
+                    message += (
+                        " La IA no alcanzó a responder dentro del límite de tiempo; el "
+                        "catálogo quedó con reglas heurísticas."
+                    )
+            elif llm_stopped_early:
+                # Corte por fallos consecutivos: el modelo no respondio (o
+                # respondio inusable) dos lotes seguidos. No es un limite de
+                # tiempo y el mensaje no puede decir que si.
+                if llm_enriched_count > 0:
+                    message += (
+                        f" La IA alcanzó a describir {llm_enriched_count} campo(s) antes de que "
+                        "el modelo fallara en llamadas consecutivas; el resto quedó con reglas heurísticas."
+                    )
+                else:
+                    message += (
+                        " El modelo de IA falló en llamadas consecutivas (sin respuesta o "
+                        "respuestas inusables); el catálogo quedó con reglas heurísticas."
+                    )
+            elif llm_enriched_count > 0:
+                message += f" La IA describió {llm_enriched_count} campo(s) con el modelo local."
+            else:
+                message += (
+                    " El modelo de IA no devolvió descripciones usables; el catálogo "
+                    "quedó con reglas heurísticas."
+                )
 
         return AutoEnrichResponse(
             success=success,
             message=message,
             enriched_count=total_enriched_count,
+            llm_enriched_count=llm_enriched_count,
+            llm_stopped_early=llm_stopped_early,
             catalog_items=all_items
         )

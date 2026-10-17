@@ -64,12 +64,37 @@ class DataDictionaryResponse(BaseModel):
 class AutoEnrichRequest(BaseModel):
     connection_id: Optional[int] = None
     table_name: Optional[str] = None
+    # La IA es opt-in: cuesta tiempo de modelo (y en CPU puede ser la diferencia
+    # entre un request de 1s y minutos), asi que el caller la pide explicitamente.
+    # `base_url`/`model_name` permiten honrar la config del usuario logueado
+    # (misma validacion anti-SSRF que /system/health).
+    use_llm: bool = False
+    base_url: Optional[str] = None
+    model_name: Optional[str] = None
 
 class AutoEnrichResponse(BaseModel):
     success: bool
     message: str
     enriched_count: int
+    llm_enriched_count: int = 0
+    # La fase IA se corto por presupuesto o por fallos consecutivos: con
+    # `llm_enriched_count > 0` es una corrida PARCIAL (lo que llego quedo), y la
+    # UI lo puede avisar sin parsear el mensaje.
+    llm_stopped_early: bool = False
     catalog_items: List[SemanticCatalogOut]
+
+class EnrichEstimateResponse(BaseModel):
+    """Duracion estimada del enriquecimiento con IA, medida antes de iniciarlo."""
+    available: bool
+    message: str = ""
+    total_tables: int = 0
+    total_columns: int = 0
+    tokens_per_second: Optional[float] = None
+    estimated_seconds: Optional[int] = None
+    min_seconds: Optional[int] = None
+    max_seconds: Optional[int] = None
+    beyond_budget: bool = False
+    budget_seconds: int = 360
 
 # --- Connection Schemas ---
 class CorporateConnectionCreate(BaseModel):
@@ -176,7 +201,7 @@ class ConnectionTestRequest(BaseModel):
     database_name: str
     username: str
     # Este endpoint NO lee la contraseña: `test_connection_connectivity` solo
-    # abre un socket TCP o el fichero SQLite en modo ro. Exigirla era un
+    # abre un socket TCP. Exigirla era un
     # requisito falso que rompia al boton "Probar" de la tarjeta, que prueba una
     # conexion YAGUARDADA y por tanto no tiene la contraseña en el cliente
     # (vive cifrada en el servidor). Ese 422 era ademas la causa de que la

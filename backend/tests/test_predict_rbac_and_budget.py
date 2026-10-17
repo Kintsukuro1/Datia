@@ -211,7 +211,7 @@ class TestTablaDeHechosSeResuelveUnaVez(unittest.TestCase):
         # fallaria solo, asi que se pasa `None` para que un acceso reviente.
         with patch.object(forecast_service, "SQLExecutor") as executor:
             table, cols = forecast_service._load_fact_table(
-                None, None, False, "Economista", 1, 1, "sqlite", budget
+                None, None, False, "Economista", 1, 1, "postgresql", budget
             )
         self.assertEqual(table, "fact_ventas")
         self.assertEqual(cols, [{"name": "monto"}])
@@ -232,7 +232,7 @@ class TestTablaDeHechosSeResuelveUnaVez(unittest.TestCase):
              patch.object(forecast_service.DynamicSchemaPruningService,
                           "get_physical_table_columns", return_value=cols):
             self.assertEqual(
-                forecast_service._load_fact_table(db, conn, False, "Economista", 1, 1, "sqlite"),
+                forecast_service._load_fact_table(db, conn, False, "Economista", 1, 1, "postgresql"),
                 ("fact_ventas", cols),
             )
 

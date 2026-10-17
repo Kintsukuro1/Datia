@@ -4,14 +4,15 @@ colisión de ruta con dos uploads del mismo archivo en el mismo segundo, y
 clasificación de rolesTI/Financieros por subcadena en vez de por token.
 """
 import io
-import os
 import re
-import time
 import uuid
 import unittest
 from unittest.mock import patch, MagicMock
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
+
+from conftest import pg_source_engine
 
 from main import app
 from app.core.config import settings
@@ -149,6 +150,15 @@ class TestConnectorCreateDatabaseFailure(unittest.TestCase):
 
 
 class TestUploadPathCollision(unittest.TestCase):
+    """BUG 8: dos subidas del mismo archivo en el mismo segundo no pueden
+    compartir base.
+
+    Antes el nombre del archivo salia de `int(time.time())`: dos uploads de
+    datos.csv en el mismo segundo producian dos conectores (datos y datos_1)
+    apuntando al MISMO archivo, el segundo import pisaba al primero y borrar uno
+    dejaba al otro apuntando a la nada. Hoy cada subida crea su propia base
+    PostgreSQL con sufijo uuid, asi que el reloj no puede colisionarlas.
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -168,12 +178,8 @@ class TestUploadPathCollision(unittest.TestCase):
         self.names = []
 
     def tearDown(self):
-        # Borrar la fila a mano dejaba su catalogo y sus permisos colgando: en
-        # SQLite el siguiente `connection_id` es max+1, asi que al borrar el max ese
-        # id vuelve a estar libre y la conexion siguiente hereda las filas de la
-        # que ya no existe (medido: un `datos` de una subida aparecia como tabla
-        # huerfana en la cobertura de gobernanza de OTRO test). Se borra por la
-        # misma via que el producto, que tambien se lleva el archivo subido.
+        # Se borra por la misma via que el producto: borrar la fila a mano
+        # dejaria la base PostgreSQL subida viva y huerfana en el servidor.
         from app.modules.catalog.services.connector_service import ConnectorDomainService
 
         for name in self.names:
@@ -185,23 +191,39 @@ class TestUploadPathCollision(unittest.TestCase):
         self.db.close()
 
     def _upload_csv(self, filename, name):
-        """Sube un CSV forzando la rama SQLite, que es donde se construyen las rutas."""
+        """Sube un CSV: el importador crea una base PostgreSQL dedicada."""
         csv = b"col_a,col_b\n1,2\n3,4\n"
-        from app.core.database import engine as app_engine
-        with patch.object(type(app_engine.dialect), "name", "sqlite"):
-            return self.client.post(
-                "/api/v1/connectors/upload",
-                files={"file": (filename, io.BytesIO(csv), "text/csv")},
-                data={"name": name},
-                headers=self.headers,
-            )
+        return self.client.post(
+            "/api/v1/connectors/upload",
+            files={"file": (filename, io.BytesIO(csv), "text/csv")},
+            data={"name": name},
+            headers=self.headers,
+        )
 
-    def test_two_uploads_of_same_file_in_same_second_get_distinct_paths(self):
-        """BUG 8: `int(time.time())` como nombre de archivo tiene granularidad de
-        segundo. Dos uploads de datos.csv en el mismo segundo producían dos
-        conectores distintos (datos y datos_1) apuntando al MISMO archivo: el
-        segundo import pisaba el primero y borrar uno dejaba al otro apuntando a
-        la nada."""
+    def _db_exists(self, db_name):
+        eng = pg_source_engine("postgres")
+        try:
+            with eng.connect() as c:
+                return bool(c.execute(
+                    text("SELECT 1 FROM pg_database WHERE datname = :n"), {"n": db_name}
+                ).scalar())
+        finally:
+            eng.dispose()
+
+    def _table_row_count(self, db_name):
+        """Cuenta las filas de la unica tabla del dataset subido."""
+        eng = pg_source_engine(db_name)
+        try:
+            with eng.connect() as c:
+                tables = [r[0] for r in c.execute(text(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                ))]
+                self.assertTrue(tables, f"{db_name} no tiene ninguna tabla")
+                return c.execute(text(f'SELECT COUNT(*) FROM "{tables[0]}"')).scalar()
+        finally:
+            eng.dispose()
+
+    def test_two_uploads_of_same_file_in_same_second_get_distinct_databases(self):
         with patch("app.modules.catalog.services.connector_service.time.time",
                    return_value=1700000000.0):
             r1 = self._upload_csv("datos.csv", "probe-datos-1")
@@ -211,30 +233,20 @@ class TestUploadPathCollision(unittest.TestCase):
         self.assertEqual(r2.status_code, 201, r2.text[:300])
         self.names = ["probe-datos-1", "probe-datos-2"]
 
-        path1 = r1.json()["host"]
-        path2 = r2.json()["host"]
+        db1 = r1.json()["database_name"]
+        db2 = r2.json()["database_name"]
         self.assertNotEqual(
-            path1, path2,
-            f"los dos conectores apuntan al mismo archivo: {path1}",
+            db1, db2,
+            f"las dos subidas comparten base: {db1}",
         )
-        self.assertTrue(os.path.exists(path1))
-        self.assertTrue(os.path.exists(path2))
 
-        # Y el segundo import NO pisa el contenido del primero: los dos archivos
-        # existen y cada uno conserva sus filas.
-        import sqlite3
-        for p in (path1, path2):
-            with sqlite3.connect(p) as c:
-                tables = [r[0] for r in c.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'")]
-                self.assertTrue(tables, f"{p} no tiene ninguna tabla")
-                self.assertEqual(
-                    c.execute(f'SELECT COUNT(*) FROM "{tables[0]}"').fetchone()[0], 2,
-                    f"contenido inesperado en {p}",
-                )
+        # Y el segundo import NO pisa el contenido del primero: cada base tiene
+        # su tabla con las 2 filas del CSV.
+        self.assertEqual(self._table_row_count(db1), 2, f"contenido inesperado en {db1}")
+        self.assertEqual(self._table_row_count(db2), 2, f"contenido inesperado en {db2}")
 
-    def test_same_file_uploaded_twice_does_not_alias_after_deletion(self):
-        """Borrar un conector no deja al otro apuntando a un archivo inexistente."""
+    def test_same_file_uploaded_twice_does_not_drop_the_other_database(self):
+        """Borrar un conector no se lleva la base del otro."""
         with patch("app.modules.catalog.services.connector_service.time.time",
                    return_value=1700000100.0):
             r1 = self._upload_csv("alias.csv", "probe-alias-1")
@@ -243,12 +255,13 @@ class TestUploadPathCollision(unittest.TestCase):
         self.assertEqual(r2.status_code, 201, r2.text[:300])
         self.names = ["probe-alias-1", "probe-alias-2"]
 
-        path1, path2 = r1.json()["host"], r2.json()["host"]
+        db1, db2 = r1.json()["database_name"], r2.json()["database_name"]
         del_res = self.client.delete(
             f"/api/v1/connectors/{r1.json()['id']}", headers=self.headers)
         self.assertEqual(del_res.status_code, 200, del_res.text[:300])
-        self.assertFalse(os.path.exists(path1))
-        self.assertTrue(os.path.exists(path2), "borrar un conector se llevó el archivo del otro")
+
+        self.assertFalse(self._db_exists(db1), "la base del conector eliminado quedo viva")
+        self.assertTrue(self._db_exists(db2), "borrar un conector se llevo la base del otro")
 
 
 class TestRoleTokenMatching(unittest.TestCase):

@@ -130,7 +130,13 @@ export function useAdminCatalog() {
     setEnrichSuccessMsg(null);
     setEnrichErrorMsg(null);
     try {
-      const res = await catalogService.autoEnrich(selectedConnectionId || undefined);
+      // `useLlm: true` porque el boton promete IA: con el modelo caido el
+      // backend cae a heuristicas y lo declara en el mensaje.
+      const res = await catalogService.autoEnrich(
+        selectedConnectionId || undefined,
+        undefined,
+        { useLlm: true }
+      );
       // `success: false` es un fallo del enriquecimiento aunque el POST haya
       // respondido 200: pintarlo en verde afirmaba que enriquecio. Y sin
       // refresco: nada cambio en el servidor.

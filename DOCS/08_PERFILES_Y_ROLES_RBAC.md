@@ -46,7 +46,7 @@ Todo usuario recién registrado recibe automáticamente el perfil **Usuario Cons
 - **Dominio:** Total. Es el único rol con bypass de la matriz de permisos.
 - **Capacidades Exclusivas:**
   1. Asignar y modificar roles a usuarios registrados.
-  2. Registrar, editar y probar conexiones a fuentes de datos (PostgreSQL, MSSQL, MySQL, SQLite).
+  2. Registrar, editar y probar conexiones a fuentes de datos (hoy solo PostgreSQL; MySQL/MSSQL/Oracle figuran en la UI del wizard como visión no implementada).
   3. Configurar llaves de cifrado Fernet AES-256 para cadenas de conexión.
   4. Ejecutar el **auto-enriquecimiento con IA** sobre el Catálogo Semántico.
   5. Consultar la auditoría global y la trazabilidad de todas las consultas.
@@ -227,7 +227,7 @@ Aplicadas a **todos** los roles salvo el **Administrador de Plataforma**. El Dir
 | `dim_empleados.sueldo_mensual`, `salario`, `salario_bruto`, `bono_anual` | `BLOCKED` | Remuneración individual. El único rol que los ve es el Gerente de Talento, por necesidad legítima. |
 | `dim_empleados.cuenta_bancaria_iban` | `BLOCKED` | Cuenta bancaria. |
 
-Se siembran **todos** los nombres de columna que usan las demos: las dos demos no coinciden entre sí (`sueldo_mensual` en PostgreSQL, `salario_bruto` en SQLite), y una lista por motor dejaba la columna sin clasificar en la otra — es decir, servida en claro a cualquier rol.
+Se siembran **todos** los nombres de columna que usaron las demos (`sueldo_mensual`, `salario`, `salario_bruto`, `bono_anual`): una lista incompleta deja la columna sin clasificar — es decir, servida en claro a cualquier rol.
 
 ---
 

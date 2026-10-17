@@ -2,7 +2,6 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import time
 import uuid
 from typing import List, Optional, Any, Dict
@@ -18,9 +17,7 @@ from app.modules.admin_catalog.schemas import (
     CorporateConnectionCreate, CorporateConnectionUpdate, CorporateConnectionOut,
     ConnectionTestRequest, ConnectionTestResult
 )
-from app.core.database import engine as app_engine
 from app.modules.admin_catalog.tabular_importer import (
-    convert_uploaded_file_to_sqlite,
     convert_uploaded_file_to_postgres,
 )
 from app.modules.catalog.services.catalog_service import CatalogDomainService
@@ -170,7 +167,7 @@ class ConnectorDomainService:
             cls._activate_exclusively(db, new_conn.id)
             db.commit()
 
-        CatalogDomainService.seed_catalog_heuristics_for_connection(db, new_conn.id, new_conn.host)
+        CatalogDomainService.seed_catalog_heuristics_for_connection(db, new_conn.id)
 
         return cls.connector_to_out(db, new_conn)
 
@@ -195,7 +192,7 @@ class ConnectorDomainService:
         if ext not in allowed_exts:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Formato no soportado. Debe ser un archivo SQLite, Excel, CSV o volcado SQL."
+                detail="Formato no soportado. Debe ser un archivo SQLite, Excel o CSV."
             )
 
         # NO se le mete un uuid acá a propósito: el importador toma el nombre de la tabla
@@ -221,133 +218,79 @@ class ConnectorDomainService:
             final_name = f"{base_display_name}_{counter}"
             counter += 1
 
-        is_postgres_active = app_engine.dialect.name == "postgresql"
         detected_tables = []
-        target_path = None
         pg_target_db_name = None
 
-        if is_postgres_active:
-            from sqlalchemy import create_engine, text
+        from sqlalchemy import create_engine, text
 
-            # Sanitize database name for PostgreSQL (lowercase alphanumeric and underscores)
-            clean_db_name = re.sub(r'[^a-zA-Z0-9_]', '_', final_name.lower()).strip('_')
-            if not clean_db_name or clean_db_name[0].isdigit():
-                clean_db_name = f"db_{clean_db_name}"
-            # El dedup de arriba (líneas 183-185) es sobre el NOMBRE del conector en
-            # la metadata, y no dice nada de lo que hay en el SERVIDOR. Aquí se
-            # reutilizaba la base si ya existía, y una base que quedó viva (un
-            # conector borrado, una corrida interrumpida) arrastra sus tablas: la
-            # importación de un archivo con el mismo nombre las encontraba ya
-            # existía y el nombre de tabla salía deduplicado (`sensores_iot_1`).
-            # Es el mismo problema que la rama SQLite de más abajo ya resolvió con
-            # el sufijo uuid, y la misma solución: el nombre de la base es único
-            # de verdad, no único "entre conectores que aún existen".
-            clean_db_name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}_{clean_db_name}"
-            clean_db_name = clean_db_name[:50]
-            pg_target_db_name = clean_db_name
+        # Sanitize database name for PostgreSQL (lowercase alphanumeric and underscores)
+        clean_db_name = re.sub(r'[^a-zA-Z0-9_]', '_', final_name.lower()).strip('_')
+        if not clean_db_name or clean_db_name[0].isdigit():
+            clean_db_name = f"db_{clean_db_name}"
+        # El dedup de arriba (líneas 183-185) es sobre el NOMBRE del conector en
+        # la metadata, y no dice nada de lo que hay en el SERVIDOR. Aquí se
+        # reutilizaba la base si ya existía, y una base que quedó viva (un
+        # conector borrado, una corrida interrumpida) arrastra sus tablas: la
+        # importación de un archivo con el mismo nombre las encontraba ya
+        # existía y el nombre de tabla salía deduplicado (`sensores_iot_1`).
+        # El sufijo uuid hace el nombre único de verdad: único "en el servidor",
+        # no "entre conectores que aún existen".
+        clean_db_name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}_{clean_db_name}"
+        clean_db_name = clean_db_name[:50]
+        pg_target_db_name = clean_db_name
 
-            # Create dedicated PostgreSQL database. Con el nombre ya unico, la
-            # reutilizacion de una base preexistente no puede ocurrir; si aparece,
-            # es una colision de uuid y conviene que se vea en vez de importarse
-            # encima de los datos de otro.
-            maint_url = f"postgresql+psycopg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/postgres"
-            m_engine = create_engine(maint_url, isolation_level="AUTOCOMMIT", pool_pre_ping=True)
-            try:
-                with m_engine.connect() as m_conn:
-                    exists = m_conn.execute(text("SELECT 1 FROM pg_database WHERE datname = :dbname"), {"dbname": pg_target_db_name}).scalar()
-                    if exists:
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail=f"La base '{pg_target_db_name}' ya existe en el servidor. No se importa encima."
-                        )
-                    m_conn.execute(text(f'CREATE DATABASE "{pg_target_db_name}" OWNER "{settings.POSTGRES_USER}"'))
-            finally:
-                m_engine.dispose()
+        # Create dedicated PostgreSQL database. Con el nombre ya unico, la
+        # reutilizacion de una base preexistente no puede ocurrir; si aparece,
+        # es una colision de uuid y conviene que se vea en vez de importarse
+        # encima de los datos de otro.
+        maint_url = f"postgresql+psycopg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/postgres"
+        m_engine = create_engine(maint_url, isolation_level="AUTOCOMMIT", pool_pre_ping=True)
+        try:
+            with m_engine.connect() as m_conn:
+                exists = m_conn.execute(text("SELECT 1 FROM pg_database WHERE datname = :dbname"), {"dbname": pg_target_db_name}).scalar()
+                if exists:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"La base '{pg_target_db_name}' ya existe en el servidor. No se importa encima."
+                    )
+                m_conn.execute(text(f'CREATE DATABASE "{pg_target_db_name}" OWNER "{settings.POSTGRES_USER}"'))
+        finally:
+            m_engine.dispose()
 
-            business_url = f"postgresql+psycopg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/{pg_target_db_name}"
-            pg_engine = create_engine(business_url, pool_pre_ping=True)
-            try:
-                detected_tables = convert_uploaded_file_to_postgres(
-                    source_path=raw_target_path,
-                    ext=ext,
-                    target_engine=pg_engine
-                )
-            except Exception as err:
-                if os.path.exists(raw_target_path):
-                    try: os.remove(raw_target_path)
-                    except Exception: pass
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Error al procesar e importar archivo en PostgreSQL '{original_filename}': {str(err)}"
-                )
-            finally:
-                pg_engine.dispose()
-                if os.path.exists(raw_target_path):
-                    try: os.remove(raw_target_path)
-                    except Exception: pass
-        else:
-            sqlite_db_name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}_{os.path.splitext(clean_filename)[0]}.sqlite"
-            target_path = os.path.join(ds_dir, sqlite_db_name)
-
-            if ext in [".sqlite", ".db", ".sqlite3"]:
-                # int(time.time()) tiene granularidad de segundo: dos uploads del
-                # mismo archivo en el mismo segundo producían el MISMO path, o sea
-                # dos conectores (datos y datos_1) apuntando al mismo archivo. El
-                # segundo import pisaba el contenido del primero, y borrar uno
-                # dejaba al otro apuntando a la nada. El sufijo uuid hace el
-                # nombre único de verdad. Ojo: el dedup de arriba es sobre el
-                # NOMBRE del conector, no sobre la ruta.
-                target_path = os.path.join(ds_dir, f"{int(time.time())}_{uuid.uuid4().hex[:8]}_{clean_filename}")
-                shutil.move(raw_target_path, target_path)
-
-            try:
-                detected_tables = convert_uploaded_file_to_sqlite(
-                    source_path=target_path if ext in [".sqlite", ".db", ".sqlite3"] else raw_target_path,
-                    ext=ext,
-                    target_sqlite_path=target_path
-                )
-            except Exception as err:
-                if os.path.exists(raw_target_path):
-                    try: os.remove(raw_target_path)
-                    except Exception: pass
-                if os.path.exists(target_path):
-                    try: os.remove(target_path)
-                    except Exception: pass
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Error al procesar e importar archivo '{original_filename}': {str(err)}"
-                )
-            finally:
-                if raw_target_path != target_path and os.path.exists(raw_target_path):
-                    try: os.remove(raw_target_path)
-                    except Exception: pass
-
-        if is_postgres_active:
-            new_conn = CorporateConnection(
-                name=final_name,
-                db_type=DatabaseType.POSTGRESQL,
-                host=settings.POSTGRES_SERVER,
-                port=settings.POSTGRES_PORT,
-                database_name=pg_target_db_name,
-                username=settings.POSTGRES_USER,
-                encrypted_password=encrypt_credential(settings.POSTGRES_PASSWORD),
-                is_active=True,
-                is_uploaded=True,
-                detected_tables=json.dumps(detected_tables)
+        business_url = f"postgresql+psycopg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/{pg_target_db_name}"
+        pg_engine = create_engine(business_url, pool_pre_ping=True)
+        try:
+            detected_tables = convert_uploaded_file_to_postgres(
+                source_path=raw_target_path,
+                ext=ext,
+                target_engine=pg_engine
             )
-        else:
-            new_conn = CorporateConnection(
-                name=final_name,
-                db_type=DatabaseType.SQLITE,
-                host=target_path,
-                port=0,
-                database_name=original_filename,
-                username="admin",
-                encrypted_password="",
-                is_active=True,
-                is_uploaded=True,
-                detected_tables=json.dumps(detected_tables)
+        except Exception as err:
+            if os.path.exists(raw_target_path):
+                try: os.remove(raw_target_path)
+                except Exception: pass
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Error al procesar e importar archivo en PostgreSQL '{original_filename}': {str(err)}"
             )
+        finally:
+            pg_engine.dispose()
+            if os.path.exists(raw_target_path):
+                try: os.remove(raw_target_path)
+                except Exception: pass
+
+        new_conn = CorporateConnection(
+            name=final_name,
+            db_type=DatabaseType.POSTGRESQL,
+            host=settings.POSTGRES_SERVER,
+            port=settings.POSTGRES_PORT,
+            database_name=pg_target_db_name,
+            username=settings.POSTGRES_USER,
+            encrypted_password=encrypt_credential(settings.POSTGRES_PASSWORD),
+            is_active=True,
+            is_uploaded=True,
+            detected_tables=json.dumps(detected_tables)
+        )
         db.add(new_conn)
         db.commit()
         db.refresh(new_conn)
@@ -379,7 +322,7 @@ class ConnectorDomainService:
 
         # Automatically seed heuristic semantic descriptions & data dictionary definitions
         CatalogDomainService.seed_catalog_heuristics_for_connection(
-            db, new_conn.id, target_path if not is_postgres_active else None, only_tables=detected_tables
+            db, new_conn.id, only_tables=detected_tables
         )
 
         return cls.connector_to_out(db, new_conn)
@@ -468,11 +411,10 @@ class ConnectorDomainService:
         # base de plataforma no se toca de ninguna manera.
         platform_dbs = {
             settings.POSTGRES_DB,
-            # El nombre de la base de metadata es fijo, no sale de la config. El
-            # `settings.METADATA_DB_PATH and "democratizacion_metadatos"` de antes
-            # metia "" o None en el set cuando la ruta venia vacia, y con un
-            # POSTGRES_DB distinto la base de la plataforma dejaba de protegerse,
-            # con un DROP TABLE esperandola. Sin `and`, siempre protegida.
+            # El nombre de la base de metadata es fijo, no sale de la config.
+            # Derivarlo de una ruta de archivo metia "" o None en el set cuando
+            # esa ruta venia vacia, y con un POSTGRES_DB distinto la base de la
+            # plataforma dejaba de protegerse. Fijo, siempre protegida.
             "democratizacion_metadatos",
             "democratizacion_empresa",
             "postgres",
@@ -507,33 +449,11 @@ class ConnectorDomainService:
             # Si es una base de plataforma se dejan las tablas: borrarlas seria
             # destructivo y el conector es solo una referencia administrative.
 
-        # Todo lo que cuelga de la conexion se borra con ella. Sin las de columna,
-        # un `connection_id` reutilizado (SQLite lo reutiliza: el siguiente
-        # `INTEGER PRIMARY KEY` es max+1, y al borrar el max ese id vuelve a estar
-        # libre) hereda permisos de una conexion que ya no existe.
+        # Todo lo que cuelga de la conexion se borra con ella: permisos huerfanos
+        # con el mismo `connection_id` no deben sobrevivir a la conexion.
         db.query(SemanticCatalog).filter(SemanticCatalog.connection_id == conn_id).delete()
         db.query(RoleTablePermission).filter(RoleTablePermission.connection_id == conn_id).delete()
         db.query(RoleColumnPermission).filter(RoleColumnPermission.connection_id == conn_id).delete()
-
-        # `conn.host` es una ruta libre que introduce el admin al registrar el
-        # conector. Sin esta comprobacion, registrar un "conector SQLite" apuntando a
-        # cualquier archivo del disco y borrarlo eliminaba ese archivo. Solo se borra
-        # lo que vive dentro del directorio de data_sources, que es donde la app
-        # sube los datasets.
-        if conn.is_uploaded and conn.host and (conn.db_type == DatabaseType.SQLITE or str(conn.db_type).lower() == "sqlite"):
-            try:
-                if os.path.exists(conn.host):
-                    target = os.path.realpath(conn.host)
-                    allowed_root = os.path.realpath(settings.DATA_SOURCES_DIR)
-                    if os.path.commonpath([target, allowed_root]) == allowed_root:
-                        os.remove(target)
-                    else:
-                        logger.warning(
-                            "No se borro %s: esta fuera de %s. Podria ser un archivo ajeno.",
-                            target, allowed_root,
-                        )
-            except Exception as exc:
-                logger.error("No se pudo borrar el archivo del conector %s: %s", conn_id, exc)
 
         db.delete(conn)
         db.commit()
@@ -561,8 +481,7 @@ class ConnectorDomainService:
         if not role:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rol no encontrado.")
 
-        is_pg = (conn.db_type == DatabaseType.POSTGRESQL or str(conn.db_type).lower() == "postgresql")
-        schema_name = "public" if is_pg else "main"
+        schema_name = "public"
 
         touched = []
         for raw_name in table_names:
@@ -635,29 +554,6 @@ class ConnectorDomainService:
 
     @classmethod
     def test_connection_connectivity(cls, test_in: ConnectionTestRequest) -> ConnectionTestResult:
-        if test_in.db_type == DatabaseType.SQLITE:
-            path_to_check = test_in.host or test_in.database_name
-            if os.path.exists(path_to_check):
-                try:
-                    with sqlite3.connect(path_to_check) as c:
-                        c.execute("SELECT 1;").fetchone()
-                    return ConnectionTestResult(
-                        success=True,
-                        message=f"Archivo SQLite accesible correctamente ({os.path.basename(path_to_check)}).",
-                        latency_ms=1
-                    )
-                except Exception as e:
-                    return ConnectionTestResult(
-                        success=False,
-                        message=f"Error al abrir archivo SQLite: {str(e)}",
-                        latency_ms=0
-                    )
-            return ConnectionTestResult(
-                success=False,
-                message=f"Archivo SQLite no encontrado en la ruta: {path_to_check}",
-                latency_ms=0
-            )
-
         result = HealthService.check_db_connectivity(
             host=test_in.host,
             port=test_in.port,

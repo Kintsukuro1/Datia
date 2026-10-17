@@ -3,18 +3,21 @@
 `is_active` se leia como un singleton pero las escrituras no mantenian la
 exclusion: `upload_database_file` clavaba `is_active=True` sin apagar las
 demas. Con dos conectores marcadas, el motor (que elige por `ORDER BY id DESC`)
-respondia contra la que tiene menos permisos y todos los no-admin se quedaban
+respondia contra la que tiene menos permisos y todos los non-admin se quedaban
 sin datos.
 
 Se verifica por el servicio real, no por SQL: es la logica que se rompio.
+La base de metadatos del test es una PostgreSQL desechable: el esquema real se
+crea ahi, sin traduccion de tipos por el medio.
 """
 import unittest
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from conftest import create_temp_pg_database, drop_temp_pg_database, pg_source_engine
+
 from app.core.database import Base
-from app.modules.admin_catalog.models import CorporateConnection
+from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
 from app.modules.auth.models import Role
 import app.modules.admin_catalog.models  # noqa: F401
 import app.modules.auth.models  # noqa: F401
@@ -24,10 +27,17 @@ import app.modules.chat_engine.models  # noqa: F401
 
 class TestSingleActiveConnector(unittest.TestCase):
 
+    @classmethod
+    def setUpClass(cls):
+        cls.pg_db = create_temp_pg_database("singleactive")
+
+    @classmethod
+    def tearDownClass(cls):
+        drop_temp_pg_database(cls.pg_db)
+
     def setUp(self):
-        self.eng = create_engine(
-            "sqlite:///:memory:", connect_args={"check_same_thread": False}
-        )
+        self.eng = pg_source_engine(self.pg_db)
+        Base.metadata.drop_all(bind=self.eng)
         Base.metadata.create_all(bind=self.eng)
         self.db = sessionmaker(bind=self.eng)()
 
@@ -36,10 +46,10 @@ class TestSingleActiveConnector(unittest.TestCase):
         self.eng.dispose()
 
     def _conn(self, name, active=True):
-        c = CorporateConnection(name=name, db_type="SQLITE", host=name,
-                                port=0, database_name=name, username="admin",
-                                encrypted_password="", is_active=active,
-                                is_uploaded=True)
+        c = CorporateConnection(name=name, db_type=DatabaseType.POSTGRESQL,
+                                host="localhost", port=5432, database_name=name,
+                                username="admin", encrypted_password="",
+                                is_active=active, is_uploaded=True)
         self.db.add(c)
         self.db.commit()
         self.db.refresh(c)

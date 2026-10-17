@@ -6,7 +6,6 @@ from app.core.database import Base
 
 class DatabaseType(str, enum.Enum):
     POSTGRESQL = "postgresql"
-    SQLITE = "sqlite"
 
 class CorporateConnection(Base):
     __tablename__ = "corporate_connections"

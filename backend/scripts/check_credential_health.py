@@ -27,7 +27,7 @@ def main() -> int:
         for r in rows:
             if not r.encrypted_password:
                 empty += 1
-                state = "sin password (SQLite/demo)"
+                state = "sin password (demo)"
             else:
                 try:
                     value = decrypt_credential(r.encrypted_password)

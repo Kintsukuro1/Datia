@@ -194,7 +194,7 @@ def _migrate_role_aliases(db: Session) -> None:
 
 def init_db(db: Session):
     """
-    Creates all database tables in PostgreSQL/SQLite and seeds initial default roles and admin.
+    Creates all database tables in PostgreSQL and seeds initial default roles and admin.
     """
     from app.core.config import settings
 
@@ -214,13 +214,13 @@ def init_db(db: Session):
                 if "locked_until" not in user_cols:
                     conn.execute(text("ALTER TABLE users ADD COLUMN locked_until TIMESTAMP NULL"))
                 if "must_change_password" not in user_cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0 NOT NULL"))
+                    conn.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT FALSE NOT NULL"))
 
         if "corporate_connections" in table_names:
             conn_cols = {c["name"] for c in inspector.get_columns("corporate_connections")}
             with engine.begin() as conn:
                 if "is_uploaded" not in conn_cols:
-                    conn.execute(text("ALTER TABLE corporate_connections ADD COLUMN is_uploaded BOOLEAN DEFAULT 0 NOT NULL"))
+                    conn.execute(text("ALTER TABLE corporate_connections ADD COLUMN is_uploaded BOOLEAN DEFAULT FALSE NOT NULL"))
                 if "null_policy" not in conn_cols:
                     conn.execute(text("ALTER TABLE corporate_connections ADD COLUMN null_policy VARCHAR(50) DEFAULT 'open'"))
 
@@ -339,54 +339,24 @@ def init_db(db: Session):
                 existing_user.role_id = u_info["role"].id
         db.commit()
 
-    import os
     from app.core.security import encrypt_credential
-
-    # La demo SQLite es el dataset de la demo: con la demo apagada no se genera.
-    if settings.DEMO_MODE_EFFECTIVE and engine.dialect.name != "postgresql":
-        db_path = settings.SQLITE_DB_PATH
-        if not os.path.exists(db_path):
-            try:
-                import sys
-                backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                if backend_dir not in sys.path:
-                    sys.path.insert(0, backend_dir)
-                from setup_demo_db import setup_demo_sqlite
-                setup_demo_sqlite()
-            except Exception:
-                pass
 
     # El conector de plataforma apunta a la base de negocio de la demo. Con la
     # demo apagada no se crea: una instalacion real administra sus conectores a
     # mano desde el panel.
     std_conn = db.query(CorporateConnection).filter(CorporateConnection.is_uploaded == False).first()
     if settings.DEMO_MODE_EFFECTIVE and not std_conn:
-        if engine.dialect.name == "postgresql":
-            std_conn = CorporateConnection(
-                name="Base de Datos Corporativa (Demo)",
-                db_type=DatabaseType.POSTGRESQL,
-                host=settings.POSTGRES_SERVER,
-                port=settings.POSTGRES_PORT,
-                database_name="democratizacion_empresa",
-                username=settings.POSTGRES_USER,
-                encrypted_password=encrypt_credential(settings.POSTGRES_PASSWORD),
-                is_active=True,
-                is_uploaded=False
-            )
-        else:
-            db_path = settings.SQLITE_DB_PATH
-            db_name = os.path.basename(db_path)
-            std_conn = CorporateConnection(
-                name="BD Corporativa Local",
-                db_type=DatabaseType.SQLITE,
-                host=db_path,
-                port=0,
-                database_name=db_name,
-                username="admin",
-                encrypted_password="",
-                is_active=True,
-                is_uploaded=False
-            )
+        std_conn = CorporateConnection(
+            name="Base de Datos Corporativa (Demo)",
+            db_type=DatabaseType.POSTGRESQL,
+            host=settings.POSTGRES_SERVER,
+            port=settings.POSTGRES_PORT,
+            database_name="democratizacion_empresa",
+            username=settings.POSTGRES_USER,
+            encrypted_password=encrypt_credential(settings.POSTGRES_PASSWORD),
+            is_active=True,
+            is_uploaded=False
+        )
         db.add(std_conn)
         db.commit()
 
@@ -398,10 +368,10 @@ def init_db(db: Session):
         "dim_servidores", "fact_incidentes_ti", "fact_consumo_recursos",
     ]
     personal_tables = ["dim_empleados"]
-    # Las encuestas de clima (OSMI) viven en `setup_mental_health_db.py`, que es
-    # opcional: si ese dataset no se cargo, sembrar permisos sobre tablas
-    # inexistentes es una fila muerta, no un fallo. Van a TODOS los roles porque
-    # clima laboral no es dato de finanzas ni de infraestructura.
+    # Las encuestas de clima (OSMI) no vienen con el dataset de la demo: si un
+    # cliente carga uno con esas tablas, los permisos ya estan calculados;
+    # mientras tanto son filas muertas, no un fallo. Van a TODOS los roles
+    # porque clima laboral no es dato de finanzas ni de infraestructura.
     survey_tables = ["Answer", "Question", "Survey", "answer", "question", "survey"]
     catalogo_tables = ["dim_categorias", "dim_productos"]
 
@@ -461,7 +431,7 @@ def init_db(db: Session):
     # Ademas evita volver a concederla sobre un conector de una demo anterior.
     if settings.DEMO_MODE_EFFECTIVE:
         for s_conn in standard_connections:
-            s_schema = "public" if (s_conn.db_type == DatabaseType.POSTGRESQL or str(s_conn.db_type).lower() == "postgresql") else "main"
+            s_schema = "public"
             for r_obj, tbl_list in role_table_mappings:
                 if r_obj:
                     for tbl in tbl_list:
@@ -559,7 +529,7 @@ def init_db(db: Session):
 
     # Seed column-level security permissions (CLS) for standard connections
     for s_conn in standard_connections:
-        s_schema = "public" if (s_conn.db_type == DatabaseType.POSTGRESQL or str(s_conn.db_type).lower() == "postgresql") else "main"
+        s_schema = "public"
         # SOLO el Administrador de Plataforma queda fuera de la CLS.
         #
         # Antes el Director Ejecutivo tambien, y por eso le llegaba en claro la
@@ -636,12 +606,11 @@ def init_db(db: Session):
 
             # 4. Block salary and compensation for non-HR roles
             #
-            # Los nombres de las dos demos no coinciden: la de PostgreSQL tiene
-            # `sueldo_mensual` y la demo SQLite `salario_bruto`. Con una lista por
-            # motor, la demo sin PostgreSQL (el arranque de serie cuando no hay servidor)
-            # se quedaba con el sueldo y el IBAN sin clasificar: el diccionario y
-            # el chat los servian en claro a cualquier rol. Se siembran TODOS los
-            # nombres; los que la conexion no tiene no son mas que una fila muerta.
+            # Los dataset de cliente varian: la demo trae `sueldo_mensual` y otros
+            # datasets traen `salario_bruto`. Una lista que solo cubriera un nombre
+            # dejaba el sueldo y el IBAN sin clasificar, y el diccionario y el chat
+            # los servian en claro a cualquier rol. Se siembran TODOS los nombres;
+            # los que la conexion no tiene no son mas que una fila muerta.
             is_hr_role = "talento" in r_obj.name.lower() or "rrhh" in r_obj.name.lower()
             if not is_hr_role:
                 for col in ["sueldo_mensual", "salario", "salario_bruto", "bono_anual",
@@ -663,8 +632,8 @@ def init_db(db: Session):
                         ))
 
             # 5. El RUT/DNI del empleado es la misma clase de dato que el del
-            # cliente: se consulta pero se enmascara. Sin esta fila, la demo SQLite
-            # lo expone en claro (la de PostgreSQL no tiene la columna).
+            # cliente: se consulta pero se enmascara. No todos los datasets tienen
+            # la columna; sin esta fila, el que la tenga la expondria en claro.
             existing_emp_rut = db.query(RoleColumnPermission).filter(
                 RoleColumnPermission.role_id == r_obj.id,
                 RoleColumnPermission.connection_id == s_conn.id,
@@ -745,6 +714,6 @@ def init_db(db: Session):
         from app.modules.catalog.services.catalog_service import CatalogDomainService
         first_conn = db.query(CorporateConnection).first()
         if first_conn:
-            CatalogDomainService.seed_catalog_heuristics_for_connection(db, first_conn.id, first_conn.host)
+            CatalogDomainService.seed_catalog_heuristics_for_connection(db, first_conn.id)
     except Exception:
         pass

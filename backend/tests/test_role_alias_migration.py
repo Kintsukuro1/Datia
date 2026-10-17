@@ -21,8 +21,9 @@ matriz de permisos en silencio es peor que quedar con un rol de mas.
 import os
 import unittest
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+from conftest import create_temp_pg_database, drop_temp_pg_database, pg_source_engine
 
 from app.core.database import Base
 from app.core.constants import (
@@ -45,8 +46,17 @@ CORPORATE = {
 
 
 class TestRoleAliasMigration(unittest.TestCase):
-    """Cada test arma su propia DB con un alias y sus permisos a mano: correr
-    contra la metadata sembrada probaria el seed, no la migracion."""
+    """Cada test arma su propia base (PostgreSQL desechable) con un alias y sus
+    permisos a mano: correr contra la metadata sembrada probaria el seed, no la
+    migracion."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pg_db = create_temp_pg_database("rolemig")
+
+    @classmethod
+    def tearDownClass(cls):
+        drop_temp_pg_database(cls.pg_db)
 
     def setUp(self):
         import app.modules.auth.models  # noqa: F401
@@ -54,21 +64,14 @@ class TestRoleAliasMigration(unittest.TestCase):
         import app.modules.telemetry_audit.models  # noqa: F401
         import app.modules.chat_engine.models  # noqa: F401
 
-        self.path = "./test_role_alias_migration.db"
-        if os.path.exists(self.path):
-            os.remove(self.path)
-        self.eng = create_engine(
-            f"sqlite:///{self.path}",
-            connect_args={"check_same_thread": False},
-        )
+        self.eng = pg_source_engine(self.pg_db)
+        Base.metadata.drop_all(bind=self.eng)
         Base.metadata.create_all(bind=self.eng)
         self.db = sessionmaker(autocommit=False, autoflush=False, bind=self.eng)()
 
     def tearDown(self):
         self.db.close()
         self.eng.dispose()
-        if os.path.exists(self.path):
-            os.remove(self.path)
 
     # ------------------------------------------------------------------
     # helpers
@@ -83,10 +86,10 @@ class TestRoleAliasMigration(unittest.TestCase):
     def _conexion(self):
         c = CorporateConnection(
             name=f"conn_{os.urandom(4).hex()}",
-            db_type=DatabaseType.SQLITE,
-            host="/tmp/x.db",
-            port=0,
-            database_name="x.db",
+            db_type=DatabaseType.POSTGRESQL,
+            host="localhost",
+            port=5432,
+            database_name="x",
             username="u",
             encrypted_password="",
             is_active=True,

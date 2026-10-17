@@ -63,7 +63,7 @@ import pytest
 # --- Aislamiento: la suite usa una base propia --------------------------------
 #
 # Tiene que fijarse ANTES de que se importe `app.core.database`: ese modulo arma
-# el engine en tiempo de import (lineas 22-38) y, si despues se repunta con
+# el engine en tiempo de import y, si despues se repunta con
 # `update_database_engine`, cada modulo que hizo `from app.core.database import
 # SessionLocal` queda con el enlace viejo. Un `os.environ` en el tope de conftest
 # alcanza: pytest importa conftest antes de cualquier test, y no hace falta un
@@ -90,13 +90,12 @@ def _ensure_test_database() -> None:
 
     No se reusa `scripts/setup_postgres_full.create_database_if_not_exists`: importar
     ese modulo importa `app.core.database` (su linea 19), que es justo el modulo
-    que hay que aislar. Con la base todavia inexistente, `database.py` cae al
-    fallback SQLite y cachea ese engine para toda la corrida. Son las mismas seis
+    que hay que aislar. Con la base todavia inexistente, `database.py` falla al
+    conectar en tiempo de import y la corrida no arranca. Son las mismas seis
     lineas, en el unico orden que funciona.
 
-    Si PostgreSQL no esta disponible no se corta la suite: se avisa y deja que
-    `database.py` decida, que para una demo sin Postgres es el fallback que ya
-    soporta.
+    Si PostgreSQL no esta disponible no se corta la suite aqui: se avisa y el
+    import de `database.py` falla con el error de conexion, que es la causa real.
     """
     from sqlalchemy import create_engine, text
 
@@ -124,7 +123,7 @@ try:
 except Exception as exc:  # pragma: no cover - depende del entorno
     warnings.warn(
         f"No se pudo preparar la base de pruebas {TEST_DB!r} ({exc}). "
-        "La suite va a correr contra el fallback que elija app.core.database."
+        "La suite va a fallar al importar app.core.database."
     )
 
 
@@ -233,3 +232,86 @@ def demo_accounts_in_known_state():
             yield
         finally:
             _reset_demo_accounts()
+
+
+# --- Fuentes corporativas desechables -----------------------------------------
+#
+# Varios tests armaban un archivo SQLite temporal con tablas y una conexion
+# `db_type=SQLITE` que lo apuntaba: "una base del cliente" de verdad y barata de
+# armar. Con el motor unico PostgreSQL esa fuente es una base PostgreSQL
+# desechable: mismo espiritu (aislada por nombre, borrada al final), motor real.
+# El SQLite de los tests era andamio, no producto; el producto ya no lo soporta.
+#
+# Se importan desde los tests con `from conftest import ...` (pytest pone este
+# directorio en sys.path), porque las clases `unittest.TestCase` no pueden
+# recibir fixtures de pytest.
+
+import secrets as _secrets
+import time as _time
+
+
+def _pg_admin_url() -> str:
+    from app.core.config import settings
+
+    return (
+        f"postgresql+psycopg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+        f"@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/postgres"
+    )
+
+
+def create_temp_pg_database(prefix: str = "src") -> str:
+    """Crea una base PostgreSQL desechable y devuelve su nombre."""
+    from sqlalchemy import create_engine, text as sa_text
+
+    from app.core.config import settings
+
+    safe = re.sub(r"[^a-z0-9_]", "_", prefix.lower())[:20].strip("_") or "src"
+    name = f"tmp_{safe}_{int(_time.time())}_{_secrets.token_hex(3)}"[:60]
+    eng = create_engine(_pg_admin_url(), isolation_level="AUTOCOMMIT", pool_pre_ping=True)
+    try:
+        with eng.connect() as conn:
+            conn.execute(sa_text(f'CREATE DATABASE "{name}" OWNER "{settings.POSTGRES_USER}"'))
+    finally:
+        eng.dispose()
+    return name
+
+
+def drop_temp_pg_database(db_name: str) -> None:
+    """Borra una base desechable, con las conexiones que hayan quedado abiertas."""
+    from sqlalchemy import create_engine, text as sa_text
+
+    eng = create_engine(_pg_admin_url(), isolation_level="AUTOCOMMIT", pool_pre_ping=True)
+    try:
+        with eng.connect() as conn:
+            conn.execute(sa_text(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)'))
+    finally:
+        eng.dispose()
+
+
+def pg_source_engine(db_name: str):
+    """Engine a la base desechable: para crear tablas y filas en los tests."""
+    from sqlalchemy import create_engine
+
+    from app.core.config import settings
+
+    url = (
+        f"postgresql+psycopg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+        f"@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/{db_name}"
+    )
+    return create_engine(url, pool_pre_ping=True)
+
+
+def pg_source_conn_attrs(db_name: str) -> dict:
+    """Atributos de una CorporateConnection que apunta a la base desechable."""
+    from app.core.config import settings
+    from app.core.security import encrypt_credential
+    from app.modules.admin_catalog.models import DatabaseType
+
+    return {
+        "db_type": DatabaseType.POSTGRESQL,
+        "host": settings.POSTGRES_SERVER,
+        "port": settings.POSTGRES_PORT,
+        "database_name": db_name,
+        "username": settings.POSTGRES_USER,
+        "encrypted_password": encrypt_credential(settings.POSTGRES_PASSWORD),
+    }

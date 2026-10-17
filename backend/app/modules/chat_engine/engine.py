@@ -8,7 +8,6 @@ from app.core.constants import DEFAULT_DEMO_ROLE, ROLE_USUARIO, ADMIN_ROLES
 from app.core.database import discard_failed_transaction
 from app.core.prompts import PromptManager
 from app.core.security import mask_rows
-from app.modules.admin_catalog.models import DatabaseType
 from app.modules.chat_engine.schemas import QueryResponse, PresentationHints
 from app.modules.chat_engine.ast_validator import ASTValidator, ASTValidationError
 from app.modules.chat_engine.intent_classifier import IntentClassifier
@@ -338,26 +337,22 @@ class QueryEngine:
                     f"La remediación falló y se revirtió: {ex}. La base queda sin cambios.\n\n"
                 )
 
-        is_pg = conn_record is not None and (
-            getattr(conn_record, "db_type", None) == DatabaseType.POSTGRESQL
-            or "postgres" in str(getattr(conn_record, "db_type", "")).lower()
-        )
-        engine_dialect = "postgres" if is_pg else "sqlite"
-        try:
-            target_db_path = DynamicSchemaPruningService.resolve_db_path(db, connection_id)
-        except Exception as ex:
-            # Fallar cerrado: sin ruta resuelta no se sabe a que base del cliente
-            # apuntan los permisos ya calculados, y seguir con `exec_target` caeria
-            # en la BD demo interna de Datia.
+        engine_dialect = "postgres"
+        if conn_record is None:
+            # Sin conexion no hay base a la que apuntar. Antes se caia a la ruta
+            # de la demo interna y la consulta del cliente se ejecutaba contra
+            # OTRA base; ahora se falla cerrado.
             return ResponseBuilder.build_execution_error_response(
-                effective_question, str(ex), int((time.time() - start_time) * 1000)
+                effective_question,
+                "No hay ninguna conexión corporativa registrada para ejecutar la consulta.",
+                int((time.time() - start_time) * 1000)
             )
-        exec_target = conn_record if is_pg else target_db_path
+        exec_target = conn_record
 
         table_columns_map: Dict[str, List[str]] = {}
         for tbl in allowed_tables:
             phys_cols_info = DynamicSchemaPruningService.get_physical_table_columns(
-                tbl, db_path=exec_target, include_samples=False
+                tbl, exec_target, include_samples=False
             )
             table_columns_map[tbl.lower()] = [c["name"] for c in phys_cols_info if "name" in c]
 

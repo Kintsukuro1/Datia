@@ -161,14 +161,14 @@ class TestSystemHealth(unittest.TestCase):
         servidor y el cliente no la tiene: el endpoint no puede exigirla. Antes
         `password: str` era obligatorio y la tarjeta recibia un 422, cuyo
         `detail` es un array que el front pintaba y tumbaba la pagina en negro.
-        El endpoint no lee la contraseña (solo abre un socket TCP o el fichero
-        SQLite en ro), asi que el default vacio no cambia lo que se verifica.
+        El endpoint no lee la contraseña (solo abre un socket TCP), asi que el
+        default vacio no cambia lo que se verifica.
         """
         req_payload = {
-            "db_type": "sqlite",
-            "host": "no_existe_este_fichero.db",
-            "port": 0,
-            "database_name": "no_existe_este_fichero.db",
+            "db_type": "postgresql",
+            "host": "127.0.0.1",
+            "port": 1,  # puerto cerrado: el socket tiene que fallar rapido
+            "database_name": "no_existe",
             "username": "admin"
         }
         response = self.client.post("/api/v1/connectors/test", json=req_payload, headers=self.headers)

@@ -1,71 +1,123 @@
+"""Politica de nulos y visualizaciones del motor, sobre una base PostgreSQL real.
+
+El audit y la remediacion ESCRIBEN/LEEN la base del cliente: la fuente es una
+base desechable, no un mock, porque lo que se verifica es el efecto real
+(filas borradas, celdas imputadas) y no que se haya llamado al servicio.
+"""
+
+import asyncio
 import unittest
-import sqlite3
-import tempfile
-import os
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from sqlalchemy import text
+
+from conftest import (
+    create_temp_pg_database,
+    drop_temp_pg_database,
+    pg_source_conn_attrs,
+    pg_source_engine,
+)
 
 from app.modules.catalog.services.null_manager import NullManagerService
 from app.modules.chat_engine.kpi_calculator import KPICalculator
 from app.modules.chat_engine.engine import QueryEngine
-from app.modules.admin_catalog.models import DatabaseType
 
 
 class TestNullPolicyAndVisualizations(unittest.TestCase):
 
+    @classmethod
+    def setUpClass(cls):
+        cls.pg_db = create_temp_pg_database("nullvis")
+
+    @classmethod
+    def tearDownClass(cls):
+        drop_temp_pg_database(cls.pg_db)
+
     def setUp(self):
-        # Create a temporary SQLite database for auditing and remediation tests
-        self.temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self.db_path = self.temp_db.name
-        self.temp_db.close()
+        # Cada test arranca con la base limpia: el audit recorre TODAS las
+        # tablas del schema y las que dejo el test anterior contaminarian los
+        # conteos.
+        eng = pg_source_engine(self.pg_db)
+        try:
+            with eng.begin() as c:
+                c.execute(text("DROP TABLE IF EXISTS test_sales"))
+                c.execute(text("""
+                    CREATE TABLE test_sales (
+                        id INTEGER PRIMARY KEY,
+                        category TEXT,
+                        amount REAL,
+                        region TEXT
+                    )
+                """))
+                # 5 filas: 2 con nulos, 3 limpias.
+                # Fila 2: category NULL | Fila 3: amount NULL
+                c.execute(text(
+                    "INSERT INTO test_sales VALUES "
+                    "(1, 'Electronics', 100.0, 'North'),"
+                    "(2, NULL, 200.0, 'North'),"
+                    "(3, 'Electronics', NULL, 'South'),"
+                    "(4, 'Electronics', 100.0, 'North'),"
+                    "(5, 'Books', 50.0, 'South')"
+                ))
+        finally:
+            eng.dispose()
 
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE test_sales (
-                id INTEGER PRIMARY KEY,
-                category TEXT,
-                amount REAL,
-                region TEXT
-            )
-        """)
-        # Insert 5 rows: 2 rows with NULLs, 3 clean rows
-        # Row 1: clean (Electronics, 100.0, North)
-        # Row 2: category NULL, amount 200.0, North
-        # Row 3: category Electronics, amount NULL, South
-        # Row 4: clean (Electronics, 100.0, North)
-        # Row 5: clean (Books, 50.0, South)
-        cur.executemany(
-            "INSERT INTO test_sales VALUES (?, ?, ?, ?)",
-            [
-                (1, "Electronics", 100.0, "North"),
-                (2, None, 200.0, "North"),
-                (3, "Electronics", None, "South"),
-                (4, "Electronics", 100.0, "North"),
-                (5, "Books", 50.0, "South"),
-            ]
-        )
-        conn.commit()
-        conn.close()
+    # --- helpers ---------------------------------------------------------
 
-    def tearDown(self):
-        import gc
-        gc.collect()
-        if os.path.exists(self.db_path):
-            try:
-                os.remove(self.db_path)
-            except OSError:
-                pass
+    def _query(self, sql):
+        eng = pg_source_engine(self.pg_db)
+        try:
+            with eng.begin() as c:
+                return [tuple(r) for r in c.execute(text(sql))]
+        finally:
+            eng.dispose()
 
-    def test_audit_nulls_sqlite(self):
-        """Verifica que el scanner detecte con precisión tablas, columnas y celdas con NULL."""
+    def _make_conn(self, null_policy="open"):
         mock_conn = MagicMock()
-        mock_conn.id = 1
-        mock_conn.db_type = DatabaseType.SQLITE
-        mock_conn.host = self.db_path
-        mock_conn.database_name = self.db_path
-        mock_conn.null_policy = "open"
+        # Id inexistente + `is_uploaded=True`: el introspector filtra por los
+        # permisos de la conexion subida, y con un id real el filtro dependeria
+        # del estado de la base de metadatos de tests.
+        mock_conn.id = 999999
+        mock_conn.is_uploaded = True
+        for key, value in pg_source_conn_attrs(self.pg_db).items():
+            setattr(mock_conn, key, value)
+        mock_conn.null_policy = null_policy
+        mock_conn.name = "test"
+        return mock_conn
 
-        audit = NullManagerService.audit_connection_nulls(mock_conn)
+    def _mock_db_with(self, conn):
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.first.return_value = conn
+        mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = conn
+        mock_db.query.return_value.order_by.return_value.first.return_value = conn
+        return mock_db
+
+    def _run_query(self, question, conn, conversation_history=None):
+        """Corre el motor con el LLM apagado.
+
+        Lo que se verifica es comportamiento del motor (pausa por nulos, filas
+        limpias, banner), no el texto de la narrativa: sin el mock cada test
+        espera los timeouts reales del LLM y depende de si hay un modelo
+        levantado.
+        """
+        with patch(
+            "app.modules.chat_engine.llm_service.LLMService.generate_completion",
+            new=AsyncMock(return_value=None),
+        ):
+            return asyncio.run(QueryEngine.execute_query(
+                question=question,
+                user_role="Administrador",
+                is_admin=True,
+                db=self._mock_db_with(conn),
+                connection_id=1,
+                conversation_history=conversation_history,
+            ))
+
+    # --- audit / remediacion ---------------------------------------------
+
+    def test_audit_nulls(self):
+        """Verifica que el scanner detecte con precisión tablas, columnas y celdas con NULL."""
+        audit = NullManagerService.audit_connection_nulls(self._make_conn())
 
         self.assertTrue(audit["has_nulls"])
         self.assertEqual(len(audit["tables"]), 1)
@@ -81,76 +133,43 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
 
     def test_apply_policy_delete_rows(self):
         """Verifica que la política 'delete_rows' elimine las filas con NULL preservando las demás."""
-        mock_db = MagicMock()
-        mock_conn = MagicMock()
-        mock_conn.id = 1
-        mock_conn.db_type = DatabaseType.SQLITE
-        mock_conn.host = self.db_path
-        mock_conn.database_name = self.db_path
-
-        result = NullManagerService.apply_null_policy(mock_conn, "delete_rows", mock_db)
+        result = NullManagerService.apply_null_policy(self._make_conn(), "delete_rows", MagicMock())
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["policy"], "delete_rows")
 
-        # Check in DB that rows 2 and 3 were deleted, remaining 3 rows
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM test_sales")
-        count = cur.fetchone()[0]
-        conn.close()
-
+        # Rows 2 and 3 were deleted, remaining 3 rows
+        count = self._query("SELECT COUNT(*) FROM test_sales")[0][0]
         self.assertEqual(count, 3)
 
     def test_apply_policy_mode(self):
         """Verifica que la política 'mode' impute los NULLs con la moda estadística."""
-        mock_db = MagicMock()
-        mock_conn = MagicMock()
-        mock_conn.id = 1
-        mock_conn.db_type = DatabaseType.SQLITE
-        mock_conn.host = self.db_path
-        mock_conn.database_name = self.db_path
-
-        result = NullManagerService.apply_null_policy(mock_conn, "mode", mock_db)
+        result = NullManagerService.apply_null_policy(self._make_conn(), "mode", MagicMock())
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["policy"], "mode")
 
-        # Verify no nulls remain in the table
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM test_sales WHERE category IS NULL OR amount IS NULL")
-        null_count = cur.fetchone()[0]
-        # And category for row 2 should be the mode ("Electronics")
-        cur.execute("SELECT category FROM test_sales WHERE id = 2")
-        row2_cat = cur.fetchone()[0]
-        conn.close()
+        null_count = self._query(
+            "SELECT COUNT(*) FROM test_sales WHERE category IS NULL OR amount IS NULL"
+        )[0][0]
+        row2_cat = self._query("SELECT category FROM test_sales WHERE id = 2")[0][0]
 
         self.assertEqual(null_count, 0)
         self.assertEqual(row2_cat, "Electronics")
 
     def test_apply_policy_nearest(self):
         """Verifica que la política 'nearest' impute los NULLs con el valor anterior/siguiente."""
-        mock_db = MagicMock()
-        mock_conn = MagicMock()
-        mock_conn.id = 1
-        mock_conn.db_type = DatabaseType.SQLITE
-        mock_conn.host = self.db_path
-        mock_conn.database_name = self.db_path
-
-        result = NullManagerService.apply_null_policy(mock_conn, "nearest", mock_db)
+        result = NullManagerService.apply_null_policy(self._make_conn(), "nearest", MagicMock())
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["policy"], "nearest")
 
-        # Verify no nulls remain
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM test_sales WHERE category IS NULL OR amount IS NULL")
-        null_count = cur.fetchone()[0]
-        conn.close()
-
+        null_count = self._query(
+            "SELECT COUNT(*) FROM test_sales WHERE category IS NULL OR amount IS NULL"
+        )[0][0]
         self.assertEqual(null_count, 0)
+
+    # --- visualizaciones / motor -----------------------------------------
 
     def test_dynamic_chart_series_generation(self):
         """Verifica que build_dynamic_visualization genere series ECharts pobladas y válidas."""
@@ -195,28 +214,8 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
 
     def test_prompt1_early_null_pause(self):
         """Verifica que el Prompt 1 con nulos y política 'open' pause la respuesta sin mostrar gráficos ni KPIs distorsionados."""
-        import asyncio
-        mock_conn = MagicMock()
-        mock_conn.id = 1
-        mock_conn.db_type = DatabaseType.SQLITE
-        mock_conn.host = self.db_path
-        mock_conn.database_name = self.db_path
-        mock_conn.null_policy = "open"
-
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_conn
-        mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = mock_conn
-        mock_db.query.return_value.order_by.return_value.first.return_value = mock_conn
-
-        response = asyncio.run(
-            QueryEngine.execute_query(
-                question="SELECT * FROM test_sales",
-                user_role="Administrador",
-                is_admin=True,
-                db=mock_db,
-                connection_id=1
-            )
-        )
+        conn = self._make_conn(null_policy="open")
+        response = self._run_query("SELECT * FROM test_sales", conn)
 
         # 1. Null detection was triggered
         self.assertIsNotNone(response.nulls_detected)
@@ -239,32 +238,16 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
 
     def test_prompt2_remediation_answers_original_question(self):
         """Verifica que el Prompt 2 reciba la acción de remediación, conserve el contexto de la consulta original y devuelva los datos limpios."""
-        import asyncio
-        mock_conn = MagicMock()
-        mock_conn.id = 1
-        mock_conn.db_type = DatabaseType.SQLITE
-        mock_conn.host = self.db_path
-        mock_conn.database_name = self.db_path
-        mock_conn.null_policy = "open"
-
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_conn
-        mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = mock_conn
-        mock_db.query.return_value.order_by.return_value.first.return_value = mock_conn
+        conn = self._make_conn(null_policy="open")
 
         # Simulate user clicking "Eliminar registros con nulos"
         remediation_prompt = "Tratar nulos en test_sales (eliminar registros con nulos) para la consulta: SELECT * FROM test_sales"
-        response = asyncio.run(
-            QueryEngine.execute_query(
-                question=remediation_prompt,
-                user_role="Administrador",
-                is_admin=True,
-                db=mock_db,
-                connection_id=1,
-                conversation_history=[
-                    {"question": "SELECT * FROM test_sales", "sql": "SELECT * FROM test_sales"}
-                ]
-            )
+        response = self._run_query(
+            remediation_prompt,
+            conn,
+            conversation_history=[
+                {"question": "SELECT * FROM test_sales", "sql": "SELECT * FROM test_sales"}
+            ],
         )
 
         # 1. Did NOT pause again
@@ -280,24 +263,10 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
         self.assertIn("Tratamiento de nulos", response.conversational_response)
         self.assertIn("Eliminación de registros con nulos", response.conversational_response)
 
-    def _mock_conn_and_db(self):
-        mock_conn = MagicMock()
-        mock_conn.id = 1
-        mock_conn.db_type = DatabaseType.SQLITE
-        mock_conn.host = self.db_path
-        mock_conn.database_name = self.db_path
-        mock_conn.null_policy = "strict"
-
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_conn
-        mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = mock_conn
-        mock_db.query.return_value.order_by.return_value.first.return_value = mock_conn
-        return mock_db
-
     def test_query_without_matching_rows_does_not_crash(self):
         """Un filtro que no matchea filas no crashea y no afirma que encontro datos.
 
-        Este test NO puede afirmar la frase exacta del resumen. `summary_text` sale
+        Este test NO puede afirmar la frase exacta del resumen: `summary_text` sale
         del LLM (`engine.py` toma el primer bloque de `conversational`), asi que
         la frase cambia entre corridas -- con un 7B local decimos "con el ID 99999"
         un dia y "con el ID proporcionado (99999)" al otro. Afirmar la cadena
@@ -306,16 +275,9 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
         arreglar el test. Lo que se verifica aca es el comportamiento: cero filas,
         respuesta completa, y un resumen que no afirme un resultado.
         """
-        import asyncio
-        response = asyncio.run(
-            QueryEngine.execute_query(
-                question="SELECT * FROM test_sales WHERE id = 99999",
-                user_role="Administrador",
-                is_admin=True,
-                db=self._mock_conn_and_db(),
-                connection_id=1
-            )
-        )
+        conn = self._make_conn(null_policy="strict")
+        response = self._run_query("SELECT * FROM test_sales WHERE id = 99999", conn)
+
         # 1. Cero filas, contadas por el motor y no por el texto.
         self.assertEqual(response.traceability.rows_returned, 0)
         self.assertEqual(response.data_rows, [])
@@ -352,25 +314,16 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
 
     def test_conversational_branch_survives_non_ast_exception(self):
         """Una excepción no-AST en la rama conversacional no debe dejar secured_sql/meta sin definir."""
-        import asyncio
-        from unittest.mock import patch, AsyncMock
         from app.modules.chat_engine.ast_validator import ASTValidator
         from app.modules.chat_engine.intent_classifier import IntentClassifier
         from app.modules.chat_engine.sql_executor import SQLExecutor
 
+        conn = self._make_conn(null_policy="strict")
         with patch.object(IntentClassifier, "classify_intent", new=AsyncMock(return_value="conversational")), \
              patch.object(SQLExecutor, "get_grounding_query", return_value="SELECT 1"), \
              patch.object(ASTValidator, "validate_and_secure_sql", side_effect=RuntimeError("sqlglot blew up")), \
              patch.object(IntentClassifier, "generate_conversational_response", new=AsyncMock(return_value="respuesta ok")):
-            response = asyncio.run(
-                QueryEngine.execute_query(
-                    question="¿Cómo va el panorama de ventas?",
-                    user_role="Administrador",
-                    is_admin=True,
-                    db=self._mock_conn_and_db(),
-                    connection_id=1
-                )
-            )
+            response = self._run_query("¿Cómo va el panorama de ventas?", conn)
 
         self.assertEqual(response.traceability.rows_returned, 0)
         self.assertEqual(response.conversational_response, "respuesta ok")

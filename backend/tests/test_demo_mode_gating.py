@@ -6,7 +6,7 @@ instalacion real deja cuentas activas con las claves publicadas en el README.
 El gate es `settings.DEMO_MODE_EFFECTIVE`: valor explicito si esta, y si no,
 encendido solo fuera de production.
 
-Este test usa una base SQLite temporal propia y NO la metadata compartida de la
+Este test usa una base PostgreSQL desechable propia y NO la metadata compartida de la
 suite: esa ya trae el seed de corridas anteriores y no probaria nada sobre lo
 que `init_db` siembra en una base fresca. El `engine` global no se redirige a
 proposito: `init_db` lo usa para `ensure_schema_migrations`, igual que en el
@@ -16,13 +16,12 @@ El caso ON existe para que esto no pase por verde con el seed roto: si el gate
 se comiera tambien la siembra con demo encendida, el control falla.
 """
 
-import os
-import tempfile
 import unittest
 from unittest.mock import patch
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+from conftest import create_temp_pg_database, drop_temp_pg_database, pg_source_engine
 
 from app.core.config import settings
 from app.core.database import Base
@@ -32,12 +31,13 @@ from app.modules.auth.models import Domain, Role, User
 
 
 class TestDemoModeGating(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-
-    def _fresh_session(self, name: str):
-        engine = create_engine(f"sqlite:///{os.path.join(self._tmp.name, name)}")
+    def _fresh_session(self):
+        """Una base PostgreSQL desechable por test: la metadata compartida de la
+        suite ya trae el seed de corridas anteriores y no probaria nada sobre lo
+        que `init_db` siembra en una base fresca."""
+        db_name = create_temp_pg_database("demogate")
+        self.addCleanup(drop_temp_pg_database, db_name)
+        engine = pg_source_engine(db_name)
         self.addCleanup(engine.dispose)
         Base.metadata.create_all(bind=engine)
         db = sessionmaker(bind=engine)()
@@ -45,7 +45,7 @@ class TestDemoModeGating(unittest.TestCase):
         return db
 
     def test_demo_off_does_not_seed_accounts_nor_connector(self):
-        db = self._fresh_session("demo_off.db")
+        db = self._fresh_session()
 
         with patch.object(settings, "DEMO_MODE", False):
             init_db(db)
@@ -63,7 +63,7 @@ class TestDemoModeGating(unittest.TestCase):
         self.assertGreater(db.query(Domain).count(), 0)
 
     def test_auto_without_demo_mode_off_in_production(self):
-        db = self._fresh_session("demo_auto_prod.db")
+        db = self._fresh_session()
 
         with patch.object(settings, "DEMO_MODE", None), patch.object(
             settings, "ENVIRONMENT", "production"
@@ -77,7 +77,7 @@ class TestDemoModeGating(unittest.TestCase):
         self.assertEqual(db.query(CorporateConnection).count(), 0)
 
     def test_demo_on_seeds_accounts_and_connector(self):
-        db = self._fresh_session("demo_on.db")
+        db = self._fresh_session()
 
         with patch.object(settings, "DEMO_MODE", True):
             init_db(db)

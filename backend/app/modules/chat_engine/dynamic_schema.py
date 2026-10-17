@@ -1,14 +1,9 @@
-import os
 import time
 import re
-import sqlite3
 from typing import List, Dict, Set, Any, Optional, Tuple
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from app.core.config import settings
 from app.core.database import discard_failed_transaction
-from app.modules.admin_catalog.models import RoleTablePermission, RoleColumnPermission, ColumnPermissionType, SemanticCatalog, CorporateConnection, DatabaseType
-from app.modules.catalog.services.schema_inspector import SchemaInspector
+from app.modules.admin_catalog.models import RoleTablePermission, RoleColumnPermission, ColumnPermissionType, SemanticCatalog, CorporateConnection
 from app.modules.auth.models import Role
 
 class DynamicSchemaPruningService:
@@ -42,55 +37,20 @@ class DynamicSchemaPruningService:
     _PHYSICAL_CACHE_MAX: int = 512
 
     @classmethod
-    def _is_postgres(cls, target: Any) -> bool:
-        """`target` es una conexion a PostgreSQL, no una ruta de fichero.
-
-        El `==` es el que decide: `DatabaseType` es un `str, Enum`, asi que
-        `str(DatabaseType.POSTGRESQL)` vale `"DatabaseType.POSTGRESQL"` y compararlo
-        con `"postgresql"` nunca da True. El `or` del `str()` cubre el caso de que
-        `db_type` venga como texto plano desde una consulta cruda.
-        """
-        if not hasattr(target, "db_type"):
-            return False
-        db_type = getattr(target, "db_type")
-        return db_type == DatabaseType.POSTGRESQL or str(db_type).lower() == "postgresql"
-
-    @classmethod
     def _physical_key(cls, target: Any) -> str:
         """Identidad estable de la base fisica a la que apunta `target`.
 
-        `target` es un `CorporateConnection` (Postgres) o una ruta de fichero
-        SQLite, y ambos determinan por completo que se va a leer.
+        `target` es una `CorporateConnection`, y sus datos determinan por
+        completo que se va a leer. La key NO usa `id(target)`: `target` es un
+        objeto ORM detached distinto en cada request, y una identidad que cambia
+        haria que el cache nunca acierte.
         """
-        if cls._is_postgres(target):
-            return "pg|{}|{}|{}|{}".format(
-                getattr(target, "db_type", ""),
-                getattr(target, "host", "") or "",
-                getattr(target, "port", "") or "",
-                getattr(target, "database_name", "") or "",
-            )
-        return f"sqlite|{cls._sqlite_path(target)}"
-
-    @classmethod
-    def _sqlite_path(cls, target: Any) -> str:
-        """La ruta de fichero que hay que abrir para leer `target`.
-
-        `target` llega de tres formas: una `CorporateConnection` de PostgreSQL (que
-        no se abre como fichero), una `CorporateConnection` de SQLite (SI es un
-        fichero: el dataset que el admin subio) o una ruta suelta.
-
-        La `CorporateConnection` de SQLite es la que se estaba perdiendo: no es un
-        `str`, asi que caia en el `else` y se leia `SQLITE_DB_PATH`, la demo
-        INTERNA de la plataforma. O sea, el esquema que se ofrecia como de la
-        conexion del cliente era el de otra base, y una consulta sobre una tabla
-        que el cliente si tiene se reportaba como inexistente.
-        """
-        if hasattr(target, "db_type") and not cls._is_postgres(target):
-            for candidate in (getattr(target, "host", None), getattr(target, "database_name", None)):
-                if candidate and os.path.exists(candidate):
-                    return candidate
-            return ""
-        return target if (isinstance(target, str) and target) else settings.SQLITE_DB_PATH
+        return "pg|{}|{}|{}|{}".format(
+            getattr(target, "db_type", ""),
+            getattr(target, "host", "") or "",
+            getattr(target, "port", "") or "",
+            getattr(target, "database_name", "") or "",
+        )
 
     @classmethod
     def invalidate_schema_cache(cls, connection_id: Optional[int] = None) -> None:
@@ -105,39 +65,6 @@ class DynamicSchemaPruningService:
             cls._schema_cache = {k: v for k, v in cls._schema_cache.items() if not k.startswith(f"{connection_id}:")}
         else:
             cls._schema_cache.clear()
-
-    @classmethod
-    def resolve_db_path(cls, db: Optional[Session] = None, connection_id: Optional[int] = None) -> str:
-        """Resolves target physical SQLite database path for active connection.
-
-        Delega en `SchemaInspector.resolve_connection_db_path`, que ya es la
-        implementacion canonica: un `connection_id` explicito e inexistente es un
-        404, no un fallback silencioso. Esta era una copia de la misma escalera de
-        fallback que NO hacia el 404, o sea que dos rutas del mismo sistema
-        trataban el mismo `connection_id` caido de forma distinta.
-        """
-        if db is not None:
-            try:
-                db_path, _conn = SchemaInspector.resolve_connection_db_path(db, connection_id)
-                return db_path
-            except HTTPException:
-                # Un id explicito inexistente es un 404 del cliente, no una falla de
-                # base de datos: dejarlo pasar tal cual en vez de convertirlo en
-                # RuntimeError, que el usuario veria como 500.
-                raise
-            except Exception as ex:
-                # Fallar aqui significa que NO sabemos a que base del cliente
-                # apuntan los permisos ya calculados. Devolver `SQLITE_DB_PATH`
-                # (la BD demo interna de Datia) ejecutaba la consulta del cliente
-                # contra la base interna de la plataforma, con los permisos de otra
-                # conexion: un fallo de resolucion se.convertia en una lectura de
-                # otra base. Se falla cerrado y se propaga; el rollback deja la
-                # sesion usable para el handler que lo reciba.
-                discard_failed_transaction(db)
-                raise RuntimeError(
-                    f"No se pudo resolver la base de datos de la conexion {connection_id}: {ex}"
-                ) from ex
-        return settings.SQLITE_DB_PATH
 
     @classmethod
     def get_physical_cache(cls, key: str, compute):
@@ -180,7 +107,7 @@ class DynamicSchemaPruningService:
 
     @classmethod
     def get_physical_db_tables(cls, target: Any = None) -> Set[str]:
-        """Inspects active PostgreSQL connection or SQLite database to retrieve physically existing data tables."""
+        """Inspects the active PostgreSQL connection to retrieve physically existing data tables."""
         return set(cls.get_physical_cache(
             f"tables|{cls._physical_key(target)}", lambda: cls._introspect_tables(target)
         ))
@@ -203,37 +130,19 @@ class DynamicSchemaPruningService:
     @classmethod
     def _introspect_tables(cls, target: Any) -> Set[str]:
         ignored_metadata = {
-            "sqlite_sequence", "roles", "domains", "corporate_connections",
+            "roles", "domains", "corporate_connections",
             "users", "role_domain_links", "role_table_permissions",
             "role_column_permissions", "semantic_catalog", "audit_logs",
             "user_sessions", "alembic_version"
         }
 
-        # Case 1: PostgreSQL CorporateConnection object
-        if hasattr(target, "db_type") and (target.db_type == DatabaseType.POSTGRESQL or str(target.db_type).lower() == "postgresql"):
-            try:
-                from sqlalchemy import inspect as sa_inspect
-                from app.core.database import connector_engine
-                with connector_engine(target) as eng:
-                    inspector = sa_inspect(eng)
-                    raw_tables = [t.lower() for t in inspector.get_table_names(schema="public")]
-                    return {t for t in raw_tables if t not in ignored_metadata}
-            except Exception:
-                return set()
-
-        # Case 2: SQLite database file path (tambien una CorporateConnection de
-        # SQLite, que ES un fichero: su dataset, no la demo interna)
         try:
-            target_path = cls._sqlite_path(target)
-            if not target_path or not os.path.exists(target_path):
-                return set()
-            conn = sqlite3.connect(target_path)
-            try:
-                cursor = conn.cursor()
-                raw_tables = [r[0].lower() for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
-            finally:
-                conn.close()
-            return {t for t in raw_tables if t not in ignored_metadata}
+            from sqlalchemy import inspect as sa_inspect
+            from app.core.database import connector_engine
+            with connector_engine(target) as eng:
+                inspector = sa_inspect(eng)
+                raw_tables = [t.lower() for t in inspector.get_table_names(schema="public")]
+                return {t for t in raw_tables if t not in ignored_metadata}
         except Exception:
             return set()
 
@@ -277,9 +186,9 @@ class DynamicSchemaPruningService:
         return result
 
     @classmethod
-    def get_physical_table_columns(cls, table_name: str, db_path: Any = None, include_samples: bool = True) -> List[Dict[str, Any]]:
+    def get_physical_table_columns(cls, table_name: str, conn_record: Any = None, include_samples: bool = True) -> List[Dict[str, Any]]:
         """
-        Inspects active PostgreSQL connection or SQLite database file to retrieve real physical columns, data types,
+        Inspects the active PostgreSQL connection to retrieve real physical columns, data types,
         and representative sample values for automatic profiling of tables.
         """
         clean_table = "".join(c for c in table_name if c.isalnum() or c == "_")
@@ -290,70 +199,17 @@ class DynamicSchemaPruningService:
         # no. Compartir la entrada devolveria en el prompt valores que el caller
         # pidio no leer.
         return [dict(c) for c in cls.get_physical_cache(
-            f"cols|{cls._physical_key(db_path)}|{clean_table}|{int(include_samples)}",
-            lambda: cls._introspect_columns(clean_table, db_path, include_samples),
+            f"cols|{cls._physical_key(conn_record)}|{clean_table}|{int(include_samples)}",
+            lambda: cls._introspect_columns(clean_table, conn_record, include_samples),
         )]
 
     @classmethod
-    def _introspect_columns(cls, clean_table: str, db_path: Any, include_samples: bool) -> List[Dict[str, Any]]:
-        # Case 1: PostgreSQL CorporateConnection object
-        if hasattr(db_path, "db_type") and (db_path.db_type == DatabaseType.POSTGRESQL or str(db_path.db_type).lower() == "postgresql"):
-            try:
-                from sqlalchemy import inspect as sa_inspect
-                from app.core.database import connector_engine
-                with connector_engine(db_path) as eng:
-                    return cls._inspect_columns_with_engine(eng, clean_table, include_samples, sa_inspect)
-            except Exception:
-                return []
-
-        # Case 2: SQLite database file (tambien una CorporateConnection de
-        # SQLite, que ES un fichero: su dataset, no la demo interna)
+    def _introspect_columns(cls, clean_table: str, conn_record: Any, include_samples: bool) -> List[Dict[str, Any]]:
         try:
-            target_path = cls._sqlite_path(db_path)
-            if not target_path or not os.path.exists(target_path):
-                return []
-            conn = sqlite3.connect(target_path)
-            try:
-                cursor = conn.cursor()
-                rows = cursor.execute(
-                    "SELECT cid, name, type, [notnull], dflt_value, pk FROM pragma_table_info(?)",
-                    (clean_table,)
-                ).fetchall()
-
-                col_samples_map: Dict[str, List[str]] = {}
-                if include_samples:
-                    try:
-                        conn.row_factory = sqlite3.Row
-                        s_cursor = conn.cursor()
-                        s_cursor.execute("SELECT * FROM " + clean_table + " LIMIT 20")
-                        for row in s_cursor.fetchall():
-                            for k in row.keys():
-                                val = row[k]
-                                if val is not None and str(val).strip():
-                                    s_list = col_samples_map.setdefault(k, [])
-                                    val_str = str(val)[:35]
-                                    if val_str not in s_list and len(s_list) < 3:
-                                        s_list.append(val_str)
-                    except Exception:
-                        pass
-
-                result = []
-                for r in rows:
-                    col_name = r[1]
-                    col_type = r[2] or "TEXT"
-                    is_pk = bool(r[5])
-                    samples = col_samples_map.get(col_name, [])
-
-                    result.append({
-                        "name": col_name,
-                        "type": col_type,
-                        "is_pk": is_pk,
-                        "samples": samples
-                    })
-
-                return result
-            finally:
-                conn.close()
+            from sqlalchemy import inspect as sa_inspect
+            from app.core.database import connector_engine
+            with connector_engine(conn_record) as eng:
+                return cls._inspect_columns_with_engine(eng, clean_table, include_samples, sa_inspect)
         except Exception:
             return []
 
@@ -488,7 +344,7 @@ class DynamicSchemaPruningService:
         allowed_tables: Set[str],
         query: Optional[str],
         catalog_entries: List[Any],
-        target_db_target: Any
+        conn_record: Any
     ) -> Set[str]:
         """
         Heuristically ranks and selects a compact subset of tables (2 to 4) relevant
@@ -508,7 +364,7 @@ class DynamicSchemaPruningService:
         table_cols_map: Dict[str, List[str]] = {}
 
         for tbl in allowed_tables:
-            cols = cls.get_physical_table_columns(tbl, target_db_target, include_samples=False)
+            cols = cls.get_physical_table_columns(tbl, conn_record, include_samples=False)
             col_names = [c["name"].lower() for c in cols]
             table_cols_map[tbl] = col_names
 
@@ -602,7 +458,7 @@ class DynamicSchemaPruningService:
                 # un `connection_id` inexistente devolvia la 1 desde esta linea mientras
                 # el resto del sistema resolvia la 2. Es decir, la misma peticion
                 # introspeccionaba dos bases distintas segun por donde entrara.
-                # El orden que queda es el de `SchemaInspector.resolve_connection_db_path`
+                # El orden que queda es el de `SchemaInspector.resolve_connection`
                 # y el de `engine.py`: id explicito, luego la activa, luego la ultima.
                 if not conn_record:
                     conn_record = db.query(CorporateConnection).filter(CorporateConnection.is_active == True).order_by(CorporateConnection.id.desc()).first()
@@ -615,9 +471,7 @@ class DynamicSchemaPruningService:
 
         effective_conn_id = conn_record.id if conn_record else (connection_id or 1)
 
-        is_pg = conn_record is not None and (conn_record.db_type == DatabaseType.POSTGRESQL or str(conn_record.db_type).lower() == "postgresql")
-        target_db_target = conn_record if is_pg else cls.resolve_db_path(db, effective_conn_id)
-        physical_tables = cls.get_physical_db_tables(target_db_target)
+        physical_tables = cls.get_physical_db_tables(conn_record)
 
         # Determine effective role_id and permissions
         effective_role_id = role_id
@@ -689,14 +543,14 @@ class DynamicSchemaPruningService:
                 catalog_synonyms_map[key] = entry.synonyms.strip()
 
         # Relevance pruning: determine active subset of tables for schema prompt rendering
-        active_tables = cls.rank_relevant_tables(allowed_tables, query, catalog_entries, target_db_target)
+        active_tables = cls.rank_relevant_tables(allowed_tables, query, catalog_entries, conn_record)
 
         # Build schema definition lines from physical database inspection
         schema_text_lines = []
         table_columns_map: Dict[str, List[str]] = {}
 
         for tbl in sorted(list(active_tables)):
-            phys_cols = cls.get_physical_table_columns(tbl, target_db_target)
+            phys_cols = cls.get_physical_table_columns(tbl, conn_record)
             table_columns_map[tbl] = []
 
             col_lines = []

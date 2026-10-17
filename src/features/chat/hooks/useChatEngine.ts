@@ -58,10 +58,24 @@ const isQuotaError = (err: unknown): boolean => {
   );
 };
 
+// Grupo de fecha para el sidebar (Hoy / Ayer / Anteriores). La unica fecha real
+// es `updated_at` del servidor; un hilo local sin fecha (o con una fecha que no
+// parsea) cae en 'Anteriores' en vez de inventarle un dia.
+const getDateGroup = (iso?: string | null): 'Hoy' | 'Ayer' | 'Anteriores' => {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return 'Anteriores';
+  const dayStart = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((dayStart(new Date()) - dayStart(d)) / 86_400_000);
+  if (diffDays <= 0) return 'Hoy';
+  if (diffDays === 1) return 'Ayer';
+  return 'Anteriores';
+};
+
 export interface FullThread {
   id: string;
   title: string;
   timestamp: string;
+  dateGroup?: 'Hoy' | 'Ayer' | 'Anteriores';
   connection_id?: number;
   results: QueryResult[];
 }
@@ -74,7 +88,7 @@ export function useChatEngine() {
   const [activeTraceability, setActiveTraceability] = useState<QueryResult['traceability'] | null>(null);
   const [isMobileHistoryOpen, setIsMobileHistoryOpen] = useState(false);
   const [activeConnectionId, setActiveConnectionId] = useState<number | null>(null);
-  const [activeDatabaseName, setActiveDatabaseName] = useState('BD Corporativa Local (SQLite)');
+  const [activeDatabaseName, setActiveDatabaseName] = useState('BD Corporativa Local');
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -145,6 +159,17 @@ export function useChatEngine() {
       return [];
     }
   });
+
+  // Espejo sincronico de `threads` para los callbacks async del hook: la
+  // respuesta de la consulta llega despues de un `await` y su closure quedo con
+  // el `threads` de otro render. Se actualiza por commit (effect), asi que
+  // leerlo al llegar la respuesta da el estado vigente. No reemplaza al
+  // `setThreads` funcional: ese sigue siendo la unica via de escritura.
+  const threadsRef = useRef<FullThread[]>(threads);
+  useEffect(() => {
+    threadsRef.current = threads;
+  }, [threads]);
+
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   // Mismo par que usa useAdminUsers: `threadsLoaded` separa "todavia cargando"
   // de "la API devolvio []" y `threadsError` de "no se pudo preguntar". Antes
@@ -240,6 +265,7 @@ export function useChatEngine() {
               id: s.id,
               title: s.title,
               timestamp: s.updated_at ? new Date(s.updated_at).toLocaleDateString() : 'Reciente',
+              dateGroup: getDateGroup(s.updated_at),
               connection_id: s.connection_id,
               results: prevMap.get(s.id)?.results || [],
             }));
@@ -271,6 +297,7 @@ export function useChatEngine() {
             id: sharedThread.id,
             title: sharedThread.title,
             timestamp: sharedThread.updated_at ? new Date(sharedThread.updated_at).toLocaleDateString() : 'Compartido',
+            dateGroup: getDateGroup(sharedThread.updated_at),
             connection_id: sharedThread.connection_id,
             results: sharedThread.results || [],
           };
@@ -345,6 +372,7 @@ export function useChatEngine() {
         id: t.id,
         title: t.title,
         timestamp: t.timestamp,
+        dateGroup: t.dateGroup,
       })),
     [threads]
   );
@@ -498,20 +526,19 @@ export function useChatEngine() {
     setPrediction(null);
 
     const currentThreadId = activeThreadId || `thread-${Date.now()}`;
-    let threadTitle = trimmed.length > 32 ? `${trimmed.substring(0, 30)}...` : trimmed;
+    const threadTitle = trimmed.length > 32 ? `${trimmed.substring(0, 30)}...` : trimmed;
 
     if (!activeThreadId) {
       const newTh: FullThread = {
         id: currentThreadId,
         title: threadTitle,
         timestamp: 'Ahora',
+        dateGroup: 'Hoy',
         connection_id: activeConnectionId || 1,
         results: [],
       };
       setThreads((prev) => [newTh, ...prev]);
       setActiveThreadId(currentThreadId);
-    } else if (activeThread) {
-      threadTitle = activeThread.title;
     }
 
     // Extract multi-turn conversation history from active thread (last 2 turns)
@@ -617,23 +644,23 @@ export function useChatEngine() {
         }
       }
 
-      // Updater puro: el POST va afuera. Dentro del updater es un efecto
-      // secundario y React 18 StrictMode lo invoca dos veces en dev -> dos POST.
-      let newResults: QueryResult[] = [];
-      let threadTitleForSave = threadTitle;
-      setThreads((prev) =>
-        prev.map((t) => {
-          if (t.id !== currentThreadId) return t;
-          newResults = [...t.results, newResult];
-          threadTitleForSave = t.title;
-          return { ...t, results: newResults };
-        })
-      );
-
-      if (newResults.length > 0) {
+      // El merge y el POST van fuera del updater y leen `threadsRef`: el updater
+      // de React no corre necesariamente en el punto de la llamada (su "eager
+      // state" se saltea cuando el fiber ya tiene lanes pendientes — p. ej. la
+      // narrativa del stream recien limpiada mas arriba), y cuando corre recien
+      // en el render, `newResults` quedaba vacio y el POST no salia nunca: el
+      // hilo vivia solo en este navegador y su DELETE daba 404. DENTRO del
+      // updater el POST tampoco puede ir: StrictMode lo invoca dos veces en dev
+      // -> dos POST.
+      const mergeTarget = threadsRef.current.find((t) => t.id === currentThreadId);
+      if (mergeTarget) {
+        const newResults = [...mergeTarget.results, newResult];
+        setThreads((prev) =>
+          prev.map((t) => (t.id === currentThreadId ? { ...t, results: newResults } : t))
+        );
         queryService.saveThread({
           id: currentThreadId,
-          title: threadTitleForSave,
+          title: mergeTarget.title,
           connection_id: activeConnectionId || 1,
           results: newResults,
         }).then((saved) => {

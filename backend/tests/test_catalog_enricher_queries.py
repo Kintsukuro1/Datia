@@ -21,13 +21,11 @@ sobre la misma columna no la encontraria e insertaria un duplicado, que revienta
 el `UniqueConstraint(connection_id, schema_name, table_name, column_name)`.
 """
 
-import os
-import sqlite3
-import tempfile
 import unittest
 from unittest.mock import patch
 
-from app.modules.admin_catalog.models import DatabaseType
+from conftest import pg_source_conn_attrs
+
 from app.modules.catalog.services.catalog_enricher import CatalogEnricher
 
 
@@ -36,29 +34,13 @@ class TestCatalogEnricherNoNPlusOne(unittest.TestCase):
     # catalogo de nadie. El rango de ids demo es chico.
     CONN_ID = 999001
 
-    def setUp(self):
-        fd, self.path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
+    def _meta_falsa(self):
         # 3 tablas x 6 columnas = 18 columnas: con el N+1 serian 18 SELECTs
         # de `_find_existing_item`, ahora 1.
-        conn = sqlite3.connect(self.path)
-        for t in range(1, 4):
-            cols = ", ".join(f"col{j} REAL" for j in range(1, 7))
-            conn.execute(f"CREATE TABLE tabla{t} ({cols})")
-        conn.commit()
-        conn.close()
-
-    def tearDown(self):
-        try:
-            os.remove(self.path)
-        except OSError:
-            pass
-
-    def _meta_falsa(self):
         return [
             {
                 "table_name": f"tabla{t}",
-                "schema_name": "main",
+                "schema_name": "public",
                 "columns": [
                     {"name": f"col{j}", "data_type": "REAL", "sample_values": []}
                     for j in range(1, 7)
@@ -70,10 +52,8 @@ class TestCatalogEnricherNoNPlusOne(unittest.TestCase):
     def _contar_queries(self, fn):
         """Cuenta los SELECT via el engine de SQLAlchemy.
 
-        No se espia `sqlite3.Connection.execute`: en Python 3.14 ese tipo es
-        inmutable y `patch.object` revienta con
-        "cannot set 'execute' attribute of immutable type". El evento de
-        SQLAlchemy ve lo mismo y ademas cubre el dialecto que se este usando.
+        El evento ve lo mismo que espiar el driver y ademas cubre el motor que
+        se este usando.
         """
         import app.core.database as core_db
         from sqlalchemy import event
@@ -98,7 +78,7 @@ class TestCatalogEnricherNoNPlusOne(unittest.TestCase):
                     "app.modules.catalog.services.catalog_enricher.SchemaInspector.introspect_connection_metadata",
                     return_value=self._meta_falsa(),
                 ):
-                    CatalogEnricher.seed_catalog_heuristics_for_connection(db, self.CONN_ID, self.path)
+                    CatalogEnricher.seed_catalog_heuristics_for_connection(db, self.CONN_ID)
 
             queries = self._contar_queries(correr)
             # Se cuentan solo las de `semantic_catalog`: el lookup de
@@ -126,8 +106,8 @@ class TestCatalogEnricherNoNPlusOne(unittest.TestCase):
                 "app.modules.catalog.services.catalog_enricher.SchemaInspector.introspect_connection_metadata",
                 return_value=self._meta_falsa(),
             ):
-                primero = CatalogEnricher.seed_catalog_heuristics_for_connection(db, self.CONN_ID, self.path)
-                segundo = CatalogEnricher.seed_catalog_heuristics_for_connection(db, self.CONN_ID, self.path)
+                primero = CatalogEnricher.seed_catalog_heuristics_for_connection(db, self.CONN_ID)
+                segundo = CatalogEnricher.seed_catalog_heuristics_for_connection(db, self.CONN_ID)
 
             self.assertEqual(primero, 18)
             self.assertEqual(segundo, 0, "la segunda pasada volvio a insertar filas")
@@ -162,8 +142,8 @@ class TestCatalogEnricherNoNPlusOne(unittest.TestCase):
             synchronize_session=False
         )
         db.add(CorporateConnection(
-            id=self.CONN_ID, name="Prueba N+1", db_type=DatabaseType.SQLITE, host=self.path,
-            port=0, database_name=os.path.basename(self.path), username="admin",
+            id=self.CONN_ID, name="Prueba N+1",
+            **pg_source_conn_attrs("no_conecta"),
             is_active=False,
         ))
         db.commit()

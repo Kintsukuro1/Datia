@@ -184,30 +184,50 @@ class TestMaskingReachesTheResponse(unittest.TestCase):
     estuviera mal o si rows se consumiera antes de enmascarar. Este test atraviesa
     el motor completo y comprueba la fila que ve el usuario.
     """
-    def setUp(self):
-        import sqlite3
-        import tempfile
-        from unittest.mock import MagicMock, patch
 
-        from app.modules.admin_catalog.models import DatabaseType
+    @classmethod
+    def setUpClass(cls):
+        from conftest import create_temp_pg_database
+
+        cls.pg_db = create_temp_pg_database("masked")
+
+    @classmethod
+    def tearDownClass(cls):
+        from conftest import drop_temp_pg_database
+
+        drop_temp_pg_database(cls.pg_db)
+
+    def setUp(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sqlalchemy import text
+
+        from conftest import pg_source_conn_attrs, pg_source_engine
+
         from app.modules.chat_engine.engine import QueryEngine
 
         self.QueryEngine = QueryEngine
-        self.tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-        self.tmp.close()
-        con = sqlite3.connect(self.tmp.name)
-        con.execute("CREATE TABLE clientes (nombre TEXT, rut_dni_cliente TEXT)")
-        con.execute("INSERT INTO clientes VALUES ('Ana Perez', '12.345.678-9')")
-        con.execute("INSERT INTO clientes VALUES ('Luis Soto', '98.765.432-4')")
-        con.commit()
-        con.close()
+
+        eng = pg_source_engine(self.pg_db)
+        try:
+            with eng.begin() as c:
+                c.execute(text("DROP TABLE IF EXISTS clientes"))
+                c.execute(text("CREATE TABLE clientes (nombre TEXT, rut_dni_cliente TEXT)"))
+                c.execute(text("INSERT INTO clientes VALUES ('Ana Perez', '12.345.678-9')"))
+                c.execute(text("INSERT INTO clientes VALUES ('Luis Soto', '98.765.432-4')"))
+        finally:
+            eng.dispose()
 
         mock_conn = MagicMock()
-        mock_conn.id = 1
-        mock_conn.db_type = DatabaseType.SQLITE
-        mock_conn.host = self.tmp.name
-        mock_conn.database_name = self.tmp.name
+        # Id inexistente + `is_uploaded=True`: el introspector de `SchemaInspector`
+        # filtra por los permisos de la conexion subida; con un id real el filtro
+        # dependeria del estado de la base de metadatos de tests.
+        mock_conn.id = 999999
+        mock_conn.is_uploaded = True
+        for key, value in pg_source_conn_attrs(self.pg_db).items():
+            setattr(mock_conn, key, value)
         mock_conn.null_policy = "open"
+        mock_conn.name = "test"
 
         self.mock_db = MagicMock()
         self.mock_db.query.return_value.filter.return_value.first.return_value = mock_conn
@@ -222,18 +242,17 @@ class TestMaskingReachesTheResponse(unittest.TestCase):
                          classmethod(lambda cls, *a, **k: set())),
             patch.object(QueryEngine, "get_allowed_tables_for_role",
                          classmethod(lambda cls, *a, **k: {"clientes"})),
+            # Lo que este test verifica son las filas enmascaradas, no la
+            # narrativa: sin esto cada corrida espera el timeout real del LLM.
+            patch("app.modules.chat_engine.llm_service.LLMService.generate_completion",
+                  new=AsyncMock(return_value=None)),
         ]
         for p in self.patches:
             p.start()
 
     def tearDown(self):
-        import os
         for p in self.patches:
             p.stop()
-        try:
-            os.unlink(self.tmp.name)
-        except OSError:
-            pass
 
     def test_rut_never_reaches_the_response_in_clear(self):
         import asyncio

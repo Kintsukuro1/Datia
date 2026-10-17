@@ -211,16 +211,18 @@ class TestJsonTruncadoNoEsNarrativa(unittest.TestCase):
 class TestDialectoEnElPrompt(unittest.TestCase):
     """El motor calculaba el dialecto y no se lo pasaba al LLM."""
 
-    def test_sqlite_no_le_dice_extract_ni_ilike(self):
+    def test_un_dialecto_desconocido_cae_a_postgres(self):
+        """El motor unico es PostgreSQL: no hay reglas de otros motores que
+        arrastrar. Pedir 'sqlite' cae al default documentado (postgres)."""
         prompt = PromptManager.get_text_to_sql_system_prompt(
             "Economista", {"fact_ventas"}, dialect="sqlite"
         )
-        self.assertIn("sqlite", prompt.lower())
+        self.assertIn("postgres", prompt.lower())
         regla = prompt.split("8.")[1].split("9.")[0]
-        self.assertIn("strftime('%Y'", regla)
-        self.assertIn("NO uses EXTRACT", regla)
-        self.assertIn("ILIKE", regla, "debe nombrar lo que prohibe, no solo callarse")
-        self.assertNotIn("string_agg(", regla, "no debe(arrastrar la regla de postgres")
+        self.assertIn("EXTRACT", regla)
+        self.assertIn("ILIKE", regla)
+        self.assertIn("string_agg", regla)
+        self.assertNotIn("strftime('%Y'", regla)
 
     def test_postgres_si_nombra_sus_funciones(self):
         prompt = PromptManager.get_text_to_sql_system_prompt(
@@ -240,11 +242,9 @@ class TestDialectoEnElPrompt(unittest.TestCase):
         )
         self.assertIn("postgres", up)
 
-    def test_el_default_no_roba_el_dialecto_explicito(self):
-        # Sin dialecto explicito el prompt no debe afirmar un motor que nadie
-        # eligio: el default coincide con lo que usa el motor en una demo SQLite,
-        # y se documenta en la firma.
-        self.assertIn("sqlite", PromptManager.get_text_to_sql_system_prompt("X", {"t"}))
+    def test_el_default_es_postgres(self):
+        # Sin dialecto explicito el prompt usa el unico motor soportado.
+        self.assertIn("postgres", PromptManager.get_text_to_sql_system_prompt("X", {"t"}).lower())
 
 
 class TestEsquemaComoDdl(unittest.TestCase):

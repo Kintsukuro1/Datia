@@ -3,7 +3,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.security import mask_value
-from app.modules.admin_catalog.models import SemanticCatalog, CorporateConnection, DatabaseType
+from app.modules.admin_catalog.models import SemanticCatalog, CorporateConnection
 from app.modules.admin_catalog.schemas import (
     SemanticCatalogCreate, SemanticCatalogUpdate,
     DataDictionaryResponse, DataDictionaryTable, DataDictionaryColumn,
@@ -19,14 +19,6 @@ class CatalogDomainService:
     """
 
     @classmethod
-    def resolve_connection_db_path(cls, db: Session, connection_id: Optional[int]) -> Tuple[str, CorporateConnection]:
-        return SchemaInspector.resolve_connection_db_path(db, connection_id)
-
-    @classmethod
-    def _introspect_connection_metadata(cls, conn_obj: Optional[CorporateConnection], db_path: Optional[str] = None) -> List[Dict[str, Any]]:
-        return SchemaInspector.introspect_connection_metadata(conn_obj, db_path)
-
-    @classmethod
     def _heuristic_enrich(cls, table_name: str, col_name: str, col_type: str, samples: List[str]) -> Dict[str, str]:
         return CatalogEnricher.heuristic_enrich(table_name, col_name, col_type, samples)
 
@@ -35,10 +27,9 @@ class CatalogDomainService:
         cls,
         db: Session,
         connection_id: int,
-        db_path: Optional[str] = None,
         only_tables: Optional[List[str]] = None
     ) -> int:
-        return CatalogEnricher.seed_catalog_heuristics_for_connection(db, connection_id, db_path, only_tables=only_tables)
+        return CatalogEnricher.seed_catalog_heuristics_for_connection(db, connection_id, only_tables=only_tables)
 
     @classmethod
     def list_catalog(
@@ -80,9 +71,8 @@ class CatalogDomainService:
             if conn_record:
                 target_conn_id = conn_record.id
 
-        if conn_record and (conn_record.db_type == DatabaseType.POSTGRESQL or str(conn_record.db_type).lower() == "postgresql"):
-            if target_schema == "main":
-                target_schema = "public"
+        if target_schema == "main":
+            target_schema = "public"
 
         existing = db.query(SemanticCatalog).filter(
             SemanticCatalog.connection_id == target_conn_id,
@@ -172,11 +162,11 @@ class CatalogDomainService:
         columnas que el perfil no deberia ver.
         """
         try:
-            # `resolve_connection_db_path` tambien lanza `SchemaIntrospectionError`
-            # desde que una ruta configurada inexistente no cae a la base demo:
-            # el catch tiene que cubrir las dos, no solo la introspeccion.
-            db_path, conn_obj = SchemaInspector.resolve_connection_db_path(db, connection_id)
-            tables_meta = SchemaInspector.introspect_connection_metadata(conn_obj, db_path)
+            # `resolve_connection` tambien lanza `SchemaIntrospectionError` (sin
+            # conexiones registradas no hay base que introspeccionar): el catch
+            # tiene que cubrir las dos, no solo la introspeccion.
+            conn_obj = SchemaInspector.resolve_connection(db, connection_id)
+            tables_meta = SchemaInspector.introspect_connection_metadata(conn_obj)
         except SchemaIntrospectionError as ex:
             # 502: la peticion es valida, la base de destino no responde. Un 200
             # con total_tables=0 le decia al usuario "esta base no tiene tablas".
@@ -186,7 +176,7 @@ class CatalogDomainService:
             )
 
         catalog_entries = db.query(SemanticCatalog).filter(
-            SemanticCatalog.connection_id == (conn_obj.id if conn_obj else 1)
+            SemanticCatalog.connection_id == conn_obj.id
         ).all()
 
         # Clave (esquema, tabla, columna) en minuscula. Con solo tabla+columna, un
@@ -258,9 +248,9 @@ class CatalogDomainService:
             ))
 
         return DataDictionaryResponse(
-            connection_id=conn_obj.id if conn_obj else 1,
-            connection_name=conn_obj.name if conn_obj else "Base de Datos",
-            db_type=str(conn_obj.db_type.value if hasattr(conn_obj.db_type, 'value') else conn_obj.db_type) if conn_obj else "sqlite",
+            connection_id=conn_obj.id,
+            connection_name=conn_obj.name,
+            db_type=str(conn_obj.db_type.value if hasattr(conn_obj.db_type, 'value') else conn_obj.db_type),
             tables=tables_result,
             total_tables=len(tables_result),
             total_columns=total_cols

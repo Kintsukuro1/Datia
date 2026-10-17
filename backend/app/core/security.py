@@ -108,9 +108,9 @@ def mask_value(value, keep_last_digits: int = MASK_KEEP_LAST_DIGITS):
     mantienen, para que el formato siga siendo reconocible.
 
     Se aplica DESPUES de ejecutar la consulta, en Python, y no reescribiendo el SQL:
-    SQLite no tiene REGEXP y las funciones de cadena varian por dialecto, asi que
-    hacerlo en SQL hacia el enmascaramiento dialecto-dependiente y capaz de romper la
-    consulta. Aquí no hay dialecto y no se puede romper nada.
+    las funciones de cadena varian por dialecto, asi que hacerlo en SQL haria el
+    enmascaramiento dialecto-dependiente y capaz de romper la consulta. Aquí no
+    hay dialecto y no se puede romper nada.
 
     La columna sigue existiendo en el SELECT (por eso MASKED no se agrega a
     blocked_columns): la consulta funciona, el dato no sale.

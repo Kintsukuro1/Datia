@@ -104,8 +104,8 @@ La seguridad se aplica en **3 capas consecutivas e independientes**:
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ 3. TERCERA BARRERA: Conexión de Base de Datos Solo Lectura  │
-│    El usuario de conexión en PostgreSQL / SQL Server /      │
-│    MySQL / SQLite tiene privilegios únicos de SELECT en BD. │
+│    El usuario de conexión en PostgreSQL tiene privilegios   │
+│    únicos de SELECT en BD.                                  │
 │    Cero permisos de INSERT, UPDATE, DELETE, EXEC.           │
 └─────────────────────────────────────────────────────────────┘
 ```

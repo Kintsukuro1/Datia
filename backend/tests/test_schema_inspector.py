@@ -12,16 +12,10 @@ sql_executor.py y dynamic_schema.py.
 """
 
 import inspect
-import os
-import sqlite3
-import tempfile
 import unittest
-import uuid
 from unittest.mock import MagicMock, patch
 
-from app.core.config import settings
 from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
-from app.modules.catalog.services import schema_inspector as si
 from app.modules.catalog.services.schema_inspector import SchemaInspector, SchemaIntrospectionError
 
 
@@ -72,116 +66,62 @@ class OperationalErrorShim(Exception):
     pass
 
 
-class TestMissingSqliteFileIsNotAnEmptyDatabase(unittest.TestCase):
-    """Una ruta SQLite inexistente devolvia `[]` (200 con total_tables=0), que
-    es indistinguible de "esta base no tiene tablas". Ahora lanza."""
+class TestNonPostgresConnectionIsNotAnEmptyDatabase(unittest.TestCase):
+    """Una conexion que no se puede abrir devolvia `[]` (200 con
+    total_tables=0), indistinguible de "esta base no tiene tablas". Ahora lanza
+    nombrando la conexion."""
 
-    def test_explicit_db_path_that_does_not_exist_raises_with_the_path(self):
-        missing = os.path.join(tempfile.gettempdir(), f"no-existe-{uuid.uuid4().hex}.db")
-        self.assertFalse(os.path.exists(missing))
-
-        with self.assertRaises(SchemaIntrospectionError) as ctx:
-            SchemaInspector.introspect_connection_metadata(None, missing)
-
-        self.assertIn(missing, str(ctx.exception))
-
-    def test_connection_with_configured_missing_path_raises(self):
-        """La conexion trae ruta configurada que ya no existe: no se cae en
-        silencio a la base demo de la plataforma."""
-        missing = os.path.join(tempfile.gettempdir(), f"no-existe-{uuid.uuid4().hex}.db")
+    def test_unsupported_engine_raises_naming_the_connection(self):
         conn = MagicMock()
-        conn.db_type = DatabaseType.SQLITE
+        conn.db_type = "mysql"
         conn.name = "Clientes"
-        conn.host = missing
-        conn.database_name = missing
+        conn.host = "db.interna"
+        conn.port = 3306
+        conn.database_name = "clientes"
+        conn.username = "admin"
+        conn.encrypted_password = None
 
         with self.assertRaises(SchemaIntrospectionError) as ctx:
             SchemaInspector.introspect_connection_metadata(conn)
 
-        self.assertIn(missing, str(ctx.exception))
+        self.assertIn("Clientes", str(ctx.exception))
 
 
-class TestResolveDoesNotSilentlyFallBackToTheDemoDatabase(unittest.TestCase):
-    """Una conexion SQLite con ruta CONFIGURADA inexistente caia en silencio a
-    `settings.SQLITE_DB_PATH`: el diccionario, el catalogo y el chat leian la
-    base demo de la plataforma creyendo que era la base pedida."""
+class TestResolveNeverFallsBackToTheDemoDatabase(unittest.TestCase):
+    """Sin conexiones registradas no hay base que introspeccionar: antes se
+    fabricaba una conexion SQLite falsa sobre la demo interna y el diccionario
+    respondia las tablas de OTRA base como si fueran de la pedida."""
 
     @staticmethod
     def _db_returning(conn):
         db = MagicMock()
         db.query.return_value.filter.return_value.first.return_value = conn
+        db.query.return_value.order_by.return_value.first.return_value = conn
         return db
 
-    def test_configured_but_missing_path_raises_and_never_names_the_demo_db(self):
-        missing = os.path.join(tempfile.gettempdir(), f"no-existe-{uuid.uuid4().hex}.db")
-        conn = CorporateConnection(
-            id=42, name="Clientes", db_type=DatabaseType.SQLITE,
-            host=missing, port=0, database_name=missing, username="admin",
-            is_active=True,
-        )
+    def test_no_registered_connection_raises_instead_of_pointing_at_a_demo(self):
+        db = MagicMock()
+        # Las tres cadenas que usa `resolve_connection` sin connection_id:
+        # filter().first(), filter().order_by().first() y order_by().first().
+        db.query.return_value.filter.return_value.first.return_value = None
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+        db.query.return_value.order_by.return_value.first.return_value = None
 
         with self.assertRaises(SchemaIntrospectionError) as ctx:
-            SchemaInspector.resolve_connection_db_path(self._db_returning(conn), 42)
+            SchemaInspector.resolve_connection(db, None)
 
-        msg = str(ctx.exception)
-        self.assertIn(missing, msg)
-        self.assertNotIn(settings.SQLITE_DB_PATH, msg)
+        self.assertIn("conexión corporativa", str(ctx.exception).lower())
 
-    def test_connection_without_configured_path_keeps_the_historical_fallback(self):
+    def test_resolve_returns_the_connection_it_found(self):
         conn = CorporateConnection(
-            id=43, name="Sin ruta", db_type=DatabaseType.SQLITE,
-            host=None, port=0, database_name=None, username="admin",
+            id=43, name="Clientes", db_type=DatabaseType.POSTGRESQL,
+            host="localhost", port=5432, database_name="clientes", username="admin",
             is_active=True,
         )
 
-        db_path, resolved = SchemaInspector.resolve_connection_db_path(self._db_returning(conn), 43)
+        resolved = SchemaInspector.resolve_connection(self._db_returning(conn), 43)
 
-        self.assertEqual(db_path, settings.SQLITE_DB_PATH)
         self.assertIs(resolved, conn)
-
-
-class TestSqliteResourceIsClosed(unittest.TestCase):
-    """`with sqlite3.connect(...)` es un context manager de TRANSACCION, no de
-    recurso: cierra el commit, no el handle del fichero."""
-
-    def setUp(self):
-        fd, self.db_path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        c = sqlite3.connect(self.db_path)
-        c.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
-        c.execute("INSERT INTO t VALUES (1, 'a')")
-        c.commit()
-        c.close()
-
-    def tearDown(self):
-        try:
-            os.remove(self.db_path)
-        except OSError:
-            pass
-
-    def test_unreadable_sqlite_file_raises_rather_than_returning_empty(self):
-        fd, junk_path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        with open(junk_path, "wb") as fh:
-            fh.write(b"esto no es una base de datos" * 100)
-        try:
-            with self.assertRaises(SchemaIntrospectionError):
-                SchemaInspector.introspect_connection_metadata(None, junk_path)
-        finally:
-            os.remove(junk_path)
-
-    def test_sqlite_source_uses_closing_not_bare_connect(self):
-        src = inspect.getsource(SchemaInspector.introspect_connection_metadata)
-        self.assertIn(
-            "closing(sqlite3.connect(", src,
-            "sigue el `with sqlite3.connect(...)`, que no cierra el recurso",
-        )
-
-    def test_valid_sqlite_file_still_introspects(self):
-        meta = SchemaInspector.introspect_connection_metadata(None, self.db_path)
-        names = [t["table_name"] for t in meta]
-        self.assertIn("t", names)
-        self.assertEqual(meta[0]["row_count"], 1)
 
 
 class TestPostgresEngineIsDisposed(unittest.TestCase):

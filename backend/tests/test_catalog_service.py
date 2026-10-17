@@ -28,7 +28,7 @@ from app.modules.catalog.services.schema_inspector import SchemaInspector, Schem
 def _conn_record(cid, active=True):
     rec = MagicMock()
     rec.id = cid
-    rec.db_type = DatabaseType.SQLITE
+    rec.db_type = DatabaseType.POSTGRESQL
     rec.is_active = active
     rec.name = f"conn-{cid}"
     return rec
@@ -41,7 +41,7 @@ def _conn_record_named(cid, name="conn"):
     rec = MagicMock()
     rec.id = cid
     rec.name = name
-    rec.db_type = DatabaseType.SQLITE
+    rec.db_type = DatabaseType.POSTGRESQL
     rec.is_active = True
     return rec
 
@@ -222,8 +222,8 @@ class TestDataDictionaryDoesNotReportAFailedConnectionAsEmpty(unittest.TestCase)
     def test_schema_introspection_failure_becomes_502(self):
         db = MagicMock()
         with patch.object(
-            cs.SchemaInspector, "resolve_connection_db_path",
-            return_value=("/tmp/x.db", _conn_record(1)),
+            cs.SchemaInspector, "resolve_connection",
+            return_value=_conn_record(1),
         ):
             with patch.object(
                 cs.SchemaInspector, "introspect_connection_metadata",
@@ -239,8 +239,8 @@ class TestDataDictionaryDoesNotReportAFailedConnectionAsEmpty(unittest.TestCase)
         """Regresion del sintoma exacto que se reporto: HTTP 200 + 0 tablas."""
         db = MagicMock()
         with patch.object(
-            cs.SchemaInspector, "resolve_connection_db_path",
-            return_value=("/tmp/x.db", _conn_record(1)),
+            cs.SchemaInspector, "resolve_connection",
+            return_value=_conn_record(1),
         ):
             with patch.object(
                 cs.SchemaInspector, "introspect_connection_metadata",
@@ -255,25 +255,25 @@ class TestDataDictionaryDoesNotReportAFailedConnectionAsEmpty(unittest.TestCase)
                 self.assertNotEqual(raised.status_code, 200)
 
     def test_resolve_failure_is_also_mapped_to_502(self):
-        """`resolve_connection_db_path` ahora lanza por una ruta configurada
-        inexistente (no cae mas a la base demo); el catch del diccionario tiene
-        que cubrir tambien eso y no dejarlo pasar como 500."""
+        """`resolve_connection` lanza cuando no hay conexiones registradas; el
+        catch del diccionario tiene que cubrir tambien eso y no dejarlo pasar
+        como 500."""
         db = MagicMock()
         with patch.object(
-            cs.SchemaInspector, "resolve_connection_db_path",
+            cs.SchemaInspector, "resolve_connection",
             side_effect=SchemaIntrospectionError(
-                "La conexión 'Clientes' apunta al archivo 'no/existe.db', que no existe en disco."
+                "No hay ninguna conexión corporativa registrada. Registra una en Administración, pestaña Conexiones."
             ),
         ):
             with self.assertRaises(HTTPException) as ctx:
                 CatalogDomainService.get_data_dictionary(db, connection_id=1)
 
         self.assertEqual(ctx.exception.status_code, 502)
-        self.assertIn("no/existe.db", ctx.exception.detail)
+        self.assertIn("conexión corporativa", ctx.exception.detail)
 
 
 class TestUnknownConnectionIdIsRejectedByTheInspector(unittest.TestCase):
-    """`SchemaInspector.resolve_connection_db_path` con un `connection_id` explicito
+    """`SchemaInspector.resolve_connection` con un `connection_id` explicito
     e inexistente caia en silencio a "la conexion no-uploadada": el caller terminaba
     introspeccionando OTRA base creyendola la que pidio (mismo criterio que ya
     corrijo `create_catalog_item`)."""
@@ -283,7 +283,7 @@ class TestUnknownConnectionIdIsRejectedByTheInspector(unittest.TestCase):
         db.query.return_value.filter.return_value.first.return_value = None
 
         with self.assertRaises(HTTPException) as ctx:
-            SchemaInspector.resolve_connection_db_path(db, 999)
+            SchemaInspector.resolve_connection(db, 999)
 
         self.assertEqual(ctx.exception.status_code, 404)
         self.assertIn("999", ctx.exception.detail)
@@ -303,7 +303,7 @@ class TestUnknownConnectionIdIsRejectedByTheInspector(unittest.TestCase):
         db.query.side_effect = query_side_effect
 
         with self.assertRaises(HTTPException) as ctx:
-            SchemaInspector.resolve_connection_db_path(db, 999)
+            SchemaInspector.resolve_connection(db, 999)
 
         # Si hubiera caido en el fallback, el segundo `first` (la base
         # no-uploadada) se habria consumido y no habria raising.
@@ -316,10 +316,9 @@ class TestUnknownConnectionIdIsRejectedByTheInspector(unittest.TestCase):
         db = MagicMock()
         db.query.return_value.filter.return_value.order_by.return_value.first.return_value = active
 
-        db_path, conn = SchemaInspector.resolve_connection_db_path(db, None)
+        conn = SchemaInspector.resolve_connection(db, None)
 
         self.assertIs(conn, active)
-        self.assertTrue(db_path)
 
     def test_known_connection_id_still_resolves(self):
         known = _conn_record(3)
@@ -327,7 +326,7 @@ class TestUnknownConnectionIdIsRejectedByTheInspector(unittest.TestCase):
         db = MagicMock()
         db.query.return_value.filter.return_value.first.return_value = known
 
-        _db_path, conn = SchemaInspector.resolve_connection_db_path(db, 3)
+        conn = SchemaInspector.resolve_connection(db, 3)
 
         self.assertIs(conn, known)
 
@@ -377,8 +376,8 @@ def _dictionary(entries, tables):
     db.query.side_effect = query_side_effect
 
     with patch.object(
-        cs.SchemaInspector, "resolve_connection_db_path",
-        return_value=("/tmp/x.db", _conn_record(1)),
+        cs.SchemaInspector, "resolve_connection",
+        return_value=_conn_record(1),
     ), patch.object(cs.SchemaInspector, "introspect_connection_metadata", return_value=tables):
         return CatalogDomainService.get_data_dictionary(db, connection_id=1)
 

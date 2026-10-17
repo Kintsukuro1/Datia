@@ -171,7 +171,7 @@ async def get_system_anomalies(
     5. Connections requiring permission review
     """
     from app.modules.telemetry_audit.models import AuditLog
-    from app.modules.admin_catalog.models import SemanticCatalog, DatabaseType
+    from app.modules.admin_catalog.models import SemanticCatalog
     from sqlalchemy import func
 
     anomalies = []
@@ -270,9 +270,8 @@ async def get_system_anomalies(
             from app.modules.chat_engine.kpi_calculator import KPICalculator
             from app.modules.chat_engine.governance_guard import GovernanceGuard
 
-            is_pg = (target_conn.db_type == DatabaseType.POSTGRESQL or str(target_conn.db_type).lower() == "postgresql")
-            engine_dialect = "postgres" if is_pg else "sqlite"
-            target_exec = target_conn if is_pg else DynamicSchemaPruningService.resolve_db_path(db, target_conn.id)
+            engine_dialect = "postgres"
+            target_exec = target_conn
 
             # El escaneo no puede mirar una tabla que el perfil no puede ver. Antes
             # elegia la primera tabla fact_ alfabetica del servidor y hacia SELECT *,
@@ -297,7 +296,7 @@ async def get_system_anomalies(
             chosen_table = fact_tables[0] if fact_tables else (visible_tables[0] if visible_tables else None)
 
             if chosen_table:
-                cols_info = DynamicSchemaPruningService.get_physical_table_columns(chosen_table, db_path=target_exec)
+                cols_info = DynamicSchemaPruningService.get_physical_table_columns(chosen_table, target_exec)
                 num_cols = [
                     c["name"] for c in cols_info
                     if any(it in c.get("type", "").lower() for it in ["int", "real", "float", "numeric", "decimal", "double"])
@@ -309,8 +308,8 @@ async def get_system_anomalies(
                     # Proyectar SOLO la metrica numerica. SELECT * tambien traia
                     # columnas sensibles y las metia en las descripciones de
                     # anomalias que se devuelven al cliente.
-                    quoted_table = f'"{chosen_table}"' if is_pg else f'`{chosen_table}`'
-                    quoted_metric = f'"{metric}"' if is_pg else f'`{metric}`'
+                    quoted_table = f'"{chosen_table}"'
+                    quoted_metric = f'"{metric}"'
                     scan_sql = f"SELECT {quoted_metric} FROM {quoted_table} LIMIT 60"
                     rows = SQLExecutor.execute_raw_sql(target_exec, scan_sql, dialect=engine_dialect)
                     if rows and len(rows) >= 4:

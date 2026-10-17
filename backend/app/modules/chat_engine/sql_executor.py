@@ -1,4 +1,3 @@
-import sqlite3
 import json
 import re
 from typing import List, Dict, Any, Optional, Set, Tuple
@@ -30,9 +29,9 @@ class SQLExecutor:
         return cleaned
 
     @classmethod
-    def execute_raw_sql(cls, target_db: Any, sql: str, dialect: str = "sqlite") -> List[Dict[str, Any]]:
+    def execute_raw_sql(cls, target_db: Any, sql: str, dialect: str = "postgres") -> List[Dict[str, Any]]:
         """
-        Safely executes a SELECT query on SQLite or PostgreSQL using try...finally to ensure connection closure.
+        Safely executes a SELECT query on PostgreSQL using try...finally to ensure connection closure.
         """
         # If target_db is a CorporateConnection model object
         if hasattr(target_db, "db_type"):
@@ -65,23 +64,10 @@ class SQLExecutor:
             finally:
                 eng.dispose()
 
-        # SQLite connection (using native read-only URI mode when file exists)
-        import os
-        db_path = str(target_db)
-        if os.path.isfile(db_path):
-            conn = sqlite3.connect(f"file:{os.path.abspath(db_path)}?mode=ro", uri=True)
-        else:
-            conn = sqlite3.connect(db_path)
-        try:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(sql)
-            return [cls._clean_row(dict(r)) for r in cursor.fetchall()]
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        raise ValueError(
+            f"Destino de consulta no soportado: {type(target_db).__name__}. "
+            "Se espera una conexión corporativa o una URL de PostgreSQL."
+        )
 
     @classmethod
     def get_grounding_query(
@@ -115,11 +101,11 @@ class SQLExecutor:
         table_columns_map: Dict[str, List[str]],
         schema_context: str = "",
         is_llm_active: bool = True,
-        dialect: str = "sqlite",
+        dialect: str = "postgres",
         is_admin: bool = False
     ) -> Tuple[List[Dict[str, Any]], str, Dict[str, Any], bool, str]:
         """
-        Executes query on SQLite or PostgreSQL and automatically invokes LLM self-healing if an exception occurs.
+        Executes query on PostgreSQL and automatically invokes LLM self-healing if an exception occurs.
         Returns: (rows, final_sql, meta_dict, was_self_healed, validation_label)
         """
         secured_sql = initial_sql
@@ -182,7 +168,7 @@ class SQLExecutor:
             healed_sql = None
             if is_llm_active:
                 try:
-                    engine_label = "PostgreSQL" if dialect in ("postgres", "postgresql") else "SQLite"
+                    engine_label = "PostgreSQL"
                     healing_system_prompt = (
                         f"Eres un asistente experto en corregir consultas SQL para {engine_label}. "
                         "El motor relacional arrojó un error con la consulta previa. "

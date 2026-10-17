@@ -210,7 +210,7 @@ describe('api_client: el detail de un 422 llega como string, no como array', () 
 
     let caught: any = null;
     try {
-      await apiClient.post('/connectors/test', { db_type: 'sqlite', host: 'x', port: 0, database_name: 'd', username: 'admin' });
+      await apiClient.post('/connectors/test', { db_type: 'postgresql', host: 'x', port: 0, database_name: 'd', username: 'admin' });
     } catch (e) {
       caught = e;
     }
@@ -220,7 +220,7 @@ describe('api_client: el detail de un 422 llega como string, no como array', () 
     expect(typeof caught.response.data.detail).toBe('string');
     expect(caught.response.data.detail).toBe('Field required');
     // Y el patron del catch de connector_service, tal cual.
-    const shown = caught.response?.data?.detail || 'No se pudo conectar a x:0 (SQLITE).';
+    const shown = caught.response?.data?.detail || 'No se pudo conectar a x:0 (POSTGRESQL).';
     expect(typeof shown).toBe('string');
     expect(caught.message).toBe('Field required');
   });

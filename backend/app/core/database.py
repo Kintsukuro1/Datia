@@ -1,5 +1,3 @@
-import os
-import re
 from contextlib import contextmanager
 from typing import Generator
 from sqlalchemy import create_engine
@@ -19,33 +17,31 @@ def get_database_url(
     """Builds PostgreSQL database connection URL for psycopg driver."""
     return f"postgresql+psycopg://{user}:{password}@{server}:{port}/{db_name}"
 
-# Initial Engine: Attempt PostgreSQL connection, fallback to SQLite for standalone demo mode
-try:
-    DATABASE_URL = get_database_url()
-    engine = create_engine(
-        DATABASE_URL,
-        pool_pre_ping=True,
-        pool_size=10,
-        max_overflow=20,
-        echo=False,
-        connect_args={"connect_timeout": 5},
-    )
-    with engine.connect() as conn:
-        pass
-except Exception:
-    db_path = settings.METADATA_DB_PATH
-    DATABASE_URL = f"sqlite:///{db_path}"
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# Motor unico de la metadata: PostgreSQL. Sin fallback a SQLite a proposito:
+# una segunda base interna en un archivo solo producia dos verdades distintas
+# (una instalacion con dos juegos de usuarios, permisos e historial) y estados
+# de diagnostico que no eran el estado real. Si PostgreSQL no responde, el
+# arranque falla aca con el error de conexion a la vista.
+DATABASE_URL = get_database_url()
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+    echo=False,
+    connect_args={"connect_timeout": 5},
+)
+with engine.connect() as conn:
+    pass
 
 def ensure_schema_migrations(eng):
     """
     Auto-migrates incremental schema columns (e.g. null_policy, is_uploaded)
-    for existing SQLite and PostgreSQL metadata databases without requiring manual Alembic steps.
-    Uses lock_timeout on PostgreSQL to avoid deadlocks with abandoned sessions.
+    for an existing metadata database without requiring manual Alembic steps.
+    Uses lock_timeout to avoid deadlocks with abandoned sessions.
     """
     try:
         from sqlalchemy import inspect, text
-        is_pg = "postgresql" in str(eng.url)
 
         table_names = set(inspect(eng).get_table_names())
 
@@ -60,17 +56,16 @@ def ensure_schema_migrations(eng):
             return {c["name"] for c in inspect(eng).get_columns(table)}
 
         def _safe_alter(conn, stmts):
-            """Execute ALTER stmts with a short lock timeout on PG."""
-            if is_pg:
-                conn.execute(text("SET lock_timeout = '3s'"))
+            """Execute ALTER stmts with a short lock timeout."""
+            conn.execute(text("SET lock_timeout = '3s'"))
             for s in stmts:
                 conn.execute(text(s))
 
         # Indices de las tablas que el motor de chat consulta en CADA request.
         # SQLAlchemy no crea indices en columnas FK, asi que los `Index(...)` de
         # los modelos solo valen para bases creadas desde cero: una instalacion
-        # existente se los tiene que crear aqui. `IF NOT EXISTS` funciona igual
-        # en PostgreSQL y en SQLite, y hace que esto sea idempotente.
+        # existente se los tiene que crear aqui. `IF NOT EXISTS` hace que esto
+        # sea idempotente.
         #
         # Sin esto, `get_authorized_schema_prompt` (3 veces por query, via
         # `governance_guard`) hace un seq scan de las tablas de permisos.
@@ -100,7 +95,10 @@ def ensure_schema_migrations(eng):
             try:
                 conn_cols = _cols("corporate_connections")
                 if "is_uploaded" not in conn_cols:
-                    pending.append("ALTER TABLE corporate_connections ADD COLUMN is_uploaded BOOLEAN DEFAULT 0 NOT NULL")
+                    # BOOLEAN en PostgreSQL no acepta `DEFAULT 0` (era sintaxis
+                    # que solo SQLite toleraba: el ALTER fallaba dentro del
+                    # except best-effort y la columna no se creaba nunca).
+                    pending.append("ALTER TABLE corporate_connections ADD COLUMN is_uploaded BOOLEAN DEFAULT FALSE NOT NULL")
                 if "null_policy" not in conn_cols:
                     pending.append("ALTER TABLE corporate_connections ADD COLUMN null_policy VARCHAR(50) DEFAULT 'open'")
                 if "detected_tables" not in conn_cols:
@@ -120,7 +118,8 @@ def ensure_schema_migrations(eng):
                 if "locked_until" not in user_cols:
                     pending.append("ALTER TABLE users ADD COLUMN locked_until TIMESTAMP NULL")
                 if "must_change_password" not in user_cols:
-                    pending.append("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0 NOT NULL")
+                    # Idem `is_uploaded`: `BOOLEAN DEFAULT 0` no existe en PostgreSQL.
+                    pending.append("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT FALSE NOT NULL")
                 if pending:
                     with eng.begin() as conn:
                         _safe_alter(conn, pending)
@@ -148,50 +147,10 @@ def ensure_schema_migrations(eng):
                     None,
                 )
                 if vs is not None and not vs.get("nullable", True):
-                    if is_pg:
-                        with eng.begin() as conn:
-                            _safe_alter(conn, [
-                                "ALTER TABLE audit_logs ALTER COLUMN validation_status DROP NOT NULL"
-                            ])
-                    else:
-                        # Antes de abrir la transacción: `_cols` abre su propia
-                        # conexión y un segundo lector contra un write lock
-                        # abierto en SQLite da "database is locked".
-                        cols = ", ".join('"%s"' % c for c in _cols("audit_logs"))
-                        # SQLite no tiene ALTER COLUMN. Se reconstruye la tabla
-                        # desde su propio DDL en sqlite_master quitando el NOT NULL
-                        # de ESA columna: no hay DDL hardcodeado que pueda quedar
-                        # desfasado del modelo.
-                        with eng.begin() as conn:
-                            row = conn.execute(text(
-                                "SELECT sql FROM sqlite_master WHERE type='table' AND name='audit_logs'"
-                            )).scalar()
-                            new_ddl = re.sub(
-                                r"(\bvalidation_status\b[^,\n]*?)\s+NOT\s+NULL",
-                                r"\1",
-                                row,
-                                count=1,
-                                flags=re.IGNORECASE,
-                            )
-                            idx = [r[0] for r in conn.execute(text(
-                                "SELECT sql FROM sqlite_master WHERE type='index' "
-                                "AND tbl_name='audit_logs' AND sql IS NOT NULL"
-                            )).fetchall()]
-                            # PRAGMA fuera de transaccion: SQLite la ignora dentro de BEGIN.
-                            conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
-                            conn.execute(text("ALTER TABLE audit_logs RENAME TO audit_logs__old"))
-                            conn.execute(text(new_ddl.replace("audit_logs", "audit_logs__new", 1)))
-                            conn.execute(text(
-                                f"INSERT INTO audit_logs__new ({cols}) SELECT {cols} FROM audit_logs__old"
-                            ))
-                            conn.execute(text("DROP TABLE audit_logs__old"))
-                            conn.execute(text("ALTER TABLE audit_logs__new RENAME TO audit_logs"))
-                            # Los indices se recreationan con su SQL original: la tabla
-                            # ya volvio a llamarse audit_logs y el DROP del "__old" libero
-                            # los nombres.
-                            for sql in idx:
-                                conn.execute(text(sql))
-                            conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+                    with eng.begin() as conn:
+                        _safe_alter(conn, [
+                            "ALTER TABLE audit_logs ALTER COLUMN validation_status DROP NOT NULL"
+                        ])
             except Exception as e:
                 logger.warning(f"Migración: audit_logs.validation_status sigue NOT NULL: {e}")
 
@@ -255,24 +214,18 @@ def discard_failed_transaction(db) -> None:
 def update_database_engine(server: str, port: int, user: str, password: str, db_name: str):
     """Updates global engine with new PostgreSQL credentials (used by Setup Wizard)."""
     global engine, SessionLocal
-    try:
-        new_url = get_database_url(server, port, user, password, db_name)
-        new_engine = create_engine(new_url, pool_pre_ping=True, pool_size=10, max_overflow=20)
-        with new_engine.connect() as conn:
-            pass
-        engine = new_engine
-    except Exception:
-        db_path = settings.METADATA_DB_PATH
-        new_url = f"sqlite:///{db_path}"
-        engine = create_engine(new_url, connect_args={"check_same_thread": False})
+    new_url = get_database_url(server, port, user, password, db_name)
+    new_engine = create_engine(new_url, pool_pre_ping=True, pool_size=10, max_overflow=20)
+    with new_engine.connect() as conn:
+        pass
+    engine = new_engine
     ensure_schema_migrations(engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return engine
 
 def build_engine_for_connector(conn):
     """
-    Dynamically creates an isolated SQLAlchemy engine for any registered CorporateConnection.
-    Supports PostgreSQL and SQLite.
+    Dynamically creates an isolated SQLAlchemy engine for a registered CorporateConnection.
     """
     from app.core.security import decrypt_credential
     from app.modules.admin_catalog.models import DatabaseType
@@ -283,9 +236,10 @@ def build_engine_for_connector(conn):
         url = f"postgresql+psycopg://{conn.username}:{pwd}@{conn.host}:{port}/{conn.database_name}"
         return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
 
-    # SQLite (local file database)
-    db_path = conn.host if (conn.host and os.path.exists(conn.host)) else settings.SQLITE_DB_PATH
-    return create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    raise ValueError(
+        f"Motor de base de datos no soportado: {conn.db_type}. "
+        "Las conexiones corporativas deben ser PostgreSQL."
+    )
 
 
 @contextmanager

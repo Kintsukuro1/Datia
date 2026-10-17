@@ -8,17 +8,19 @@ guardarraíl realmente aplica — y sobre todo que una tabla sin ningún lector
 aparezca como huérfana, que es el único motivo por el que existe el endpoint.
 """
 
-import os
-import sqlite3
-import tempfile
 import unittest
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
+
+from conftest import (
+    create_temp_pg_database, drop_temp_pg_database, pg_source_conn_attrs, pg_source_engine,
+)
 
 from main import app  # noqa: F401  registra los mappers de SQLAlchemy
 
 from app.modules.admin_catalog.models import (
-    CorporateConnection, DatabaseType, RoleColumnPermission, RoleTablePermission,
+    CorporateConnection, RoleColumnPermission, RoleTablePermission,
 )
 from app.modules.auth.models import Role
 from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
@@ -29,9 +31,18 @@ CONN_NAME = "TEST cobertura (efimera)"
 
 
 class TestGovernanceCoverage(unittest.TestCase):
-    """Cada test siembra su propio archivo SQLite: el universo de tablas de una
-    conexión sale de la introspección FÍSICA, así que sin un archivo propio las
-    afirmaciones correrían contra las tablas de la demo y no probarían nada."""
+    """Cada test siembra su propia base PostgreSQL desechable: el universo de
+    tablas de una conexión sale de la introspección FÍSICA, así que sin tablas
+    propias las afirmaciones correrían contra las tablas de la demo y no
+    probarían nada."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pg_db = create_temp_pg_database("cover")
+
+    @classmethod
+    def tearDownClass(cls):
+        drop_temp_pg_database(cls.pg_db)
 
     def setUp(self):
         from app.core.database import SessionLocal
@@ -40,7 +51,6 @@ class TestGovernanceCoverage(unittest.TestCase):
         self.db = SessionLocal()
         self.admin_token = self._login("admin", "admin123")
         self.analista = self._role("Analista Financiero & Comercial") or self._role("Economista")
-        self._tmpdir = tempfile.TemporaryDirectory()
         self.conn_id = None
 
         # Rastro de una corrida anterior interrumpida: `name` es UNIQUE y el
@@ -68,24 +78,28 @@ class TestGovernanceCoverage(unittest.TestCase):
         return {"Authorization": f"Bearer {token}"}
 
     def _apunta_a(self, *tablas):
-        """Crea un SQLite con exactamente esas tablas y una conexion que lo apunte."""
-        path = os.path.join(self._tmpdir.name, f"cobertura_{self.conn_id}_{len(tablas)}.sqlite")
-        conn = sqlite3.connect(path)
+        """Crea exactamente esas tablas (y ninguna otra) y apunta una conexion ahi.
+
+        El universo de la cobertura sale de la introspeccion fisica, asi que la
+        base desechable se vacia primero: una tabla del test anterior apareceria
+        como huerfana y el summary dejaria de ser el de este test.
+        """
+        eng = pg_source_engine(self.pg_db)
         try:
-            for t in tablas:
-                conn.execute(f'CREATE TABLE "{t}" (id INTEGER PRIMARY KEY, valor TEXT)')
-            conn.commit()
+            with eng.begin() as c:
+                names = [r[0] for r in c.execute(text(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                ))]
+                for name in names:
+                    c.execute(text(f'DROP TABLE IF EXISTS public."{name}" CASCADE'))
+                for t in tablas:
+                    c.execute(text(f'CREATE TABLE "{t}" (id INTEGER PRIMARY KEY, valor TEXT)'))
         finally:
-            conn.close()
+            eng.dispose()
 
         row = CorporateConnection(
             name=CONN_NAME,
-            db_type=DatabaseType.SQLITE,
-            host=path,
-            port=0,
-            database_name=os.path.basename(path),
-            username="admin",
-            encrypted_password="",
+            **pg_source_conn_attrs(self.pg_db),
             is_active=False,
             is_uploaded=True,
         )
@@ -97,7 +111,7 @@ class TestGovernanceCoverage(unittest.TestCase):
     def _grant(self, role_id, table, is_allowed=True):
         self.db.add(RoleTablePermission(
             role_id=role_id, connection_id=self.conn_id,
-            schema_name="main", table_name=table,
+            schema_name="public", table_name=table,
             is_allowed=is_allowed, granted_by_admin=True,
         ))
         self.db.commit()
@@ -202,7 +216,7 @@ class TestGovernanceCoverage(unittest.TestCase):
                               ("rut_dni_cliente", ColumnPermissionType.MASKED)):
             self.db.add(RoleColumnPermission(
                 role_id=self.analista.id, connection_id=self.conn_id,
-                schema_name="main", table_name="dim_clientes",
+                schema_name="public", table_name="dim_clientes",
                 column_name=columna, permission_type=tipo,
             ))
         self.db.commit()
@@ -246,9 +260,6 @@ class TestGovernanceCoverage(unittest.TestCase):
                 ).delete(synchronize_session=False)
                 db.commit()
             db.close()
-        td = getattr(self, "_tmpdir", None)
-        if td is not None:
-            td.cleanup()
 
 
 if __name__ == "__main__":

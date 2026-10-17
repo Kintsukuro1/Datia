@@ -233,7 +233,7 @@ export const ChatDashboardPage: React.FC = () => {
             {!isPresentationMode && (
               <button
                 onClick={() => setIsMobileHistoryOpen(true)}
-                className="md:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+                className="md:hidden p-1.5 rounded-lg text-app-muted hover:text-app-text hover:bg-app-hover transition"
                 title="Ver Historial"
               >
                 <History size={18} />
@@ -250,7 +250,7 @@ export const ChatDashboardPage: React.FC = () => {
                     aria-label="Seleccionar Fuente de Datos Activa"
                     value={activeConnectionId || ''}
                     onChange={(e) => handleSelectConnection(Number(e.target.value))}
-                    className="bg-white dark:bg-slate-900/90 border border-slate-300 dark:border-slate-700/80 text-slate-800 dark:text-slate-200 text-xs rounded-lg px-2.5 py-1 focus:outline-none focus:border-brand-500 cursor-pointer font-medium hover:border-slate-400 dark:hover:border-slate-600 transition-colors shadow-xs"
+                    className="bg-app-surface border border-app-border text-app-text text-xs rounded-lg px-2.5 py-1 focus:outline-none focus:border-brand-500 cursor-pointer font-medium hover:border-brand-500/50 transition-colors shadow-xs"
                   >
                     {connectors.map((c) => (
                       <option key={c.id} value={c.id}>
@@ -260,7 +260,7 @@ export const ChatDashboardPage: React.FC = () => {
                   </select>
                 </div>
               ) : (
-                <span className="text-slate-700 dark:text-slate-300 font-semibold truncate max-w-[200px] sm:max-w-none">
+                <span className="text-app-text font-semibold truncate max-w-[200px] sm:max-w-none">
                   {activeDatabaseName}
                 </span>
               )}
@@ -271,7 +271,7 @@ export const ChatDashboardPage: React.FC = () => {
             {/* Proactive Anomalies Badge & Popover */}
             {anomaliesError && (
               <span
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border border-slate-300 dark:border-zinc-700/60 bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border border-app-border bg-app-card text-app-muted"
                 title={anomaliesError}
               >
                 <AlertTriangle size={13} className="text-slate-400" />
@@ -283,7 +283,7 @@ export const ChatDashboardPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsAnomaliesOpen((prev) => !prev)}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition shadow-xs ${
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition shadow-xs ${
                     anomaliesData.has_critical
                       ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30 hover:bg-rose-500/25'
                       : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30 hover:bg-amber-500/25'
@@ -375,7 +375,7 @@ export const ChatDashboardPage: React.FC = () => {
                 fetchWidgets();
                 setIsWidgetsOpen(true);
               }}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/60 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700/60 transition shadow-xs"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-app-muted hover:text-app-text bg-app-card hover:bg-app-hover border border-app-border transition shadow-xs"
               title="Ver Tablero Ejecutivo con gráficos fijados"
             >
               <LayoutDashboard size={13} className="text-amber-500 dark:text-amber-400" />
@@ -389,7 +389,7 @@ export const ChatDashboardPage: React.FC = () => {
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition shadow-xs ${
                 isPresentationMode
                   ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40'
-                  : 'text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/60 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700/60'
+                  : 'text-app-muted hover:text-app-text bg-app-card hover:bg-app-hover border border-app-border'
               }`}
               title="Alternar Modo Presentación Pantalla Completa (F11 / ESC)"
             >
@@ -579,42 +579,45 @@ export const ChatDashboardPage: React.FC = () => {
       {/* Tablero Ejecutivo Modal */}
       {isWidgetsOpen && (
         <div ref={widgetsModalRef} role="dialog" aria-modal="true" aria-label="Tablero Ejecutivo Corporativo" tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
-          <div className="w-full max-w-5xl max-h-[85vh] flex flex-col rounded-2xl bg-white dark:bg-dark-surface border border-slate-200 dark:border-dark-border shadow-2xl overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-200 dark:border-dark-border flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2 text-gray-900 dark:text-white font-bold text-base">
-                <LayoutDashboard className="w-5 h-5 text-brand-600 dark:text-brand-400" />
+          <div className="w-full max-w-6xl max-h-[88vh] flex flex-col rounded-[20px] bg-app-surface border border-app-border shadow-2xl overflow-hidden">
+            {/* Linea de acento superior */}
+            <div aria-hidden="true" className="h-0.5 w-full bg-gradient-to-r from-transparent via-brand-500/70 to-transparent shrink-0" />
+            <div className="px-5 sm:px-6 py-4 border-b border-app-border/80 bg-app-bg/40 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 text-app-text font-bold text-base min-w-0">
+                <LayoutDashboard className="w-5 h-5 text-brand-500 shrink-0" />
                 <span>Tablero Ejecutivo Corporativo</span>
-                <span className="text-xs font-medium text-gray-600 dark:text-gray-400 bg-slate-100 dark:bg-dark-base px-2.5 py-0.5 rounded-full border border-slate-300 dark:border-dark-border ml-2">
+                <span className="text-xs font-medium text-app-muted bg-app-card px-2.5 py-0.5 rounded-full border border-app-border">
                   {widgetsError ? 'conteo DESCONOCIDO' : widgetsLoaded ? `${widgets.length} ${widgets.length === 1 ? 'widget fijado' : 'widgets fijados'}` : 'Cargando...'}
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() => setIsWidgetsOpen(false)}
-                className="p-1.5 rounded-xl text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-card transition cursor-pointer"
+                aria-label="Cerrar Tablero Ejecutivo"
+                className="p-1.5 rounded-xl text-app-muted hover:text-app-text hover:bg-app-hover transition cursor-pointer"
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-6 scrollbar-thin scrollbar-thumb-zinc-700">
+            <div className="flex-1 overflow-y-auto p-5 sm:p-6 scrollbar-thin">
               {widgetsError ? (
                 <div className="text-center py-16 space-y-3">
-                  <Pin className="w-10 h-10 text-zinc-400 dark:text-zinc-600 mx-auto" />
-                  <p className="text-slate-800 dark:text-zinc-300 font-medium text-sm">No se pudo consultar el tablero</p>
-                  <p className="text-slate-500 dark:text-zinc-500 text-xs max-w-sm mx-auto">
+                  <Pin className="w-10 h-10 text-app-muted mx-auto" />
+                  <p className="text-app-text font-medium text-sm">No se pudo consultar el tablero</p>
+                  <p className="text-app-muted text-xs max-w-sm mx-auto">
                     {widgetsError} No se muestra un conteo de widgets porque el servidor no lo confirmó.
                   </p>
                 </div>
               ) : !widgetsLoaded ? (
                 <div className="text-center py-16">
-                  <p className="text-slate-500 dark:text-zinc-500 text-xs">Consultando tableros fijados...</p>
+                  <p className="text-app-muted text-xs">Consultando tableros fijados...</p>
                 </div>
               ) : widgets.length === 0 ? (
                 <div className="text-center py-16 space-y-3">
-                  <Pin className="w-10 h-10 text-zinc-400 dark:text-zinc-600 mx-auto" />
-                  <p className="text-slate-800 dark:text-zinc-300 font-medium text-sm">No tienes widgets fijados en el tablero</p>
-                  <p className="text-slate-500 dark:text-zinc-500 text-xs max-w-sm mx-auto">
+                  <Pin className="w-10 h-10 text-app-muted mx-auto" />
+                  <p className="text-app-text font-medium text-sm">No tienes widgets fijados en el tablero</p>
+                  <p className="text-app-muted text-xs max-w-sm mx-auto">
                     Haz clic en el botón <b>"Fijar en Tablero"</b> debajo de cualquier gráfico o KPI generado en el chat para anclarlo aquí.
                   </p>
                 </div>
@@ -631,20 +634,20 @@ export const ChatDashboardPage: React.FC = () => {
                     return (
                       <div
                         key={w.id}
-                        className="rounded-2xl bg-slate-50 dark:bg-dark-base border border-slate-200 dark:border-dark-border/80 p-4 space-y-3 hover:border-brand-500/40 transition flex flex-col justify-between shadow-xs"
+                        className="rounded-[16px] bg-app-card border border-app-border/80 p-4 space-y-3 hover:border-brand-500/40 transition flex flex-col justify-between shadow-xs"
                       >
                         <div className="space-y-3">
                           <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <h4 className="text-xs sm:text-sm font-semibold text-gray-900 dark:text-white line-clamp-1">{w.title}</h4>
-                              <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5 font-mono">
+                            <div className="min-w-0">
+                              <h4 className="text-xs sm:text-sm font-semibold text-app-text line-clamp-1">{w.title}</h4>
+                              <p className="text-[10px] text-app-muted mt-0.5 font-mono">
                                 Fijado: {new Date(w.created_at).toLocaleDateString()}
                               </p>
                             </div>
                             <button
                               type="button"
                               onClick={() => handleUnpin(w.id)}
-                              className="p-1.5 rounded-lg text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                              className="p-1.5 rounded-lg text-app-muted hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
                               title="Quitar de tablero"
                             >
                               <Trash2 size={14} />
@@ -654,8 +657,8 @@ export const ChatDashboardPage: React.FC = () => {
                           {kpis.length > 0 && (
                             <div className="grid grid-cols-2 gap-2">
                               {kpis.slice(0, 2).map((k: any, idx: number) => (
-                                <div key={idx} className="p-2.5 rounded-xl bg-white dark:bg-dark-surface border border-slate-200 dark:border-dark-border">
-                                  <span className="text-[10px] text-gray-600 dark:text-gray-400 truncate block">{k.title}</span>
+                                <div key={idx} className="p-2.5 rounded-xl bg-app-surface border border-app-border min-w-0">
+                                  <span className="text-[10px] text-app-muted truncate block">{k.title}</span>
                                   <span className="text-xs font-bold text-brand-700 dark:text-brand-300 font-mono tabular-nums truncate block mt-0.5">{k.value}</span>
                                 </div>
                               ))}
@@ -663,7 +666,7 @@ export const ChatDashboardPage: React.FC = () => {
                           )}
 
                           {hasChartSeries ? (
-                            <div className="w-full h-44 rounded-xl overflow-hidden bg-dark-surface/80 border border-dark-border/60 p-1">
+                            <div className="w-full h-44 rounded-xl overflow-hidden bg-app-bg/60 border border-app-border/60 p-1">
                               <ReactECharts
                                 option={option}
                                 style={{ height: '100%', width: '100%' }}
@@ -671,9 +674,9 @@ export const ChatDashboardPage: React.FC = () => {
                               />
                             </div>
                           ) : (
-                            <div className="w-full py-4 px-3 rounded-xl bg-dark-surface/40 border border-dashed border-dark-border/70 text-center space-y-1">
+                            <div className="w-full py-4 px-3 rounded-xl bg-app-bg/40 border border-dashed border-app-border/70 text-center space-y-1">
                               <BarChart3 className="w-5 h-5 text-brand-400 mx-auto opacity-70" />
-                              <p className="text-[11px] text-gray-400">
+                              <p className="text-[11px] text-app-muted">
                                 Consulta analítica registrada. Haz clic abajo para interactuar con el gráfico y datos en vivo.
                               </p>
                             </div>
@@ -681,7 +684,7 @@ export const ChatDashboardPage: React.FC = () => {
                         </div>
 
                         {/* Interactive Widget Action Bar */}
-                        <div className="pt-3 border-t border-dark-border/60 flex items-center justify-between gap-2">
+                        <div className="pt-3 border-t border-app-border/60 flex items-center justify-between gap-2">
                           <button
                             type="button"
                             onClick={() => {
@@ -698,7 +701,7 @@ export const ChatDashboardPage: React.FC = () => {
                             <Sparkles className="w-3.5 h-3.5" />
                             <span>Interactuar en Chat</span>
                           </button>
-                          <span className="text-[10px] text-gray-400 font-mono uppercase bg-dark-surface px-2 py-0.5 rounded border border-dark-border">
+                          <span className="text-[10px] text-app-muted font-mono uppercase bg-app-bg px-2 py-0.5 rounded border border-app-border">
                             {w.chart_type || 'Gráfico'}
                           </span>
                         </div>
@@ -707,6 +710,21 @@ export const ChatDashboardPage: React.FC = () => {
                   })}
                 </div>
               )}
+            </div>
+
+            {/* Footer: Esc ya cierra el modal (useModalA11y); el hint lo dice. */}
+            <div className="px-5 sm:px-6 py-3 border-t border-app-border/70 bg-app-bg/40 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-2 text-[11px] text-app-muted">
+                <kbd className="inline-flex items-center px-1.5 py-0.5 rounded bg-app-surface border border-app-border font-mono text-[10px] text-app-text">Esc</kbd>
+                <span>para salir al asistente</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsWidgetsOpen(false)}
+                className="px-3.5 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs shadow-sm transition-colors cursor-pointer"
+              >
+                Volver a la consulta
+              </button>
             </div>
           </div>
         </div>

@@ -200,57 +200,10 @@ class HealthService:
         database_name: str = ""
     ) -> Dict[str, Any]:
         """
-        Tests real network TCP socket connectivity or local SQLite file readiness.
+        Tests real network TCP socket connectivity.
         """
         start_time = time.time()
         
-        if db_type.lower() == "sqlite" or port == 0 or host.endswith(".sqlite") or host.endswith(".db"):
-            import os
-            import sqlite3
-            try:
-                db_target = host if (os.path.exists(host) or "/" in host or "\\" in host) else database_name
-                if not os.path.exists(db_target):
-                    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-                    candidate = os.path.join(base_dir, "data_sources", os.path.basename(host))
-                    if os.path.exists(candidate):
-                        db_target = candidate
-
-                if not os.path.exists(db_target):
-                    # Antes el `if` no tenia else: si el fichero no existia en ninguna
-                    # ruta candidata se saltaba el bloque entero y caia al `return`
-                    # de abajo con success=True. Es decir, reportaba como verificada
-                    # una conexion a un fichero inexistente, y `except` tambien
-                    # devolvia True. El panel de salud miente y, como alimentaba
-                    # `global_status`, un conector caido dejaba el sistema en
-                    # OPERATIVO y sin emitir la anomalia `conn-offline`.
-                    return {
-                        "success": False,
-                        "latency_ms": max(int((time.time() - start_time) * 1000), 1),
-                        "message": f"No se encontro el fichero SQLite en {db_target}.",
-                    }
-
-                conn = sqlite3.connect(f"file:{os.path.abspath(db_target)}?mode=ro", uri=True)
-                try:
-                    conn.execute("SELECT 1;").fetchone()
-                finally:
-                    conn.close()
-                
-                latency_ms = int((time.time() - start_time) * 1000)
-                return {
-                    "success": True,
-                    "latency_ms": max(latency_ms, 1),
-                    "message": f"Conexión verificada a {db_type.upper()} ({os.path.basename(db_target) or database_name}) en modo SOLO LECTURA."
-                }
-            except Exception as exc:
-                # Tambien decia "verificada" cuando la apertura fallaba por
-                # permisos, corrupcion o error de disco.
-                latency_ms = int((time.time() - start_time) * 1000)
-                return {
-                    "success": False,
-                    "latency_ms": max(latency_ms, 1),
-                    "message": f"No se pudo verificar la conexión a SQLite ({database_name}): {exc}"
-                }
-
         try:
             sock = socket.create_connection((host, int(port)), timeout=timeout)
             sock.close()

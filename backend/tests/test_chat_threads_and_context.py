@@ -186,13 +186,19 @@ def test_shared_chat_thread_and_golden_query(auth_headers):
     # 4. Clean up thread
     client.delete("/api/v1/chat/threads/thread-shared-xyz", headers=auth_headers)
 
-def test_sqlite_readonly_safety():
+def test_readonly_safety():
+    """`execute_raw_sql` abre la transaccion en solo-lectura: un DDL tiene que
+    fallar aunque el caller lo pida."""
     from app.modules.chat_engine.sql_executor import SQLExecutor
     from app.core.config import settings
     import pytest
-    import sqlite3
 
-    # Attempting to execute an INSERT or UPDATE on raw sql should fail because query_only is ON
-    with pytest.raises(sqlite3.OperationalError):
-        SQLExecutor.execute_raw_sql(settings.SQLITE_DB_PATH, "CREATE TABLE forbidden_test (id INT);")
+    url = (
+        f"postgresql+psycopg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+        f"@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+    )
+    with pytest.raises(Exception) as ctx:
+        SQLExecutor.execute_raw_sql(url, "CREATE TABLE forbidden_test (id INT);")
+    self_msg = str(ctx.value).lower()
+    assert "read-only" in self_msg or "readonly" in self_msg, self_msg
 

@@ -16,7 +16,12 @@ def setup_logging():
     
     if not logger.handlers:
         logger.addHandler(stream_handler)
-        
+
+    # Sin esto cada linea sale dos veces cuando otro modulo ya configuro el root
+    # (`setup_postgres_full` llama a `logging.basicConfig` al importarse): una vez
+    # por este handler y otra por el del root.
+    logger.propagate = False
+
     return logger
 
 logger = setup_logging()

@@ -9,12 +9,14 @@ import {
   Check,
   Lock,
   HardDrive,
+  EyeOff,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import {
   useAdminPermissions,
   useGovernanceCoverage,
 } from '../../features/admin/hooks/useAdminPermissions';
+import { collectProtectedColumns } from '../../features/admin/services/permission_service';
 
 /**
  * Matriz rol × tabla del permiso de acceso (default-deny).
@@ -62,6 +64,17 @@ export const AdminPermissionsTab: React.FC = () => {
       orphaned_tables === 0 ? '' : ` · ${orphaned_tables} sin ningún rol`
     }`;
   }, [coverage]);
+
+  // Columnas BLOCKED/MASKED de la cobertura: la parte que la matriz no puede
+  // mostrar. Aca solo se informan (no hay endpoint de escritura de permisos de
+  // columna); el dato ya viene calculado por el mismo guardarrail que aplica el
+  // chat, no se re-deriva en el cliente.
+  const protectedColumns = useMemo(
+    () => collectProtectedColumns(coverage?.tables ?? []),
+    [coverage]
+  );
+  const blockedColCount = protectedColumns.reduce((n, r) => n + r.blocked.length, 0);
+  const maskedColCount = protectedColumns.reduce((n, r) => n + r.masked.length, 0);
 
   // Deep-link a la matriz: enfoca la columna de esa tabla. Se hace con scroll +
   // resaltado en vez de un parametro en la URL porque la matriz ya esta en esta
@@ -190,6 +203,88 @@ export const AdminPermissionsTab: React.FC = () => {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Columnas bloqueadas / enmascaradas de la fuente: dato real de la
+          cobertura que hasta ahora ninguna pantalla mostraba. BLOCKED no se
+          devuelve nunca en los resultados; MASKED se devuelve ofuscado al
+          ejecutar la consulta (`mask_value`, con hasta los ultimos 4 digitos
+          visibles). Solo listan las que lo estan para TODOS los roles que
+          pueden leer la tabla — asi lo define la cobertura del servidor, aca no
+          se recalcula nada. */}
+      {protectedColumns.length > 0 && (
+        <div className="p-3.5 rounded-xl border border-slate-200 dark:border-dark-border bg-slate-50 dark:bg-dark-base/80 space-y-3 animate-fadeIn">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Lock className="w-4 h-4 text-brand-600 dark:text-purple-400 shrink-0" />
+              <span className="text-xs font-bold text-slate-900 dark:text-white">
+                Columnas bloqueadas y enmascaradas
+              </span>
+              <span className="text-[11px] text-slate-500 dark:text-gray-400">
+                Para todos los roles que pueden leer su tabla
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {blockedColCount > 0 && (
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:border-rose-500/20">
+                  {blockedColCount} bloqueada(s)
+                </span>
+              )}
+              {maskedColCount > 0 && (
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:border-amber-500/20">
+                  {maskedColCount} enmascarada(s)
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            {protectedColumns.map((row) => (
+              <div
+                key={row.table}
+                className="rounded-xl bg-white dark:bg-dark-card/60 border border-slate-200 dark:border-dark-border p-2.5 space-y-1.5"
+              >
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-mono text-[11px] font-semibold text-slate-900 dark:text-white mr-1">
+                    {row.table}
+                  </span>
+                  {row.blocked.map((col) => (
+                    <span
+                      key={`blocked-${col}`}
+                      title="Bloqueada: la columna no se puede consultar"
+                      className="inline-flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:border-rose-500/20"
+                    >
+                      <Lock className="w-3 h-3 shrink-0" />
+                      {col}
+                    </span>
+                  ))}
+                  {row.masked.map((col) => (
+                    <span
+                      key={`masked-${col}`}
+                      title="Enmascarada: se devuelve con el valor ofuscado"
+                      className="inline-flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:border-amber-500/20"
+                    >
+                      <EyeOff className="w-3 h-3 shrink-0" />
+                      {col}
+                    </span>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-500 dark:text-gray-400">
+                  Aplica a los roles con acceso:{' '}
+                  <span className="font-medium text-slate-700 dark:text-gray-300">
+                    {row.readers.join(' · ')}
+                  </span>
+                </p>
+              </div>
+            ))}
+          </div>
+
+          <p className="text-[10px] text-slate-500 dark:text-gray-400 leading-relaxed">
+            Bloqueada: la columna no se devuelve en los resultados. Enmascarada: se devuelve
+            ofuscada, con hasta los últimos 4 dígitos visibles (si el valor no tiene 4 dígitos,
+            se tapa entero).
+          </p>
         </div>
       )}
 

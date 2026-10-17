@@ -15,7 +15,9 @@ import {
   Check,
   Pin,
   Share2,
+  Sparkles,
   Star,
+  ChevronDown,
 } from 'lucide-react';
 import { queryService } from '../../features/chat/services/query_service';
 import { connectorService } from '../../features/admin/services/connector_service';
@@ -84,6 +86,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
   const [feedbackStatus, setFeedbackStatus] = useState<'positive' | 'negative' | null>(null);
   const [isPinned, setIsPinned] = useState(false);
   const [isPinning, setIsPinning] = useState(false);
+  const [isSqlOpen, setIsSqlOpen] = useState(false);
 
   // Activar la base que el diagnostico dijo que esta apagada. El boton solo
   // existe si el backend mando la accion, y el backend solo la manda a un
@@ -244,23 +247,47 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
 
         <div className="flex-1 space-y-3 sm:space-y-4 max-w-4xl min-w-0 chat-bot-response">
           {/* Clean Message Info Bar */}
-          <div className="flex items-center justify-between text-[11px] text-slate-400 dark:text-zinc-500 px-1">
-            <div className="flex items-center space-x-2">
-              <span className="font-semibold text-slate-700 dark:text-zinc-300">DATIA</span>
-              <span>•</span>
-              <span className="font-mono text-[10px] tabular-nums">{result.timestamp}</span>
-              {/* Provenance: whether this answer came from the backend, straight
-                  from the LLM, or degraded to offline. An executive needs it to
-                  weigh an unverified number. Renders nothing when the server
-                  did not report a source. */}
-              {result.pipeline_source && (
-                <>
-                  <span>•</span>
-                  <PipelineBadge source={result.pipeline_source} />
-                </>
+          <div className="flex flex-wrap items-center gap-2 px-1">
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-app-text bg-app-card border border-app-border px-2.5 py-0.5 rounded-full">
+              <Sparkles className="w-3 h-3 text-brand-400" />
+              DATIA
+            </span>
+            <span className="font-mono text-[10px] tabular-nums text-app-muted">{result.timestamp}</span>
+            {/* Provenance: whether this answer came from the backend, straight
+                from the LLM, or degraded to offline. An executive needs it to
+                weigh an unverified number. Renders nothing when the server
+                did not report a source. */}
+            {result.pipeline_source && (
+              <PipelineBadge source={result.pipeline_source} />
+            )}
+          </div>
+
+          {/* SQL ejecutado: colapsado por defecto. El dato ya viaja en
+              `traceability.sql_executed` (lo que copia el botón SQL); acá se
+              muestra completo para auditar sin abrir el modal de trazabilidad. */}
+          {result.traceability?.sql_executed && (
+            <div className="rounded-xl border border-app-border bg-app-card/60 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setIsSqlOpen((prev) => !prev)}
+                aria-expanded={isSqlOpen}
+                className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left text-[11px] font-medium text-app-muted hover:text-app-text transition-colors cursor-pointer"
+              >
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <Code2 className="w-3.5 h-3.5 text-brand-400 shrink-0" />
+                  <span className="truncate">SQL ejecutado</span>
+                </span>
+                <ChevronDown
+                  className={`w-3.5 h-3.5 shrink-0 transition-transform ${isSqlOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+              {isSqlOpen && (
+                <pre className="px-3.5 py-3 border-t border-app-border bg-app-bg/50 font-mono text-[11px] leading-relaxed text-app-text whitespace-pre-wrap break-words overflow-x-auto">
+                  {result.traceability.sql_executed}
+                </pre>
               )}
             </div>
-          </div>
+          )}
 
           {/* Accion de govierno: encender la base. Solo aparece con la clave
               discriminante del backend, nunca por parsear el texto. */}
@@ -300,16 +327,16 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
           />
 
           {/* Action Bar: Compact Icon Strip */}
-          <div className="flex items-center justify-between gap-2 pt-2 border-t border-dark-border/40 text-[11px] text-gray-400">
+          <div className="flex items-center justify-between gap-2 pt-2 border-t border-app-border/60 text-[11px] text-app-muted">
             {/* Left: Thumbs Feedback */}
             <div className="flex items-center space-x-1">
               <button
                 type="button"
                 onClick={() => handleSendRating('positive')}
-                className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 ${
+                className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 cursor-pointer ${
                   feedbackStatus === 'positive'
                     ? 'text-emerald-700 dark:text-emerald-400 bg-emerald-500/20 border border-emerald-500/30'
-                    : 'text-gray-500 dark:text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-slate-100 dark:hover:bg-dark-card'
+                    : 'text-app-muted hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-app-hover'
                 }`}
                 title="Respuesta útil (reforzar aprendizaje)"
                 aria-label="Respuesta útil"
@@ -320,10 +347,10 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
               <button
                 type="button"
                 onClick={() => handleSendRating('negative')}
-                className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 ${
+                className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 cursor-pointer ${
                   feedbackStatus === 'negative'
                     ? 'text-rose-700 dark:text-rose-400 bg-rose-500/20 border border-rose-500/30'
-                    : 'text-gray-500 dark:text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-slate-100 dark:hover:bg-dark-card'
+                    : 'text-app-muted hover:text-rose-600 dark:hover:text-rose-400 hover:bg-app-hover'
                 }`}
                 title="Respuesta imprecisa o con errores"
                 aria-label="Respuesta imprecisa"
@@ -334,7 +361,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
             </div>
 
             {/* Right: Consolidated Compact Action Group */}
-            <div className="flex items-center space-x-1 bg-slate-100 dark:bg-dark-base/80 p-0.5 rounded-xl border border-slate-200 dark:border-dark-border/80">
+            <div className="flex items-center space-x-1 bg-app-card p-0.5 rounded-xl border border-app-border/70">
               {/* Quick 1-click Pin Button */}
               {(result.chart_option || (result.kpis && result.kpis.length > 0)) && (
                 <button
@@ -344,7 +371,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
                   className={`flex items-center space-x-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                     isPinned
                       ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30'
-                      : 'text-gray-600 dark:text-gray-400 hover:text-amber-700 dark:hover:text-amber-400 hover:bg-slate-200 dark:hover:bg-dark-card'
+                      : 'text-app-muted hover:text-amber-700 dark:hover:text-amber-400 hover:bg-app-hover'
                   }`}
                   title={isPinned ? 'Fijado en Tablero Ejecutivo' : 'Fijar en Tablero Ejecutivo'}
                   aria-label="Fijar en Tablero Ejecutivo"
@@ -362,7 +389,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
                   className={`flex items-center space-x-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                     isGolden
                       ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30'
-                      : 'text-gray-600 dark:text-gray-400 hover:text-amber-700 dark:hover:text-amber-400 hover:bg-slate-200 dark:hover:bg-dark-card'
+                      : 'text-app-muted hover:text-amber-700 dark:hover:text-amber-400 hover:bg-app-hover'
                   }`}
                   title={isGolden ? 'Consulta Maestra aprendida (clic para desmarcar)' : 'Marcar como Consulta Maestra'}
                   aria-label="Marcar como Consulta Maestra"
@@ -377,7 +404,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
                 <button
                   type="button"
                   onClick={handleShareThread}
-                  className="flex items-center space-x-1 px-2 py-1 rounded-lg text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-dark-card transition-colors text-xs font-medium"
+                  className="flex items-center space-x-1 px-2 py-1 rounded-lg text-app-muted hover:text-app-text hover:bg-app-hover transition-colors text-xs font-medium"
                   title="Copiar enlace para compartir consulta"
                   aria-label="Compartir consulta"
                 >
@@ -400,7 +427,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
                 <button
                   type="button"
                   onClick={handleCopySql}
-                  className="flex items-center space-x-1 px-2 py-1 rounded-lg text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-dark-card transition-colors text-xs font-medium"
+                  className="flex items-center space-x-1 px-2 py-1 rounded-lg text-app-muted hover:text-app-text hover:bg-app-hover transition-colors text-xs font-medium"
                   title="Copiar consulta SQL ejecutada"
                   aria-label="Copiar SQL"
                 >

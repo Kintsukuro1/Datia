@@ -111,17 +111,16 @@ class TestCLSSelectStar(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(meta["columns_used"]), 5)
 
     @patch("app.modules.chat_engine.llm_service.LLMService.generate_completion")
-    @patch("app.modules.chat_engine.dynamic_schema.DynamicSchemaPruningService.resolve_db_path")
+    @patch("app.modules.chat_engine.dynamic_schema.DynamicSchemaPruningService.get_physical_db_tables", return_value=set())
     @patch("app.modules.chat_engine.dynamic_schema.DynamicSchemaPruningService.get_physical_table_columns")
     async def test_self_healing_fallback_respects_cls(
-        self, mock_get_cols, mock_resolve_db, mock_llm
+        self, mock_get_cols, mock_physical_tables, mock_llm
     ):
         """
         Simulates that when primary SQL fails and self-healing LLM correction also fails,
         the emergency fallback path (SELECT * FROM table) passes through ASTValidator
         and enforces Column-Level Security (CLS) by masking blocked columns.
         """
-        mock_resolve_db.return_value = "dummy.db"
         mock_get_cols.return_value = [
             {"name": "id", "type": "INTEGER"},
             {"name": "nombre", "type": "TEXT"},
@@ -129,19 +128,20 @@ class TestCLSSelectStar(unittest.IsolatedAsyncioTestCase):
         ]
         mock_llm.return_value = "```sql\nSELECT non_existent FROM dim_empleados;\n```"
 
-        with patch("sqlite3.connect") as mock_sqlite:
-            mock_conn = MagicMock()
-            mock_cursor = MagicMock()
-            mock_sqlite.return_value = mock_conn
-            mock_conn.cursor.return_value = mock_cursor
+        conn = MagicMock()
+        conn.id = 1
+        conn.name = "Test"
+        conn.database_name = "test_db"
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = conn
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = conn
 
-            mock_cursor.execute.side_effect = [
+        with patch("app.modules.chat_engine.sql_executor.SQLExecutor.execute_raw_sql") as mock_exec:
+            # SQL inicial falla, SQL auto-corregido falla, fallback de emergencia responde.
+            mock_exec.side_effect = [
                 Exception("no such column: non_existent"),
                 Exception("no such column: non_existent"),
-                None
-            ]
-            mock_cursor.fetchall.return_value = [
-                {"id": 1, "nombre": "Juan"}
+                [{"id": 1, "nombre": "Juan"}],
             ]
 
             with patch.object(QueryEngine, "get_allowed_tables_for_role", return_value={"dim_empleados"}):
@@ -149,7 +149,8 @@ class TestCLSSelectStar(unittest.IsolatedAsyncioTestCase):
                     response = await QueryEngine.execute_query(
                         question="muestrame los empleados",
                         user_role="Economista",
-                        is_admin=False
+                        is_admin=False,
+                        db=db,
                     )
 
                     executed_sql = response.traceability.sql_executed.lower()

@@ -125,7 +125,7 @@ export const AdminPage: React.FC = () => {
               <span>Panel de Gobernanza & Fuentes BD Corporativas</span>
             </h1>
             <p className="text-xs text-slate-600 dark:text-gray-400">
-              Administración centralizada de conexiones a SQLite, PostgreSQL, SQL Server y MySQL con cifrado AES-256
+              Administración centralizada de conexiones a PostgreSQL, SQL Server y MySQL con credenciales cifradas
             </p>
           </div>
         </div>

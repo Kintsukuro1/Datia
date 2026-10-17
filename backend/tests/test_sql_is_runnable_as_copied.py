@@ -44,13 +44,6 @@ class TestSqlIsExecutableAsCopied(unittest.TestCase):
         self.assertFalse(secured.rstrip().endswith(";;"), secured)
         self.assertEqual(secured.count(";"), 1)
 
-    def test_sqlite_dialect_also_terminated(self):
-        secured = self._secure(
-            "SELECT valor FROM datos LIMIT 500",
-            {"datos"},
-            dialect="sqlite",
-        )
-        self.assertTrue(secured.rstrip().endswith(";"), secured)
 
     def test_terminator_survives_trailing_whitespace(self):
         secured = self._secure(

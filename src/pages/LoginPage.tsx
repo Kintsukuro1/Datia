@@ -1,6 +1,24 @@
 import React, { useState } from 'react';
 import { useAuth } from '../features/auth/context/AuthContext';
-import { ShieldCheck, Database, Lock, KeyRound, Mail, UserPlus, LogIn, ArrowRight, AlertCircle, Eye, EyeOff, Users, ChevronDown } from 'lucide-react';
+import {
+  AlertCircle,
+  ArrowRight,
+  ChevronDown,
+  Database,
+  Eye,
+  EyeOff,
+  Headset,
+  Loader2,
+  Lock,
+  LogIn,
+  Mail,
+  Network,
+  ShieldCheck,
+  Sparkles,
+  User,
+  UserPlus,
+  Users,
+} from 'lucide-react';
 import { CORPORATE_ROLES } from '../constants';
 import logoDatiaDark from './Logo_datia_2.png';
 import logoDatiaLight from './Logo_Datia_3.png';
@@ -126,194 +144,300 @@ export const LoginPage: React.FC = () => {
   const activeError = localError || error;
 
   return (
-    <div className="min-h-[100dvh] bg-dark-base flex items-center justify-center p-4 relative overflow-hidden">
-      <div className="w-full max-w-md space-y-6 relative z-10">
-        {/* Brand Header */}
-        <div className="text-center space-y-2">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-dark-card/60 shadow-md mb-2 overflow-hidden border border-white/10">
-            <img src={logoDatiaLight} alt="Logo Datia" className="block dark:hidden w-full h-full object-contain p-1" />
-            <img src={logoDatiaDark} alt="Logo Datia" className="hidden dark:block w-full h-full object-contain p-1" />
-          </div>
-          <h1 className="text-2xl font-extrabold text-app-text tracking-tight">Dat.ia</h1>
-          <p className="text-xs text-gray-400">Transformando datos en decisiones</p>
-        </div>
+    <div className="h-[100dvh] overflow-y-auto bg-app-bg text-app-text">
+      <div className="flex min-h-full items-center justify-center p-4">
+        <div className="animate-fadeIn flex w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-app-border bg-app-surface shadow-2xl lg:min-h-[calc(100dvh-2rem)] lg:flex-row">
+          {/* COLUMNA IZQUIERDA: marca, propuesta de valor y hechos verificables */}
+          <div className="relative flex flex-col justify-between gap-10 overflow-hidden bg-gradient-to-br from-app-surface to-app-bg p-8 lg:w-[55%] lg:p-12">
+            {/* Decoración: dos halos del color de marca + retícula de puntos.
+                aria-hidden porque es puramente visual. */}
+            <div aria-hidden="true" className="pointer-events-none absolute -left-32 -top-32 h-96 w-96 rounded-full bg-brand-600/10 blur-[100px]" />
+            <div aria-hidden="true" className="pointer-events-none absolute -bottom-24 -right-16 h-[420px] w-[420px] rounded-full bg-brand-600/10 blur-[130px]" />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-40 [background-image:radial-gradient(rgba(0,110,230,0.15)_1px,transparent_1px)] [background-size:24px_24px]"
+            />
 
-        {/* Card Panel */}
-        <div className="glass-panel rounded-2xl p-7 border border-white/10 shadow-xl space-y-6">
-          {/* Mode Switcher Tabs */}
-          <div className="flex bg-dark-base/80 p-1 rounded-xl border border-dark-border">
-            <button
-              type="button"
-              onClick={() => { setMode('login'); setLocalError(null); clearError(); }}
-              className={`flex-1 flex items-center justify-center space-x-2 py-2 rounded-lg text-xs font-semibold transition-colors ${
-                mode === 'login'
-                  ? 'bg-brand-600 text-white shadow-md shadow-brand-600/30'
-                  : 'text-gray-400 hover:text-app-text'
-              }`}
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              <span>Iniciar Sesión</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => { setMode('register'); setLocalError(null); clearError(); }}
-              className={`flex-1 flex items-center justify-center space-x-2 py-2 rounded-lg text-xs font-semibold transition-colors ${
-                mode === 'register'
-                  ? 'bg-brand-600 text-white shadow-md shadow-brand-600/30'
-                  : 'text-gray-400 hover:text-app-text'
-              }`}
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              <span>Registrarse</span>
-            </button>
-          </div>
-
-          {/* Alert Message */}
-          {activeError && (
-            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-start space-x-2.5 animate-fadeIn">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{activeError}</span>
-            </div>
-          )}
-
-          {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <label htmlFor="login-username-input" className="block text-xs font-semibold text-gray-300">Usuario Corporativo</label>
-              <div className="relative">
-                <input
-                  id="login-username-input"
-                  type="text"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="ej. economista"
-                  required
-                  className="w-full bg-dark-base border border-dark-border rounded-xl pl-9 pr-3 py-2.5 text-xs text-app-text placeholder-gray-500 focus:outline-none focus:border-brand-500 transition-colors"
-                />
-                <KeyRound className="w-4 h-4 text-gray-500 absolute left-3 top-3" />
+            {/* Cabecera: logo real + wordmark (mismo que el Header) */}
+            <div className="relative z-10 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-app-border bg-app-card shadow-md">
+                <img src={logoDatiaLight} alt="Logo Dat.ia" className="block h-full w-full object-contain p-1 dark:hidden" />
+                <img src={logoDatiaDark} alt="Logo Dat.ia" className="hidden h-full w-full object-contain p-1 dark:block" />
               </div>
+              <span className="text-xl font-bold tracking-tight">DATIA</span>
             </div>
 
-            {mode === 'register' && (
-              <div className="space-y-1.5 animate-fadeIn">
-                <label htmlFor="login-email-input" className="block text-xs font-semibold text-gray-300">Correo Electrónico</label>
-                <div className="relative">
-                  <input
-                    id="login-email-input"
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="usuario@empresa.com"
-                    required
-                    className="w-full bg-dark-base border border-dark-border rounded-xl pl-9 pr-3 py-2.5 text-xs text-app-text placeholder-gray-500 focus:outline-none focus:border-brand-500 transition-colors"
-                  />
-                  <Mail className="w-4 h-4 text-gray-500 absolute left-3 top-3" />
+            {/* Contenido central */}
+            <div className="relative z-10 max-w-xl space-y-4">
+              <div className="inline-flex items-center gap-2 rounded-md border border-app-border bg-app-card px-3 py-1 text-xs text-app-muted">
+                <Database className="h-4 w-4 text-brand-400" />
+                <span>Plataforma Unificada de Inteligencia Semántica</span>
+              </div>
+
+              <h1 className="text-3xl font-bold tracking-tight lg:text-4xl">Democratización de Datos</h1>
+              <p className="max-w-md text-sm leading-relaxed text-app-muted lg:text-base">
+                Consultá tus bases corporativas en lenguaje natural, con gobernanza, control de acceso y trazabilidad de extremo a extremo.
+              </p>
+
+              <div className="flex flex-col gap-5 pt-2">
+                <div className="flex items-start gap-3.5">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-600/15 text-brand-400">
+                    <Sparkles className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-semibold">Asistente de IA sobre tus datos</h2>
+                    <p className="mt-0.5 text-xs leading-relaxed text-app-muted">
+                      Generación de consultas SQL, análisis instantáneo y respuestas sintetizadas en segundos.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-3.5">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-600/15 text-brand-400">
+                    <Network className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-semibold">Catálogo semántico y diccionario de datos</h2>
+                    <p className="mt-0.5 text-xs leading-relaxed text-app-muted">
+                      Terminología de negocio mapeada sobre esquemas relacionales complejos.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-3.5">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-600/15 text-brand-400">
+                    <ShieldCheck className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-semibold">Control de acceso por roles (RBAC)</h2>
+                    <p className="mt-0.5 text-xs leading-relaxed text-app-muted">
+                      Permisos de tablas y columnas y bitácora de auditoría continua.
+                    </p>
+                  </div>
                 </div>
               </div>
-            )}
+            </div>
 
-            <div className="space-y-1.5">
-              <label htmlFor="login-password-input" className="block text-xs font-semibold text-gray-300">Contraseña</label>
-              <div className="relative">
-                <input
-                  id="login-password-input"
-                  name="password"
-                  type={showPasswords ? 'text' : 'password'}
-                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  required
-                  className="w-full bg-dark-base border border-dark-border rounded-xl pl-9 pr-10 py-2.5 text-xs text-app-text placeholder-gray-500 focus:outline-none focus:border-brand-500 transition-colors"
-                />
-                <Lock className="w-4 h-4 text-gray-500 absolute left-3 top-3" />
+            {/* Pie del panel: solo hechos verificables en el código.
+                bcrypt: backend/app/core/security.py. Sesiones: tabla UserSession.
+                (El "Argon2/bcrypt" anterior era impreciso: es bcrypt directo.) */}
+            <div className="relative z-10 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-app-muted">
+              <span className="flex items-center gap-1.5">
+                <ShieldCheck className="h-4 w-4 text-emerald-400" />
+                Sesiones auditadas
+              </span>
+              <span className="flex items-center gap-1.5">
+                <Lock className="h-4 w-4 text-brand-400" />
+                Hashing bcrypt de contraseñas
+              </span>
+            </div>
+          </div>
+
+          {/* COLUMNA DERECHA: acceso */}
+          <div className="flex flex-col items-center justify-center gap-5 bg-app-bg p-6 lg:w-[45%] lg:p-12">
+            <div className="glass-panel w-full max-w-[420px] space-y-5 rounded-2xl border border-app-border p-6 shadow-xl lg:p-8">
+              {/* Mode Switcher Tabs */}
+              <div className="flex rounded-xl border border-app-border bg-app-bg/80 p-1">
                 <button
                   type="button"
-                  onClick={() => setShowPasswords((v) => !v)}
-                  aria-label={showPasswords ? 'Ocultar contraseñas' : 'Mostrar contraseñas'}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-gray-400 hover:text-app-text hover:bg-dark-card transition-colors"
+                  onClick={() => { setMode('login'); setLocalError(null); clearError(); }}
+                  className={`flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors ${
+                    mode === 'login'
+                      ? 'bg-brand-600 text-white shadow-md shadow-brand-600/30'
+                      : 'text-app-muted hover:text-app-text'
+                  }`}
                 >
-                  {showPasswords ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  <LogIn className="h-3.5 w-3.5" />
+                  <span>Iniciar sesión</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setMode('register'); setLocalError(null); clearError(); }}
+                  className={`flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors ${
+                    mode === 'register'
+                      ? 'bg-brand-600 text-white shadow-md shadow-brand-600/30'
+                      : 'text-app-muted hover:text-app-text'
+                  }`}
+                >
+                  <UserPlus className="h-3.5 w-3.5" />
+                  <span>Registrarse</span>
                 </button>
               </div>
-            </div>
 
-            {mode === 'register' && (
-              <div className="space-y-1.5 animate-fadeIn">
-                <label htmlFor="login-confirm-password-input" className="block text-xs font-semibold text-gray-300">Confirmar Contraseña</label>
-                <div className="relative">
-                  <input
-                    id="login-confirm-password-input"
-                    name="confirmPassword"
-                    type={showPasswords ? 'text' : 'password'}
-                    autoComplete="new-password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="••••••••"
-                    required
-                    className="w-full bg-dark-base border border-dark-border rounded-xl pl-9 pr-10 py-2.5 text-xs text-app-text placeholder-gray-500 focus:outline-none focus:border-brand-500 transition-colors"
-                  />
-                  <Lock className="w-4 h-4 text-gray-500 absolute left-3 top-3" />
+              {/* Encabezado de la tarjeta */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl font-bold tracking-tight">
+                    {mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
+                  </h2>
+                  <ShieldCheck className="h-5 w-5 text-brand-400" />
                 </div>
+                <p className="text-xs text-app-muted">
+                  {mode === 'login'
+                    ? 'Ingresá tus credenciales corporativas autorizadas.'
+                    : 'Completá tus datos para crear tu cuenta.'}
+                </p>
               </div>
-            )}
 
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full mt-2 flex items-center justify-center space-x-2 bg-brand-600 hover:bg-brand-500 active:scale-[0.99] text-white font-semibold py-2.5 rounded-xl shadow-md shadow-brand-600/25 transition-all disabled:opacity-50 cursor-pointer"
-            >
-              <span>{isSubmitting ? 'Procesando...' : mode === 'login' ? 'Acceder al Sistema' : 'Crear Cuenta'}</span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          </form>
+              {/* Alert Message */}
+              {activeError && (
+                <div className="animate-fadeIn flex items-start gap-2.5 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3.5 text-xs text-rose-400">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{activeError}</span>
+                </div>
+              )}
 
-          {/* Selector de perfil de la demo: un desplegable y no una fila de
-              botones. Los 8 perfiles no entran en tres botones sin que las
-              etiquetas se corten, y un desplegable deja leer el nombre completo
-              del rol, que es justo lo que hay que comparar entre perfiles.
-              Gateado por DEMO_MODE: en un build no-demo el bloque no se
-              renderiza (y no llega al bundle). */}
-          {DEMO_MODE && (
-            <div className="pt-4 border-t border-dark-border/60">
-              <label
-                htmlFor="login-demo-perfil"
-                className="block text-[11px] text-gray-400 mb-2 font-medium"
-              >
-                O entra con un perfil de la demo
-              </label>
-              <div className="relative">
-                <select
-                  id="login-demo-perfil"
-                  value={perfilDemo}
-                  onChange={(e) => handlePerfilChange(e.target.value)}
-                  className="w-full appearance-none bg-dark-base/50 border border-dark-border hover:border-brand-500/40 focus:outline-none focus:border-brand-500 rounded-xl pl-9 pr-9 py-2.5 text-xs text-app-text transition-colors cursor-pointer"
+              {/* Form */}
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label htmlFor="login-username-input" className="block text-xs font-medium text-app-muted">Usuario Corporativo</label>
+                  <div className="relative">
+                    <input
+                      id="login-username-input"
+                      type="text"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      placeholder="ej. economista"
+                      required
+                      className="h-11 w-full rounded-xl border border-app-border bg-app-bg pl-10 pr-3 text-sm text-app-text placeholder-gray-500 transition-colors focus:border-brand-500 focus:outline-none"
+                    />
+                    <User className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
+                  </div>
+                </div>
+
+                {mode === 'register' && (
+                  <div className="animate-fadeIn space-y-1.5">
+                    <label htmlFor="login-email-input" className="block text-xs font-medium text-app-muted">Correo Electrónico</label>
+                    <div className="relative">
+                      <input
+                        id="login-email-input"
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="usuario@empresa.com"
+                        required
+                        className="h-11 w-full rounded-xl border border-app-border bg-app-bg pl-10 pr-3 text-sm text-app-text placeholder-gray-500 transition-colors focus:border-brand-500 focus:outline-none"
+                      />
+                      <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-1.5">
+                  <label htmlFor="login-password-input" className="block text-xs font-medium text-app-muted">Contraseña</label>
+                  <div className="relative">
+                    <input
+                      id="login-password-input"
+                      name="password"
+                      type={showPasswords ? 'text' : 'password'}
+                      autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••"
+                      required
+                      className="h-11 w-full rounded-xl border border-app-border bg-app-bg pl-10 pr-11 text-sm text-app-text placeholder-gray-500 transition-colors focus:border-brand-500 focus:outline-none"
+                    />
+                    <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
+                    <button
+                      type="button"
+                      onClick={() => setShowPasswords((v) => !v)}
+                      aria-label={showPasswords ? 'Ocultar contraseñas' : 'Mostrar contraseñas'}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-app-muted transition-colors hover:bg-app-hover hover:text-app-text"
+                    >
+                      {showPasswords ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                {mode === 'register' && (
+                  <div className="animate-fadeIn space-y-1.5">
+                    <label htmlFor="login-confirm-password-input" className="block text-xs font-medium text-app-muted">Confirmar Contraseña</label>
+                    <div className="relative">
+                      <input
+                        id="login-confirm-password-input"
+                        name="confirmPassword"
+                        type={showPasswords ? 'text' : 'password'}
+                        autoComplete="new-password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="••••••••"
+                        required
+                        className="h-11 w-full rounded-xl border border-app-border bg-app-bg pl-10 pr-11 text-sm text-app-text placeholder-gray-500 transition-colors focus:border-brand-500 focus:outline-none"
+                      />
+                      <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="mt-1 flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-brand-600 text-sm font-semibold text-white shadow-md shadow-brand-600/25 transition-all hover:bg-brand-500 active:scale-[0.99] disabled:opacity-60"
                 >
-                  {DEMO_PROFILES.map((p) => (
-                    <option key={p.username} value={p.username} className="bg-dark-card text-app-text">
-                      {p.role} — {p.username}
-                    </option>
-                  ))}
-                </select>
-                <Users className="w-4 h-4 text-gray-500 absolute left-3 top-3 pointer-events-none" />
-                <ChevronDown className="w-4 h-4 text-gray-500 absolute right-3 top-3 pointer-events-none" />
-              </div>
-              <p className="text-[10px] text-gray-500 mt-1.5 text-center">
-                Rellena el formulario. El acceso ocurre al pulsar «Acceder al Sistema».
-              </p>
-            </div>
-          )}
-        </div>
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>{mode === 'login' ? 'Ingresando…' : 'Creando cuenta…'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>{mode === 'login' ? 'Ingresar' : 'Crear cuenta'}</span>
+                      <ArrowRight className="h-4 w-4" />
+                    </>
+                  )}
+                </button>
+              </form>
 
-        {/* Footer Badges */}
-        <div className="mt-5 flex items-center justify-center space-x-6 text-xs text-gray-400">
-          <div className="flex items-center space-x-1.5">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>PostgreSQL Encriptado</span>
-          </div>
-          <div className="flex items-center space-x-1.5">
-            <Database className="w-4 h-4 text-brand-400" />
-            <span>Hashing Argon2/bcrypt</span>
+              {/* Selector de perfil de la demo: un desplegable y no una fila de
+                  botones. Los 8 perfiles no entran en tres botones sin que las
+                  etiquetas se corten, y un desplegable deja leer el nombre completo
+                  del rol, que es justo lo que hay que comparar entre perfiles.
+                  Gateado por DEMO_MODE: en un build no-demo el bloque no se
+                  renderiza (y no llega al bundle). */}
+              {DEMO_MODE && (
+                <div className="border-t border-app-border/60 pt-4">
+                  <label
+                    htmlFor="login-demo-perfil"
+                    className="mb-2 block text-[11px] font-medium text-app-muted"
+                  >
+                    O entrá con un perfil de la demo
+                  </label>
+                  <div className="relative">
+                    <select
+                      id="login-demo-perfil"
+                      value={perfilDemo}
+                      onChange={(e) => handlePerfilChange(e.target.value)}
+                      className="h-10 w-full cursor-pointer appearance-none rounded-xl border border-app-border bg-app-bg/50 pl-9 pr-9 text-xs text-app-text transition-colors hover:border-brand-500/40 focus:border-brand-500 focus:outline-none"
+                    >
+                      {DEMO_PROFILES.map((p) => (
+                        <option key={p.username} value={p.username} className="bg-app-card text-app-text">
+                          {p.role} — {p.username}
+                        </option>
+                      ))}
+                    </select>
+                    <Users className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px] text-app-muted/80">
+                    Rellena el formulario. El acceso ocurre al pulsar «Ingresar».
+                  </p>
+                </div>
+              )}
+
+              {/* Pie de la tarjeta: el reset de claves es acción del administrador
+                  (no hay autoservicio), así que se informa como texto, no como un
+                  link a una pantalla que no existe. */}
+              <div className="flex items-center justify-center gap-2 rounded-lg border border-app-border bg-app-bg/50 px-3 py-2.5 text-xs text-app-muted">
+                <Headset className="h-4 w-4 shrink-0" />
+                <span>¿Problemas para acceder? Contactá al administrador.</span>
+              </div>
+            </div>
+
+            {/* Nota legal: la auditoría de sesiones es real (UserSession + módulo
+                de auditoría), a diferencia del "SOC2 Tipo II" del mock. */}
+            <p className="max-w-sm text-center text-[11px] leading-relaxed text-app-muted/90">
+              Acceso restringido a personal autorizado. Las sesiones quedan registradas en la bitácora de auditoría.
+            </p>
           </div>
         </div>
       </div>

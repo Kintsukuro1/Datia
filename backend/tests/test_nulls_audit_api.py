@@ -7,20 +7,25 @@ no los declaraba y FastAPI los borraba del JSON. Una columna restringida
 afirmaba un audit completo sobre una base que no se termino de leer.
 """
 
-import os
-import sqlite3
-import tempfile
 import unittest
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
+
+from conftest import (
+    create_temp_pg_database,
+    drop_temp_pg_database,
+    pg_source_conn_attrs,
+    pg_source_engine,
+)
 
 from main import app
 from app.core.database import SessionLocal
 from app.core.security import create_access_token
 from app.db.init_db import init_db
-from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
+from app.modules.admin_catalog.models import CorporateConnection
 from app.modules.auth.models import User, UserSession
 
 
@@ -32,26 +37,27 @@ class TestNullsAuditApi(unittest.TestCase):
         init_db(db)
         db.close()
 
+        cls.pg_db = create_temp_pg_database("nullapi")
+        eng = pg_source_engine(cls.pg_db)
+        try:
+            with eng.begin() as c:
+                c.execute(text("CREATE TABLE permisos (id INTEGER PRIMARY KEY, secreto TEXT, visible TEXT)"))
+                c.execute(text("INSERT INTO permisos VALUES (1, 'valor', 'ok')"))
+                c.execute(text("INSERT INTO permisos VALUES (2, NULL, NULL)"))
+        finally:
+            eng.dispose()
+
+    @classmethod
+    def tearDownClass(cls):
+        drop_temp_pg_database(cls.pg_db)
+
     def setUp(self):
         self.client = TestClient(app)
         self.db = SessionLocal()
 
-        fd, self.db_path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        c = sqlite3.connect(self.db_path)
-        c.execute("CREATE TABLE permisos (id INTEGER PRIMARY KEY, secreto TEXT, visible TEXT)")
-        c.execute("INSERT INTO permisos VALUES (1, 'valor', 'ok')")
-        c.execute("INSERT INTO permisos VALUES (2, NULL, NULL)")
-        c.commit()
-        c.close()
-
         conn = CorporateConnection(
             name=f"nulls-api-{uuid.uuid4().hex[:8]}",
-            db_type=DatabaseType.SQLITE,
-            host=self.db_path,
-            port=0,
-            database_name=self.db_path,
-            username="admin",
+            **pg_source_conn_attrs(self.pg_db),
             is_active=True,
         )
         self.db.add(conn)
@@ -68,37 +74,20 @@ class TestNullsAuditApi(unittest.TestCase):
         self.db.query(CorporateConnection).filter(CorporateConnection.id == self.conn_id).delete()
         self.db.commit()
         self.db.close()
-        try:
-            os.remove(self.db_path)
-        except OSError:
-            pass
 
     def test_restricted_column_is_reported_as_unverifiable(self):
-        # El endpoint corre en un threadpool: la conexion real nace en el hilo
-        # del test y el cursor se usa en el hilo del handler.
-        real_conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        real_cursor = real_conn.cursor()
+        from sqlalchemy.engine import Connection as SAConnection
+        real_execute = SAConnection.execute
 
-        class _FlakyCursor:
-            """Delega en un cursor real pero falla en la columna restringida,
-            como el server con GRANT de tabla pero no de columna."""
-
-            def execute(self, sql, *a, **kw):
-                if "secreto" in sql:
-                    raise sqlite3.OperationalError("permission denied for column secreto")
-                return real_cursor.execute(sql, *a, **kw)
-
-            def __getattr__(self, k):
-                return getattr(real_cursor, k)
-
-        fake_conn = MagicMock()
-        fake_conn.cursor.return_value = _FlakyCursor()
-        # `__enter__` debe devolver la MISMA conexion: si no, el `with` del
-        # servicio agarra un mock nuevo y la columna restringida nunca falla.
-        fake_conn.__enter__.return_value = fake_conn
+        def flaky_execute(self, statement, *args, **kwargs):
+            """La conexion real, salvo la columna restringida: falla como el
+            server con GRANT de tabla pero no de columna."""
+            if "secreto" in str(statement):
+                raise RuntimeError("permission denied for column secreto")
+            return real_execute(self, statement, *args, **kwargs)
 
         headers = {"Authorization": f"Bearer {self.admin_token}"}
-        with patch("sqlite3.connect", return_value=fake_conn):
+        with patch.object(SAConnection, "execute", flaky_execute):
             resp = self.client.get(
                 f"/api/v1/catalog/connections/{self.conn_id}/nulls-audit",
                 headers=headers,
@@ -112,20 +101,14 @@ class TestNullsAuditApi(unittest.TestCase):
         self.assertIn("secreto", [c["column_name"] for c in unverifiable])
         self.assertTrue(any("permission denied" in c["reason"] for c in unverifiable))
 
-        real_conn.close()
-
-    def test_unreadable_sqlite_file_is_502_not_a_clean_database(self):
-        """El archivo de la conexion no existe: antes el inspector caia a la
-        base demo y el endpoint respondia 200 con has_nulls=false sobre una
-        base que no se leyo."""
-        missing = self.db_path + ".missing"
+    def test_unreadable_database_is_502_not_a_clean_database(self):
+        """La base de la conexion no existe: antes el inspector caia a la base
+        demo y el endpoint respondia 200 con has_nulls=false sobre una base que
+        no se leyo."""
+        missing_db = f"tmp_no_existe_{uuid.uuid4().hex[:8]}"
         broken = CorporateConnection(
             name=f"nulls-api-broken-{uuid.uuid4().hex[:8]}",
-            db_type=DatabaseType.SQLITE,
-            host=missing,
-            port=0,
-            database_name=missing,
-            username="admin",
+            **pg_source_conn_attrs(missing_db),
             is_active=True,
         )
         self.db.add(broken)
@@ -143,7 +126,7 @@ class TestNullsAuditApi(unittest.TestCase):
             self.db.commit()
 
         self.assertEqual(resp.status_code, 502, resp.text)
-        self.assertIn(missing, resp.json()["detail"])
+        self.assertIn(missing_db, resp.json()["detail"])
 
 
 if __name__ == "__main__":

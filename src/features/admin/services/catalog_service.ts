@@ -50,7 +50,25 @@ export interface AutoEnrichResponse {
   success: boolean;
   message: string;
   enriched_count: number;
+  /** Cuántos campos describió el modelo local (0 = quedó la heurística). */
+  llm_enriched_count: number;
+  /** La fase IA se cortó (presupuesto o fallos consecutivos): con
+   *  `llm_enriched_count > 0` es una corrida parcial. */
+  llm_stopped_early: boolean;
   catalog_items: CatalogItem[];
+}
+
+export interface EnrichEstimateResponse {
+  available: boolean;
+  message: string;
+  total_tables: number;
+  total_columns: number;
+  tokens_per_second?: number | null;
+  estimated_seconds?: number | null;
+  min_seconds?: number | null;
+  max_seconds?: number | null;
+  beyond_budget: boolean;
+  budget_seconds: number;
 }
 
 export interface NullColumnInfo {
@@ -143,11 +161,34 @@ export const catalogService = {
     return res.data;
   },
 
-  async autoEnrich(connectionId?: number, tableName?: string): Promise<AutoEnrichResponse> {
+  async autoEnrich(
+    connectionId?: number,
+    tableName?: string,
+    options?: { useLlm?: boolean; baseUrl?: string; modelName?: string }
+  ): Promise<AutoEnrichResponse> {
+    // La IA es opt-in: cuesta tiempo de modelo. `baseUrl`/`modelName` llevan la
+    // configuración del usuario logueado (validada en el backend, loopback only).
     const res = await apiClient.post<AutoEnrichResponse>('/catalog/auto-enrich', {
       connection_id: connectionId || null,
       table_name: tableName || null,
+      use_llm: options?.useLlm ?? false,
+      base_url: options?.baseUrl || null,
+      model_name: options?.modelName || null,
     });
+    return res.data;
+  },
+
+  async getEnrichEstimate(
+    connectionId: number,
+    options?: { baseUrl?: string; modelName?: string }
+  ): Promise<EnrichEstimateResponse> {
+    const params: Record<string, any> = {};
+    if (options?.baseUrl) params.base_url = options.baseUrl;
+    if (options?.modelName) params.model_name = options.modelName;
+    const res = await apiClient.get<EnrichEstimateResponse>(
+      `/catalog/connections/${connectionId}/enrich-estimate`,
+      { params }
+    );
     return res.data;
   },
 

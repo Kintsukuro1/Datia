@@ -12,6 +12,7 @@ from app.modules.auth.models import User
 from app.modules.admin_catalog.schemas import (
     SemanticCatalogCreate, SemanticCatalogUpdate, SemanticCatalogOut,
     DataDictionaryResponse, AutoEnrichRequest, AutoEnrichResponse,
+    EnrichEstimateResponse,
     CorporateConnectionCreate, CorporateConnectionUpdate, CorporateConnectionOut,
     ConnectionTestRequest, ConnectionTestResult, MetadataDBTestRequest,
     ReportExportRequest, NullsAuditResponse, ApplyNullPolicyRequest,
@@ -23,10 +24,14 @@ from app.modules.admin_catalog.models import (
 from app.modules.auth.models import Role
 from app.modules.catalog.services.catalog_service import CatalogDomainService
 from app.modules.catalog.services.connector_service import ConnectorDomainService
+from app.modules.catalog.services.enrich_estimator import EnrichEstimator
 from app.modules.catalog.services.null_manager import NullManagerService
 from app.modules.catalog.services.schema_inspector import SchemaIntrospectionError
 from app.modules.reports.generator import ReportGeneratorService
 from app.modules.system.health_service import HealthService
+# Misma validacion anti-SSRF que /system/health y /llm/test-*: el base_url que
+# llega del cliente se filtra por el allowlist de loopback antes de tocar la red.
+from app.modules.chat_engine.llm_diagnostic_router import _resolve_llm_base_url
 from fastapi import HTTPException
 
 router = APIRouter()
@@ -137,6 +142,37 @@ async def auto_enrich_catalog(
     """Intelligently inspects schema and auto-generates semantic descriptions."""
     return await CatalogDomainService.auto_enrich_catalog(db, req)
 
+@router.get("/catalog/connections/{connection_id}/enrich-estimate", response_model=EnrichEstimateResponse)
+async def estimate_enrich_duration(
+    connection_id: int,
+    base_url: Optional[str] = Query(None),
+    model_name: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+) -> Any:
+    """Estimates (measured, not guessed) how long AI enrichment will take.
+
+    El probe de velocidad es una inferencia corta real: cuesta unos segundos en
+    CPU la primera vez y queda cacheado por (base_url, modelo).
+    """
+    conn = db.query(CorporateConnection).filter(CorporateConnection.id == connection_id).first()
+    if not conn:
+        raise HTTPException(status_code=404, detail="Conexión no encontrada.")
+    if base_url:
+        # Host fuera del loopback -> 400 y ni una request sale.
+        base_url = _resolve_llm_base_url(base_url)
+    try:
+        return await EnrichEstimator.estimate_for_connection(
+            conn, base_url=base_url, model_name=model_name
+        )
+    except SchemaIntrospectionError as ex:
+        # Mismo criterio que /catalog/data-dictionary: la peticion es valida, la
+        # base de la conexion no se pudo leer (502, no un "0 tablas" falso).
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(ex)
+        )
+
 @router.get("/catalog/connections/{connection_id}/nulls-audit", response_model=NullsAuditResponse)
 def audit_connection_nulls(
     connection_id: int,
@@ -203,7 +239,7 @@ async def upload_database_file(
     db: Session = Depends(get_db),
     current_admin: User = Depends(get_current_admin)
 ) -> Any:
-    """Uploads a SQLite, Excel, CSV or SQL dump file (Admin only)."""
+    """Uploads a SQLite, Excel or CSV file (Admin only)."""
     return await ConnectorDomainService.upload_database_file(db, file, name)
 
 @router.put("/connectors/{conn_id}", response_model=CorporateConnectionOut)
@@ -398,7 +434,7 @@ def test_connection_connectivity(
     test_in: ConnectionTestRequest,
     current_user: User = Depends(get_current_user)
 ) -> Any:
-    """Tests real network TCP socket or SQLite file connectivity."""
+    """Tests real network TCP socket connectivity."""
     return ConnectorDomainService.test_connection_connectivity(test_in)
 
 @router.post("/connectors/test-metadata-db", response_model=ConnectionTestResult)

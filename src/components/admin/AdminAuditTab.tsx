@@ -151,7 +151,7 @@ export const AdminAuditTab: React.FC = () => {
                   </td>
                   <td className="px-4 py-3 text-slate-600 dark:text-gray-400 flex items-center space-x-1.5 whitespace-nowrap">
                     <Database className="w-3.5 h-3.5 text-slate-400 dark:text-gray-500" />
-                    <span>{log.target_database || 'SQLite Demo'}</span>
+                    <span>{log.target_database || 'Sin Fuente'}</span>
                   </td>
                   <td className="px-4 py-3 text-slate-600 dark:text-gray-400 font-mono whitespace-nowrap">
                     {log.execution_time_ms} ms

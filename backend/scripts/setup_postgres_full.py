@@ -386,7 +386,10 @@ def setup_metadata_database():
                 db.add(Domain(name=d["name"], description=d["description"]))
         db.commit()
 
-        # Seed Roles
+        # Seed Roles. Solo los corporativos: los alias ('Administrador',
+        # 'Economista', 'TI', 'Usuario') no se siembran mas. `init_db` los migra
+        # y los borra al arrancar, asi que sembrarlos aca solo lograba
+        # recrearlos en cada inicio para volver a migrarlos.
         roles_data = [
             {"name": "Administrador de Plataforma", "description": "Acceso total a gobernanza RBAC, gestión de usuarios, conexiones BD y auditoría"},
             {"name": "Director Ejecutivo (C-Level)", "description": "Visión macro estratégica, rentabilidad global, indicadores clave de negocio y alertas de riesgo"},
@@ -396,10 +399,6 @@ def setup_metadata_database():
             {"name": "Ingeniero de Infraestructura & TI", "description": "Monitoreo de salud de conectores, consumo de servidores, rendimiento de consultas e incidentes técnicos"},
             {"name": "Oficial de Cumplimiento & Seguridad", "description": "Vigilancia de trazabilidad, cumplimiento de normativas de datos y auditoría de accesos"},
             {"name": "Usuario Consultor", "description": "Perfil inicial por defecto con acceso de solo lectura restringida"},
-            {"name": "Administrador", "description": "Alias de Administrador de Plataforma"},
-            {"name": "Economista", "description": "Alias de Analista Financiero & Comercial"},
-            {"name": "TI", "description": "Alias de Ingeniero de Infraestructura & TI"},
-            {"name": "Usuario", "description": "Alias de Usuario Consultor"},
         ]
         for r in roles_data:
             if not db.query(Role).filter(Role.name == r["name"]).first():
@@ -462,7 +461,10 @@ def setup_metadata_database():
             db.commit()
             db.refresh(pg_conn)
         else:
-            pg_conn.is_active = True
+            # No se toca `is_active` de una conexion existente: es una decision
+            # del admin (p. ej. tener activo un dataset subido). Forzarla aca
+            # contradecia a la migracion de conector unico de `init_db`, que la
+            # apagaba de nuevo en el mismo arranque.
             pg_conn.host = PG_HOST
             pg_conn.port = PG_PORT
             pg_conn.database_name = BUSINESS_DB
