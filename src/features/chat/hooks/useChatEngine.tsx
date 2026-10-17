@@ -95,10 +95,24 @@ function useChatEngineInternal() {
   const abortControllerRef = useRef<AbortController | null>(null);
   // Hilo del intento en curso o del ultimo intento fallido (timeout/error). Un
   // hilo nace sin resultados y sin copia en el servidor: el POST recien sale
-  // cuando llega la respuesta. Si el intento se abandona (Nueva consulta o
-  // Cancelar), este id permite quitarlo del historial: dejarlo era un hilo
-  // fantasma que al abrirlo mostraba la bienvenida con el hilo resaltado.
+  // cuando llega la respuesta. Sirve para saber a que conversacion pertenece la
+  // tarjeta de "procesando" (y no mostrarla en cualquier otra) y para no dejar
+  // un hilo vacio si su intento fallido se descarta.
   const attemptThreadIdRef = useRef<string | null>(null);
+  // Espejo en estado del ref: la pantalla necesita el id para decidir donde va
+  // la tarjeta. Se escriben siempre juntos con `setAttemptThread`.
+  const [attemptThreadId, setAttemptThreadId] = useState<string | null>(null);
+  const setAttemptThread = useCallback((id: string | null) => {
+    attemptThreadIdRef.current = id;
+    setAttemptThreadId(id);
+  }, []);
+  // Una prediccion no vive en ningun hilo (por diseno): "+ Nueva consulta" la
+  // corta como antes. Este flag la distingue de una consulta, que sigue viva y
+  // deja su respuesta en su conversacion.
+  const predictionAttemptRef = useRef(false);
+  // Cuando arranco el intento: el mensaje de Cancelar dice a los cuantos
+  // segundos se corto.
+  const attemptStartedAtRef = useRef<number | null>(null);
 
   const userRole = resolveRoleLabel(user);
   const [promptSuggestions, setPromptSuggestions] = useState<string[]>([]);
@@ -177,6 +191,14 @@ function useChatEngineInternal() {
   }, [threads]);
 
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  // `activeThreadId` vigente cuando el intento TERMINE (el de la clausura es el
+  // del arranque): con el intento siguiendo en segundo plano, decide si hay que
+  // avisar que la respuesta quedo en otra conversacion.
+  const activeThreadIdRef = useRef<string | null>(activeThreadId);
+  useEffect(() => {
+    activeThreadIdRef.current = activeThreadId;
+  }, [activeThreadId]);
+
   // Mismo par que usa useAdminUsers: `threadsLoaded` separa "todavia cargando"
   // de "la API devolvio []" y `threadsError` de "no se pudo preguntar". Antes
   // un fallo de red dejaba el cache local en pantalla indistinguible de un
@@ -190,6 +212,9 @@ function useChatEngineInternal() {
   // devolver la pantalla a la bienvenida como si la pregunta no hubiera
   // existido. `null` = no hay fallo que mostrar.
   const [pendingError, setPendingError] = useState<string | null>(null);
+  // Origen de ese fallo: el titulo de la tarjeta cambia ("Cancelada" no es lo
+  // mismo que "Sin respuesta"). Se guarda el origen; no se adivina del texto.
+  const [pendingErrorKind, setPendingErrorKind] = useState<'cancel' | 'fail' | null>(null);
 
   // Predicciones: estado aparte del hilo, porque NO son un `QueryResult`.
   // `null` = todavia no se pidio ninguna; un error va en su propio campo para no
@@ -408,60 +433,63 @@ function useChatEngineInternal() {
     }
   }, [threads, notify]);
 
-  // Un hilo que quedo de un intento abandonado no tiene nada que mostrar: sin
-  // respuesta no hay resultado que renderizar y el servidor nunca lo recibio (el
-  // POST sale recien cuando llega la respuesta). Quedaba en el historial como
-  // conversacion vacia y al abrirlo el panel caia en la bienvenida con el hilo
-  // resaltado, sin forma de recuperarlo. Si el intento se abandona, su hilo se
-  // va con el. Un hilo con resultados (multi-turno) no se toca: devuelve el id
-  // solo cuando de verdad quito la conversacion.
+  // El estado del motor guarda UN intento (una pregunta pendiente, una narrativa,
+  // un reloj). Cuando el usuario arranca otro intento en otra conversacion, la
+  // pregunta fallida anterior ya no se puede volver a mostrar: su hilo, nacido
+  // sin resultados y sin copia en el servidor, quedaba en el historial como
+  // conversacion vacia que al abrirla mostraba la bienvenida con el hilo
+  // resaltado. Ese es el unico caso en que se quita. Un hilo con resultados
+  // (multi-turno) no se toca: devuelve el id solo cuando de verdad quito la
+  // conversacion.
   const discardAbandonedAttemptThread = useCallback((): string | null => {
     const id = attemptThreadIdRef.current;
     if (!id) return null;
-    attemptThreadIdRef.current = null;
+    setAttemptThread(null);
     const target = threadsRef.current.find((t) => t.id === id);
     if (!target || target.results.length > 0) return null;
     setThreads((prev) => prev.filter((t) => t.id !== id));
     return id;
-  }, []);
+  }, [setAttemptThread]);
 
   const handleNewThread = useCallback(() => {
-    // El controller sigue seteado despues de un exito (solo lo limpian esta
-    // funcion y Cancelar): "en vuelo" es el controller Y el estado generando.
-    const abandonedInFlight = abortControllerRef.current !== null && isGenerating;
+    // "En vuelo" es el controller Y el estado generando: el controller sigue
+    // seteado despues de un exito, y solo lo limpia Cancelar.
+    const inFlight = abortControllerRef.current !== null && isGenerating;
+    // Una consulta en curso NO se corta: sigue y su respuesta queda en SU
+    // conversacion; el usuario ve la bienvenida y pregunta cuando termine (el
+    // input se lo dice). Una prediccion, que no vive en ningun hilo, si se
+    // corta: no hay conversacion donde dejarla.
+    const cutsPrediction = inFlight && predictionAttemptRef.current;
 
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
+    if (cutsPrediction) {
+      abortControllerRef.current?.abort();
       abortControllerRef.current = null;
-    }
-
-    // El buffer de stream y su temporizador de volcado son COMPARTIDOS entre
-    // intentos (`streamBufferRef`, `streamFlushTimerRef`), no de este. Si el
-    // intento anterior dejo texto parcial a medias, sin esto sigue en el buffer
-    // cuando la consulta nueva empiece a escribir en el mismo, y la narrativa
-    // cancelada aparece pegada delante de la nueva. `handleCancelPrompt` ya
-    // hacia esto; Ctrl+N es el otro camino de parada y faltaba.
-    discardStreamingNarrative();
-
-    discardAbandonedAttemptThread();
-
-    if (abandonedInFlight) {
+      discardStreamingNarrative();
+      setAttemptThread(null);
+      setIsGenerating(false);
+      setPendingPrompt(null);
+      setPendingError(null);
+      setPendingErrorKind(null);
+      setPredictionError(null);
+    } else if (!inFlight) {
+      // Nada corriendo: lo parcial de un intento ya terminado no puede quedar
+      // pegado al proximo. La tarjeta de un intento fallido (si la hay) se
+      // conserva en su hilo, con su pregunta y su Reintentar.
+      discardStreamingNarrative();
+    } else {
       notify(
         'info',
-        'Empezaste una consulta nueva: la pregunta que estaba en curso se canceló desde este navegador. El servidor puede seguir trabajándola hasta terminar, pero su resultado se descarta.'
+        'La consulta anterior sigue en curso: su respuesta va a quedar en esa conversación. Vas a poder preguntar algo nuevo cuando termine.'
       );
     }
 
-    setIsGenerating(false);
     setPromptInput('');
-    setPendingPrompt(null);
-    setPendingError(null);
     setActiveTraceability(null);
     setActiveThreadId(null);
     setTimeout(() => {
       promptTextareaRef.current?.focus();
     }, 50);
-  }, [discardAbandonedAttemptThread, discardStreamingNarrative, isGenerating, notify]);
+  }, [discardStreamingNarrative, isGenerating, notify, setAttemptThread]);
 
   const handleDeleteThread = useCallback(async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -545,6 +573,11 @@ function useChatEngineInternal() {
     if (isPredictionQuestion(trimmed)) {
       setPendingPrompt(trimmed);
       setPendingError(null);
+      setPendingErrorKind(null);
+      // Sin hilo: la prediccion vive fuera del historial, su tarjeta se ve
+      // donde este el usuario (y "+ Nueva consulta" la corta).
+      setAttemptThread(null);
+      predictionAttemptRef.current = true;
       setPromptInput('');
       setIsGenerating(true);
       setPredictionError(null);
@@ -560,6 +593,10 @@ function useChatEngineInternal() {
         if (err?.name === 'AbortError') return;
         setPredictionError(err?.message || 'No se pudo calcular la prediccion.');
       } finally {
+        // Antes del guard: "+ Nueva consulta" pudo haber cortado ESTA
+        // prediccion, y el flag no puede quedar prendido para el proximo intento
+        // (que ya no seria una prediccion).
+        predictionAttemptRef.current = false;
         // Mismo guard que el camino del LLM: si el usuario ya empezo otra
         // consulta, este `finally` no le apagaba el estado ni le borraba la
         // pregunta pendiente.
@@ -573,14 +610,16 @@ function useChatEngineInternal() {
     setPrediction(null);
 
     const currentThreadId = activeThreadId || `thread-${Date.now()}`;
-    // El intento anterior pudo quedar fallido en OTRO hilo (timeout y el usuario
-    // se fue a otra conversacion): su hilo vacio no se queda en el historial.
+    // El estado del motor guarda UN intento: si el anterior quedo fallido en
+    // otra conversacion y el usuario arranca otro, esa pregunta ya no se puede
+    // volver a mostrar, asi que su hilo vacio no se queda en el historial.
     if (attemptThreadIdRef.current && attemptThreadIdRef.current !== currentThreadId) {
       discardAbandonedAttemptThread();
     }
-    // Este intento queda ligado a SU hilo: Nueva consulta y Cancelar lo usan
-    // para no dejar conversaciones vacias en el historial si se abandona.
-    attemptThreadIdRef.current = currentThreadId;
+    // Desde aca este intento es el dueño de la tarjeta de "procesando" y de sus
+    // estados: la tarjeta se muestra solo en SU conversacion.
+    setAttemptThread(currentThreadId);
+    attemptStartedAtRef.current = Date.now();
     const threadTitle = trimmed.length > 32 ? `${trimmed.substring(0, 30)}...` : trimmed;
 
     if (!activeThreadId) {
@@ -609,6 +648,7 @@ function useChatEngineInternal() {
 
     setPendingPrompt(trimmed);
     setPendingError(null);
+    setPendingErrorKind(null);
     setPromptInput('');
     setIsGenerating(true);
     setElapsedSeconds(0);
@@ -616,6 +656,9 @@ function useChatEngineInternal() {
 
     const startedAt = Date.now();
     let timedOut = false;
+    // Titulo del hilo que recibe el resultado, para avisar donde quedo cuando el
+    // usuario no esta mirando esa conversacion.
+    let completedThreadTitle: string | null = null;
     // Motivo del fallo del intento, si lo hubo. Se decide en el `catch` y lo
     // aplica el `finally` (que corre siempre), para conservar la pregunta en
     // pantalla en vez de vaciarla.
@@ -714,6 +757,7 @@ function useChatEngineInternal() {
       // -> dos POST.
       const mergeTarget = threadsRef.current.find((t) => t.id === currentThreadId);
       if (mergeTarget) {
+        completedThreadTitle = mergeTarget.title;
         const newResults = [...mergeTarget.results, newResult];
         setThreads((prev) =>
           prev.map((t) => (t.id === currentThreadId ? { ...t, results: newResults } : t))
@@ -769,7 +813,8 @@ function useChatEngineInternal() {
       // `finally` corre, ese buffer ya contiene (o va a contener) texto de la
       // consulta vigente, no del intento que termina. Limpiarlo aqui seria el
       // bug original al reves. Lo limpia quien PARA el intento, antes de que
-      // empiece el siguiente: `handleCancelPrompt` y `handleNewThread`.
+      // empiece el siguiente: `handleCancelPrompt` y `handleNewThread` (que ya
+      // no corta consultas: solo predicciones o intentos ya terminados).
       if (abortControllerRef.current !== controller) return;
       setIsGenerating(false);
       if (attemptError) {
@@ -778,12 +823,23 @@ function useChatEngineInternal() {
         // vaciaba siempre y la pantalla volvia a la bienvenida como si la
         // pregunta nunca hubiera existido.
         setPendingError(attemptError);
+        setPendingErrorKind('fail');
       } else {
         setPendingPrompt(null);
         setPendingError(null);
-        // El intento llego a resultado: su hilo ya tiene contenido y no hay
-        // nada que deshacer si el usuario empieza otra cosa.
-        attemptThreadIdRef.current = null;
+        setPendingErrorKind(null);
+        // El intento llego a resultado: su hilo ya tiene contenido. Si el
+        // usuario no esta mirando ESA conversacion (le dio a Nueva consulta
+        // mientras corria), se le avisa donde quedo la respuesta; si esta
+        // mirandola, el resultado aparece ahi mismo.
+        if (completedThreadTitle && activeThreadIdRef.current !== currentThreadId) {
+          notify(
+            'success',
+            `Terminó la consulta anterior: la respuesta quedó en "${completedThreadTitle}".`
+          );
+        }
+        setAttemptThread(null);
+        attemptStartedAtRef.current = null;
       }
       // La narrativa parcial nunca sobrevive al intento: o la reemplazo el
       // resultado completo, o se cae el stream y se va por `sendQuery`. Lo que
@@ -798,35 +854,35 @@ function useChatEngineInternal() {
     discardStreamingNarrative,
     isGenerating,
     notify,
+    setAttemptThread,
     settings,
     streamingEnabled,
     userRole,
   ]);
 
   // Cancelar la consulta en curso. Aborta de verdad (el signal llega al fetch,
-  // ver query_service.executeQuery) y el `finally` de handleSendPrompt devuelve
-  // la UI a un estado usable: input habilitado, isGenerating false, pendingPrompt
-  // limpio. No se afirma que el trabajo del servidor se deshizo, porque no se
-  // deshizo.
+  // ver query_service.executeQuery): el `finally` de handleSendPrompt no corre,
+  // asi que esta funcion deja la UI usable y CONSERVA la pregunta en su hilo con
+  // el motivo y el boton de reintentar (mismo trato que el timeout). No se
+  // afirma que el trabajo del servidor se deshizo, porque no se deshizo.
   const handleCancelPrompt = useCallback(() => {
     const controller = abortControllerRef.current;
     if (!controller) return;
     abortControllerRef.current = null;
     controller.abort();
-    // Cancelar vacía la pantalla (asi esta declarado): el hilo del intento se
-    // va con la pregunta, igual que en Nueva consulta. Si el hilo tenia
-    // resultados de turnos anteriores, se conserva y sigue activo.
-    const removedId = discardAbandonedAttemptThread();
-    if (removedId && activeThreadId === removedId) {
-      setActiveThreadId(null);
-    }
+    const seconds = Math.max(
+      1,
+      Math.round((Date.now() - (attemptStartedAtRef.current ?? Date.now())) / 1000)
+    );
+    setPendingError(
+      `Cancelaste la consulta a los ${seconds} s. La espera en este navegador se cortó, pero la petición ya había llegado al servidor y el motor local puede seguir trabajándola hasta terminar. La pregunta quedó acá: podés reintentarla.`
+    );
+    setPendingErrorKind('cancel');
     setIsGenerating(false);
-    setPendingPrompt(null);
-    setPendingError(null);
     // Lo que se habia leido del stream no es una respuesta: es texto sin
     // confirmar. Cancelar no lo deja pegado en el chat.
     discardStreamingNarrative();
-  }, [activeThreadId, discardAbandonedAttemptThread, discardStreamingNarrative]);
+  }, [discardStreamingNarrative]);
 
   const handleFeedback = useCallback(async (
     result: QueryResult,
@@ -908,6 +964,8 @@ function useChatEngineInternal() {
     sidebarThreads,
     pendingPrompt,
     pendingError,
+    pendingErrorKind,
+    attemptThreadId,
     prediction,
     predictionError,
     loadingAudit,
@@ -947,6 +1005,8 @@ function useChatEngineInternal() {
     sidebarThreads,
     pendingPrompt,
     pendingError,
+    pendingErrorKind,
+    attemptThreadId,
     prediction,
     predictionError,
     loadingAudit,

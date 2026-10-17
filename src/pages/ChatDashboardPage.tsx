@@ -54,6 +54,8 @@ export const ChatDashboardPage: React.FC = () => {
     activeThreadId,
     pendingPrompt,
     pendingError,
+    pendingErrorKind,
+    attemptThreadId,
     prediction,
     predictionError,
     loadingAudit,
@@ -71,6 +73,18 @@ export const ChatDashboardPage: React.FC = () => {
     handleEditPrompt,
     handleFeedback,
   } = useChatEngine();
+
+  // La tarjeta del intento (procesando / sin respuesta / cancelada) pertenece a
+  // SU conversacion: se muestra solo ahi, o en cualquier parte cuando el intento
+  // no vive en un hilo (prediccion). Antes seguia al usuario a cualquier hilo y
+  // a la bienvenida, y una consulta siguiendo en segundo plano no podia mostrar
+  // su bienvenida.
+  const attemptCard = Boolean(
+    pendingPrompt && (attemptThreadId === null || attemptThreadId === activeThreadId)
+  );
+  const attemptThread = attemptThreadId
+    ? sidebarThreads.find((t) => t.id === attemptThreadId)
+    : undefined;
 
   const [isPresentationMode, setIsPresentationMode] = useState(false);
 
@@ -413,7 +427,7 @@ export const ChatDashboardPage: React.FC = () => {
 
         {/* Scrollable Conversation Stream */}
         <div className={`flex-1 overflow-y-auto px-4 py-6 md:px-8 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 ${isPresentationMode ? 'max-w-6xl mx-auto w-full' : ''}`}>
-          {(!activeThread || activeThread.results.length === 0) && !pendingPrompt && !prediction ? (
+          {(!activeThread || activeThread.results.length === 0) && !attemptCard && !prediction ? (
             <ChatEmptyState
               promptSuggestions={promptSuggestions}
               onSelectSuggestion={(sugg) => {
@@ -460,7 +474,7 @@ export const ChatDashboardPage: React.FC = () => {
               ))}
 
               {/* Pending Query: Optimistic User Message Bubble + AI Thinking Bubble */}
-              {pendingPrompt && (
+              {attemptCard && (
                 <div className="space-y-4 sm:space-y-6 pt-4 border-t border-dark-border/40 first:border-0 first:pt-0 animate-fadeIn">
                   {/* User Question Bubble */}
                   <div className="flex items-start space-x-2 sm:space-x-3 justify-end">
@@ -491,7 +505,7 @@ export const ChatDashboardPage: React.FC = () => {
                         {pendingError ? (
                           <span className="text-rose-600 dark:text-rose-400 font-normal flex items-center gap-1.5">
                             <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                            Sin respuesta
+                            {pendingErrorKind === 'cancel' ? 'Cancelada' : 'Sin respuesta'}
                           </span>
                         ) : (
                           <span className="text-slate-600 dark:text-slate-400 font-normal flex items-center gap-1.5">
@@ -589,6 +603,13 @@ export const ChatDashboardPage: React.FC = () => {
         {!isPresentationMode && (
           <div className="p-4 md:p-6 bg-gradient-to-t from-[#07090E] via-[#0A0D14] to-transparent shrink-0 chat-shell-input-wrap">
             <div className="max-w-4xl mx-auto">
+              {isGenerating && !attemptCard && (
+                <p className="mb-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-2">
+                  Hay una consulta en curso
+                  {attemptThread ? ` en «${attemptThread.title}»` : ''} (lleva {elapsedSeconds}s).
+                  El campo se habilita cuando termine: su respuesta va a quedar en esa conversación.
+                </p>
+              )}
               <ChatPromptInput
                 promptInput={promptInput}
                 setPromptInput={setPromptInput}
