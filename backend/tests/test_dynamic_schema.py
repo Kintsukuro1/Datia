@@ -264,6 +264,29 @@ class TestDynamicSchema(unittest.TestCase):
         DynamicSchemaPruningService.invalidate_schema_cache(connection_id=1)
         self.assertNotIn(key, DynamicSchemaPruningService._schema_cache)
 
+    def test_connection_id_inexistente_es_404_y_no_fallback(self):
+        """Un id explicito que no existe es 404, no la conexion activa.
+
+        Antes esta resolucion seguia de largo y la peticion introspeccionaba
+        OTRA base, con el id del cliente en la auditoria. El criterio vive en
+        `SchemaInspector.resolve_connection` y no se re-implementa aca.
+        """
+        from fastapi import HTTPException
+
+        mock_db = MagicMock()
+        mock_db.query().filter().first.return_value = None
+        mock_db.query().filter().all.return_value = []
+
+        with self.assertRaises(HTTPException) as ctx:
+            DynamicSchemaPruningService.get_authorized_schema_prompt(
+                db=mock_db,
+                user_role="Economista",
+                connection_id=999999,
+                is_admin=False
+            )
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertIn("999999", ctx.exception.detail)
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -234,6 +234,29 @@ def demo_accounts_in_known_state():
             _reset_demo_accounts()
 
 
+@pytest.fixture(autouse=True)
+def dynamic_schema_cache_clean():
+    """El cache de prompts de `DynamicSchemaPruningService` no cruza tests.
+
+    `_schema_cache` es estado de CLASE: un prompt armado por un test con un
+    `db` mockeado quedaba visible para el siguiente bajo la misma key. Antes
+    eso se tapaba con una deteccion de `MagicMock` DENTRO de
+    `dynamic_schema.py`; la fixture ataca la causa (el cache compartido) sin
+    codigo de test en produccion. Se limpia en los dos extremos: un test que
+    ensucie a mitad tampoco contagia al de al lado.
+
+    Import perezoso: `app.core.database` tiene que importarse despues de que
+    `_ensure_test_database()` fijo `POSTGRES_DB` (ver el comentario de arriba).
+    """
+    from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
+
+    DynamicSchemaPruningService.invalidate_schema_cache()
+    try:
+        yield
+    finally:
+        DynamicSchemaPruningService.invalidate_schema_cache()
+
+
 # --- Fuentes corporativas desechables -----------------------------------------
 #
 # Varios tests armaban un archivo SQLite temporal con tablas y una conexion

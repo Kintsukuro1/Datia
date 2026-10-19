@@ -2,6 +2,7 @@ import time
 import re
 import logging
 from typing import Any, Callable, List, Dict, Optional, Set, Tuple
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.constants import DEFAULT_DEMO_ROLE, ROLE_USUARIO, ADMIN_ROLES
@@ -16,6 +17,7 @@ from app.modules.chat_engine.response_builder import ResponseBuilder
 from app.modules.chat_engine.sql_executor import SQLExecutor
 from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
 from app.modules.catalog.services.null_manager import NullManagerService
+from app.modules.catalog.services.schema_inspector import SchemaInspector
 from app.modules.chat_engine.governance_guard import GovernanceGuard
 from app.modules.chat_engine.suggestions_service import SuggestionsService
 from app.modules.chat_engine.sql_generator import SQLGenerator
@@ -286,13 +288,11 @@ class QueryEngine:
         conn_record = None
         if db is not None:
             try:
-                from app.modules.admin_catalog.models import CorporateConnection
-                if connection_id:
-                    conn_record = db.query(CorporateConnection).filter(CorporateConnection.id == connection_id).first()
-                if not conn_record:
-                    conn_record = db.query(CorporateConnection).filter(CorporateConnection.is_active == True).order_by(CorporateConnection.id.desc()).first()
-                if not conn_record:
-                    conn_record = db.query(CorporateConnection).order_by(CorporateConnection.id.desc()).first()
+                conn_record = SchemaInspector.resolve_connection(db, connection_id)
+            except HTTPException:
+                # Un id explicito inexistente es 404 y no una consulta contra
+                # OTRA base. Con `connection_id` ausente manda la activa/ultima.
+                raise
             except Exception:
                 # `conn_record` queda None y la request sigue por el resto del
                 # camino, pero la sesion no: la consulta fallida la dejo

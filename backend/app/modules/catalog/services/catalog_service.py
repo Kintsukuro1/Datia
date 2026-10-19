@@ -65,9 +65,7 @@ class CatalogDomainService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Conexión corporativa {target_conn_id} no encontrada."
                 )
-            conn_record = db.query(CorporateConnection).filter(CorporateConnection.is_active == True).order_by(CorporateConnection.id.desc()).first()
-            if not conn_record:
-                conn_record = db.query(CorporateConnection).order_by(CorporateConnection.id.desc()).first()
+            conn_record = SchemaInspector.default_connection(db)
             if conn_record:
                 target_conn_id = conn_record.id
 

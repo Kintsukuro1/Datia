@@ -37,6 +37,19 @@ class SchemaInspector:
     IGNORED_TABLES = IGNORED_METADATA_TABLES
 
     @classmethod
+    def default_connection(cls, db: Session) -> Optional[CorporateConnection]:
+        """La conexion que se usa cuando el request no pidio una: activa, o la ultima.
+
+        Devuelve None si no hay ninguna registrada. No lanza a proposito: los
+        callers que pueden degradar (un prompt, una etiqueta de auditoria) lo
+        usan como "no hay base", y `resolve_connection` lo convierte en error.
+        """
+        conn = db.query(CorporateConnection).filter(CorporateConnection.is_active == True).order_by(CorporateConnection.id.desc()).first()
+        if not conn:
+            conn = db.query(CorporateConnection).order_by(CorporateConnection.id.desc()).first()
+        return conn
+
+    @classmethod
     def resolve_connection(cls, db: Session, connection_id: Optional[int]) -> CorporateConnection:
         """
         Resolves the CorporateConnection that the request targets.
@@ -57,9 +70,7 @@ class SchemaInspector:
                 )
 
         if not conn:
-            conn = db.query(CorporateConnection).filter(CorporateConnection.is_active == True).order_by(CorporateConnection.id.desc()).first()
-            if not conn:
-                conn = db.query(CorporateConnection).order_by(CorporateConnection.id.desc()).first()
+            conn = cls.default_connection(db)
 
         if not conn:
             # Sin conexiones no hay base que introspeccionar. Antes se fabricaba

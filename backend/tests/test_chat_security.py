@@ -90,6 +90,29 @@ class TestChatSecurity(unittest.TestCase):
         self.assertGreaterEqual(len(allowed_tables), 1)
         self.assertTrue(any(t.lower() in ["fact_ventas", "question", "survey", "answer"] for t in allowed_tables))
 
+    def test_chat_query_with_missing_connection_returns_404(self):
+        """Un `connection_id` que no existe es 404 y NO se consulta otra base.
+
+        Antes el motor caia en silencio a la conexion activa: la respuesta
+        parecia valida, pero era de OTRA base, con el id pedido en la auditoria.
+        """
+        resp = self.client.post(
+            "/api/v1/chat/query",
+            json={"question": "Total de ventas", "connection_id": 999999},
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertIn("999999", resp.text)
+
+    def test_suggestions_with_missing_connection_returns_404(self):
+        """Las sugerencias resuelven la conexion con el mismo criterio que el chat."""
+        resp = self.client.get(
+            "/api/v1/chat/suggestions?connection_id=999999",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertIn("999999", resp.text)
+
     def test_self_register_ignores_extra_admin_fields(self):
         """
         POST /auth/register uses UserSelfRegister. Even if a malicious request

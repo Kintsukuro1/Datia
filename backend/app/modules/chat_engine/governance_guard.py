@@ -1,5 +1,6 @@
 import re
 from typing import Set, Optional
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.constants import ADMIN_ROLES
@@ -49,6 +50,10 @@ class GovernanceGuard:
                     is_admin=is_admin
                 )
                 return schema_info.get(field, set())
+            except HTTPException:
+                # Un 404 de conexion no es "sin permisos": convertirlo en set()
+                # lo disfrazaba de RBAC y el motor respondia 200 en vez de 404.
+                raise
             except Exception:
                 # La sesion es del CALLER, no nuestra. Tragarnos el error sin
                 # deshacer la transaccion abortada la deja muerta, y el siguiente

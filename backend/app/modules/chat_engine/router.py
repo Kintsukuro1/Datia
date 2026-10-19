@@ -18,6 +18,7 @@ from app.api.deps import (
     _persist_audit_log, require_assigned_role as _require_assigned_role,
 )
 from app.core.database import SessionLocal
+from app.modules.catalog.services.schema_inspector import SchemaInspector
 from app.modules.auth.models import User
 from app.modules.telemetry_audit.models import AuditLog
 from app.modules.admin_catalog.models import CorporateConnection
@@ -243,7 +244,9 @@ async def process_chat_query_stream(
     """
     conn_id = query_in.connection_id or 1
     # Validar ANTES de abrir el stream: adentro del generador las cabeceras ya
-    # se enviaron y una URL rechazada solo podria viajar como evento `error`.
+    # se enviaron. Un id explicito inexistente tiene que ser un 404 HTTP, no un
+    # evento `error` que el cliente confunde con "el servidor se cayo".
+    SchemaInspector.resolve_connection(db, conn_id)
     request_llm_base_url = _validated_request_llm_base_url(query_in)
     # Antes de abrir el stream: el corte de rol tiene que ser un 403 HTTP de
     # verdad. Adentro del generador las cabeceras ya se enviaron y un rechazo
@@ -612,16 +615,14 @@ async def get_dynamic_suggestions(
             suggestions=generic_suggestions
         )
 
-    # Resolve active connection when omitted
+    # La conexion del pedido: un id explicito inexistente es 404 y no un
+    # fallback silencioso a otra base. Sin id manda la activa, o la ultima.
     effective_conn_id = connection_id
-    if effective_conn_id is None and db is not None:
+    if db is not None:
         try:
-            from app.modules.admin_catalog.models import CorporateConnection
-            active_c = db.query(CorporateConnection).filter(CorporateConnection.is_active == True).order_by(CorporateConnection.id.desc()).first()
-            if not active_c:
-                active_c = db.query(CorporateConnection).order_by(CorporateConnection.id.desc()).first()
-            if active_c:
-                effective_conn_id = active_c.id
+            effective_conn_id = SchemaInspector.resolve_connection(db, connection_id).id
+        except HTTPException:
+            raise
         except Exception:
             # Sin conexion resuelta, `effective_conn_id` queda None y el prompt
             # degrada. Lo que no puede pasar es devolver la sesion abortada.

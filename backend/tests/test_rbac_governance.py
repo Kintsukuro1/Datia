@@ -44,17 +44,26 @@ class TestRBACGovernance(unittest.TestCase):
 
     def test_role_id_none_unassigned_fails_closed(self):
         """Non-admin user with unassigned role_id=None and non-existent role name returns empty set."""
+        from unittest.mock import patch
+        from app.modules.catalog.services.schema_inspector import SchemaInspector
+
         mock_db = MagicMock()
         mock_db.query().filter().first.return_value = None  # No matching Role found
         mock_db.query().filter().all.return_value = []
 
-        res = QueryEngine.get_allowed_tables_for_role(
-            user_role="UsuarioSinRol",
-            is_admin=False,
-            db=mock_db,
-            role_id=None,
-            connection_id=1
-        )
+        # La conexion del pedido es una precondicion, no el sujeto del test (y
+        # ya tiene su propia cobertura en `test_catalog_service`). Sin esto, con
+        # una base mockeada sin conexiones, el 404 de un id explicito cortaria
+        # antes de medir el RBAC.
+        with patch.object(SchemaInspector, "resolve_connection", return_value=MagicMock(id=1)), \
+             patch.object(DynamicSchemaPruningService, "get_physical_db_tables", return_value=set()):
+            res = QueryEngine.get_allowed_tables_for_role(
+                user_role="UsuarioSinRol",
+                is_admin=False,
+                db=mock_db,
+                role_id=None,
+                connection_id=1
+            )
         self.assertEqual(res, set(), "Unassigned role_id=None must return empty set (Fail-Closed)")
 
     def test_db_revoked_permissions_returns_empty_set(self):

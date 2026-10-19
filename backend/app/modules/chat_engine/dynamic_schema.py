@@ -1,11 +1,13 @@
 import time
 import re
 from typing import List, Dict, Set, Any, Optional, Tuple
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.core.constants import IGNORED_METADATA_TABLES
 from app.core.database import discard_failed_transaction
 from app.modules.admin_catalog.models import RoleTablePermission, RoleColumnPermission, ColumnPermissionType, SemanticCatalog, CorporateConnection
 from app.modules.auth.models import Role
+from app.modules.catalog.services.schema_inspector import SchemaInspector
 
 class DynamicSchemaPruningService:
     """
@@ -437,8 +439,7 @@ class DynamicSchemaPruningService:
         q_norm = query.strip().lower() if query else ""
         cache_key = f"{connection_id}:{role_id}:{user_role}:{is_admin}:{q_norm}"
         now = time.time()
-        is_mock_db = hasattr(db, "_mock_return_value") or hasattr(db, "_mock_methods") or (db is not None and "mock" in type(db).__name__.lower())
-        if not is_mock_db and cache_key in cls._schema_cache:
+        if cache_key in cls._schema_cache:
             ts, cached_result = cls._schema_cache[cache_key]
             if now - ts < cls._SCHEMA_CACHE_TTL:
                 return cached_result
@@ -446,20 +447,13 @@ class DynamicSchemaPruningService:
         conn_record = None
         if db is not None:
             try:
-                if connection_id:
-                    conn_record = db.query(CorporateConnection).filter(CorporateConnection.id == connection_id).first()
-                # Sin paso por `is_uploaded`: ese atajo caia en la conexion de plataforma,
-                # que en una base normal esta APAGADA (`is_active=False`). Medido sobre
-                # datos reales: con la 1 no-uploadada y apagada y la 2 subida y activa,
-                # un `connection_id` inexistente devolvia la 1 desde esta linea mientras
-                # el resto del sistema resolvia la 2. Es decir, la misma peticion
-                # introspeccionaba dos bases distintas segun por donde entrara.
-                # El orden que queda es el de `SchemaInspector.resolve_connection`
-                # y el de `engine.py`: id explicito, luego la activa, luego la ultima.
-                if not conn_record:
-                    conn_record = db.query(CorporateConnection).filter(CorporateConnection.is_active == True).order_by(CorporateConnection.id.desc()).first()
-                if not conn_record:
-                    conn_record = db.query(CorporateConnection).order_by(CorporateConnection.id.desc()).first()
+                conn_record = SchemaInspector.resolve_connection(db, connection_id)
+            except HTTPException:
+                # Un id explicito inexistente es 404 y no un fallback silencioso a
+                # otra base: el orden (id, activa, ultima) vive en un solo lugar.
+                # Antes esta copia y la de `engine.py` podian resolver bases
+                # distintas para la misma peticion.
+                raise
             except Exception:
                 # Sin esto la sesion queda abortada y los `db.query(...)` de mas
                 # abajo de esta misma funcion mueren con `InFailedSqlTransaction`.
@@ -662,20 +656,19 @@ class DynamicSchemaPruningService:
             "blocked_columns": blocked_columns,
             "masked_columns": masked_columns,
         }
-        if not is_mock_db:
-            # La key lleva `q_norm` (el texto de la pregunta), o sea que hay una
-            # entrada DISTINTA por cada pregunta que se ha hecho. Con solo TTL y
-            # sin poda, el dict crecia para siempre guardando el `schema_prompt`
-            # completo de cada una. Se purga lo vencido antes de insertar y, si
-            # aun asi se pasa, se cae el cache entero: reconstruuirlo es una
-            # introspeccion, no una perdida de datos.
+        # La key lleva `q_norm` (el texto de la pregunta), o sea que hay una
+        # entrada DISTINTA por cada pregunta que se ha hecho. Con solo TTL y
+        # sin poda, el dict crecia para siempre guardando el `schema_prompt`
+        # completo de cada una. Se purga lo vencido antes de insertar y, si
+        # aun asi se pasa, se cae el cache entero: reconstruuirlo es una
+        # introspeccion, no una perdida de datos.
+        if len(cls._schema_cache) >= cls._PHYSICAL_CACHE_MAX:
+            cls._schema_cache = {
+                k: v for k, v in cls._schema_cache.items() if now - v[0] < cls._SCHEMA_CACHE_TTL
+            }
             if len(cls._schema_cache) >= cls._PHYSICAL_CACHE_MAX:
-                cls._schema_cache = {
-                    k: v for k, v in cls._schema_cache.items() if now - v[0] < cls._SCHEMA_CACHE_TTL
-                }
-                if len(cls._schema_cache) >= cls._PHYSICAL_CACHE_MAX:
-                    cls._schema_cache.clear()
-            cls._schema_cache[cache_key] = (now, result)
+                cls._schema_cache.clear()
+        cls._schema_cache[cache_key] = (now, result)
         return result
 
 

@@ -1,5 +1,6 @@
 import re
 from typing import Set, Dict, Any, Optional, Tuple, List
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.constants import ADMIN_ROLES
@@ -44,6 +45,8 @@ class SQLGenerator:
                 query=question
             )
             schema_context = s_info.get("schema_prompt", "")
+        except HTTPException:
+            raise
         except Exception:
             # El `except: pass` dejaba la sesion abortada y el
             # `retrieve_few_shot_memories` siguiente moría con

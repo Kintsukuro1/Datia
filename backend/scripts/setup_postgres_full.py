@@ -13,21 +13,12 @@ import random
 # Ensure backend root is on Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import create_engine, text, inspect
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, text
 from app.core.config import settings
-from app.core.database import Base, get_database_url, build_engine_for_connector
-from app.core.security import encrypt_credential, get_password_hash
-from app.modules.auth.models import User, Role, Domain, UserSession
-from app.modules.admin_catalog.models import (
-    CorporateConnection,
-    DatabaseType,
-    SemanticCatalog,
-    RoleTablePermission,
-    RoleColumnPermission,
-    ColumnPermissionType
-)
-from app.modules.telemetry_audit.models import AuditLog
+from app.core.database import SessionLocal
+from app.core.security import encrypt_credential
+from app.modules.admin_catalog.models import CorporateConnection
+from app.db.init_db import init_db
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("setup_postgres_full")
@@ -40,7 +31,6 @@ METADATA_DB = settings.POSTGRES_DB  # democratizacion_metadatos
 BUSINESS_DB = "democratizacion_empresa"
 
 MAINTENANCE_URL = f"postgresql+psycopg://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/postgres"
-METADATA_URL = f"postgresql+psycopg://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{METADATA_DB}"
 BUSINESS_URL = f"postgresql+psycopg://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{BUSINESS_DB}"
 
 def create_database_if_not_exists(dbname: str):
@@ -353,249 +343,38 @@ def setup_business_database():
     logger.info(f"Base de datos de negocio '{BUSINESS_DB}' poblada exitosamente.")
 
 def setup_metadata_database():
-    """Initializes schemas, tables, users, roles, RBAC permissions and catalog in democratizacion_metadatos."""
+    """Siembra la metadata con el unico seeder de la aplicacion (`init_db`).
+
+    Antes esta funcion era un SEGUNDO seeder (dominios, roles, usuarios,
+    conector, matriz RBAC, permisos de columna y catalogo) que corria antes que
+    `init_db` en cada arranque, y divergia de el: sembraba 5 usuarios en vez de
+    10, una matriz de 3 roles en vez de 8, reglas de columnas distintas y un
+    conector con otro nombre que podia terminar duplicado. Ahora identidad,
+    permisos y conector tienen una sola fuente; este script aporta lo suyo:
+    crear las bases y sembrar la base de negocio de la demo.
+
+    La conexion de plataforma se refresca con los settings actuales: es lo que
+    evita que un cambio de `POSTGRES_*` en `.env` deje la demo apuntando a
+    credenciales viejas.
+    """
     logger.info(f"Inicializando base de datos de gobernanza y metadatos: '{METADATA_DB}'...")
-    m_engine = create_engine(METADATA_URL, pool_pre_ping=True)
-
-    # 1. Create all tables defined in SQLAlchemy Base
-    Base.metadata.create_all(bind=m_engine)
-
-    # Safe migration for newly added columns (with lock_timeout to avoid deadlocks)
+    db = SessionLocal()
     try:
-        with m_engine.connect() as migration_conn:
-            migration_conn.execute(text("SET lock_timeout = '3s'"))
-            migration_conn.execute(text("ALTER TABLE corporate_connections ADD COLUMN IF NOT EXISTS null_policy VARCHAR(50) DEFAULT 'open';"))
-            migration_conn.commit()
-    except Exception as e:
-        logger.warning(f"Aviso en migración de null_policy: {e}")
-
-    Session = sessionmaker(bind=m_engine)
-    db = Session()
-
-    try:
-        # Seed Domains
-        domains_data = [
-            {"name": "Economía & Finanzas", "description": "Ingresos, costos, presupuestos, facturación y márgenes de negocio"},
-            {"name": "Tecnología & TI", "description": "Infraestructura, servidores, consumo de recursos e incidentes técnicos"},
-            {"name": "Operaciones & Comercial", "description": "Ventas, clientes, almacenes y catálogo de productos"},
-            {"name": "Talento & Personas", "description": "Desempeño, clima laboral, encuestas y bienestar organizacional"},
-            {"name": "Seguridad & Gobernanza", "description": "Cumplimiento normativo, auditoría, accesos y trazabilidad de datos"},
-        ]
-        for d in domains_data:
-            if not db.query(Domain).filter(Domain.name == d["name"]).first():
-                db.add(Domain(name=d["name"], description=d["description"]))
-        db.commit()
-
-        # Seed Roles. Solo los corporativos: los alias ('Administrador',
-        # 'Economista', 'TI', 'Usuario') no se siembran mas. `init_db` los migra
-        # y los borra al arrancar, asi que sembrarlos aca solo lograba
-        # recrearlos en cada inicio para volver a migrarlos.
-        roles_data = [
-            {"name": "Administrador de Plataforma", "description": "Acceso total a gobernanza RBAC, gestión de usuarios, conexiones BD y auditoría"},
-            {"name": "Director Ejecutivo (C-Level)", "description": "Visión macro estratégica, rentabilidad global, indicadores clave de negocio y alertas de riesgo"},
-            {"name": "Analista Financiero & Comercial", "description": "Evaluación de ventas, facturación, márgenes, rentabilidad por producto/cliente y proyección de ingresos"},
-            {"name": "Gerente de Talento & Operaciones", "description": "Gestión de clima laboral, encuestas organizacionales, retención y métricas operacionales"},
-            {"name": "Analista de Datos & BI", "description": "Exploración multidimensional de datos, cruce de métricas y correlaciones estadísticas"},
-            {"name": "Ingeniero de Infraestructura & TI", "description": "Monitoreo de salud de conectores, consumo de servidores, rendimiento de consultas e incidentes técnicos"},
-            {"name": "Oficial de Cumplimiento & Seguridad", "description": "Vigilancia de trazabilidad, cumplimiento de normativas de datos y auditoría de accesos"},
-            {"name": "Usuario Consultor", "description": "Perfil inicial por defecto con acceso de solo lectura restringida"},
-        ]
-        for r in roles_data:
-            if not db.query(Role).filter(Role.name == r["name"]).first():
-                db.add(Role(name=r["name"], description=r["description"]))
-        db.commit()
-
-        # De aca para abajo es seed demo: usuarios con claves conocidas, el
-        # conector a la base de negocio (que con DEMO_MODE apagado ni se creo),
-        # su matriz de permisos y el catalogo semantico. La metadata de
-        # plataforma (dominios y roles) ya quedo sembrada arriba, siempre.
-        if not settings.DEMO_MODE_EFFECTIVE:
-            logger.info(
-                "DEMO_MODE apagado: se omite el seed de demo "
-                "(usuarios, conector de negocio, permisos y catalogo)."
-            )
-            return
-
-        admin_role = db.query(Role).filter(Role.name.in_(["Administrador de Plataforma", "Administrador"])).first()
-        financiero_role = db.query(Role).filter(Role.name.in_(["Analista Financiero & Comercial", "Economista"])).first()
-        ti_role = db.query(Role).filter(Role.name.in_(["Ingeniero de Infraestructura & TI", "TI"])).first()
-
-        # Seed Users
-        users_data = [
-            {"username": "admin", "email": "admin@empresa.com", "pwd": "admin123", "is_admin": True, "role": admin_role},
-            {"username": "economista", "email": "economista@empresa.com", "pwd": "economista123", "is_admin": False, "role": financiero_role},
-            {"username": "felipe_economista", "email": "felipe@empresa.com", "pwd": "economista123", "is_admin": False, "role": financiero_role},
-            {"username": "ti", "email": "ti@empresa.com", "pwd": "ti123", "is_admin": False, "role": ti_role},
-            {"username": "juan_ti", "email": "juan@empresa.com", "pwd": "ti123", "is_admin": False, "role": ti_role},
-        ]
-        for u in users_data:
-            existing = db.query(User).filter(User.username == u["username"]).first()
-            if not existing:
-                db.add(User(
-                    username=u["username"],
-                    email=u["email"],
-                    hashed_password=get_password_hash(u["pwd"]),
-                    is_admin=u["is_admin"],
-                    is_active=True,
-                    role_id=u["role"].id if u["role"] else None
-                ))
-        db.commit()
-
-        # Seed CorporateConnection (PostgreSQL como conexión activa por defecto)
-        pg_conn = db.query(CorporateConnection).filter(CorporateConnection.name == "Base de Datos Corporativa PostgreSQL").first()
-        if not pg_conn:
-            # Deactivate any other connections
-            db.query(CorporateConnection).update({CorporateConnection.is_active: False})
-            pg_conn = CorporateConnection(
-                name="Base de Datos Corporativa PostgreSQL",
-                db_type=DatabaseType.POSTGRESQL,
-                host=PG_HOST,
-                port=PG_PORT,
-                database_name=BUSINESS_DB,
-                username=PG_USER,
-                encrypted_password=encrypt_credential(PG_PASSWORD),
-                is_active=True,
-                is_uploaded=False
-            )
-            db.add(pg_conn)
-            db.commit()
-            db.refresh(pg_conn)
-        else:
-            # No se toca `is_active` de una conexion existente: es una decision
-            # del admin (p. ej. tener activo un dataset subido). Forzarla aca
-            # contradecia a la migracion de conector unico de `init_db`, que la
-            # apagaba de nuevo en el mismo arranque.
-            pg_conn.host = PG_HOST
-            pg_conn.port = PG_PORT
-            pg_conn.database_name = BUSINESS_DB
-            pg_conn.username = PG_USER
-            pg_conn.encrypted_password = encrypt_credential(PG_PASSWORD)
-            db.commit()
-
-        connection_id = pg_conn.id
-
-        # Seed RBAC Permissions for Business Tables in PostgreSQL
-        business_tables = ["dim_categorias", "dim_productos", "dim_clientes", "dim_empleados", "fact_ventas", "fact_ingresos_costos"]
-        tech_tables = ["dim_servidores", "fact_incidentes_ti", "fact_consumo_recursos", "dim_empleados"]
-        all_tables = list(set(business_tables + tech_tables))
-
-        admin_roles = db.query(Role).filter(Role.name.in_(["Administrador de Plataforma", "Administrador"])).all()
-        fin_roles = db.query(Role).filter(Role.name.in_(["Analista Financiero & Comercial", "Economista"])).all()
-        infra_roles = db.query(Role).filter(Role.name.in_(["Ingeniero de Infraestructura & TI", "TI"])).all()
-
-        role_table_map = [
-            (admin_roles, all_tables),
-            (fin_roles, business_tables),
-            (infra_roles, tech_tables),
-        ]
-
-        for r_list, tbls in role_table_map:
-            for r in r_list:
-                for tbl in tbls:
-                    exists = db.query(RoleTablePermission).filter(
-                        RoleTablePermission.role_id == r.id,
-                        RoleTablePermission.connection_id == connection_id,
-                        RoleTablePermission.table_name == tbl
-                    ).first()
-                    if exists:
-                        # Decision explicita del seeder de la demo: se marca como
-                        # concedida para que la migracion de default-deny (que borra
-                        # lo que nadie concedio a proposito) no se la lleve.
-                        exists.granted_by_admin = True
-                    else:
-                        db.add(RoleTablePermission(
-                            role_id=r.id,
-                            connection_id=connection_id,
-                            schema_name="public",
-                            table_name=tbl,
-                            is_allowed=True,
-                            granted_by_admin=True
-                        ))
-        db.commit()
-
-        # Seed Column Permissions: Mask sensitive columns for non-admins
-        for r in fin_roles + infra_roles:
-            # Mask RUT / DNI
-            rut_perm = db.query(RoleColumnPermission).filter(
-                RoleColumnPermission.role_id == r.id,
-                RoleColumnPermission.connection_id == connection_id,
-                RoleColumnPermission.table_name == "dim_clientes",
-                RoleColumnPermission.column_name == "rut_dni_cliente"
-            ).first()
-            if not rut_perm:
-                db.add(RoleColumnPermission(
-                    role_id=r.id,
-                    connection_id=connection_id,
-                    schema_name="public",
-                    table_name="dim_clientes",
-                    column_name="rut_dni_cliente",
-                    permission_type=ColumnPermissionType.MASKED
-                ))
-
-            # Block credit card token
-            cc_perm = db.query(RoleColumnPermission).filter(
-                RoleColumnPermission.role_id == r.id,
-                RoleColumnPermission.connection_id == connection_id,
-                RoleColumnPermission.table_name == "dim_clientes",
-                RoleColumnPermission.column_name == "tarjeta_credito_token"
-            ).first()
-            if not cc_perm:
-                db.add(RoleColumnPermission(
-                    role_id=r.id,
-                    connection_id=connection_id,
-                    schema_name="public",
-                    table_name="dim_clientes",
-                    column_name="tarjeta_credito_token",
-                    permission_type=ColumnPermissionType.BLOCKED
-                ))
-        db.commit()
-
-        # Seed Semantic Catalog
-        catalog_items = [
-            {"table": "fact_ventas", "col": None, "friendly": "Ventas y Facturación", "desc": "Registro histórico transaccional de ventas y facturación de la empresa."},
-            {"table": "fact_ventas", "col": "monto_total", "friendly": "Monto Total Facturado", "desc": "Valor monetario total en pesos o dólares de la venta antes de impuestos."},
-            {"table": "fact_ventas", "col": "margen_ganancia", "friendly": "Margen de Ganancia", "desc": "Utilidad bruta calculada como monto_total menos costo_total.", "formula": "monto_total - costo_total"},
-            {"table": "fact_ventas", "col": "cantidad", "friendly": "Unidades Vendidas", "desc": "Número total de unidades del producto adquiridas en la transacción."},
-            {"table": "fact_ventas", "col": "fecha_venta", "friendly": "Fecha de Venta", "desc": "Fecha calendario en la que se efectuó la transacción."},
-            {"table": "dim_productos", "col": None, "friendly": "Catálogo de Productos", "desc": "Productos y servicios comercializados por la corporación."},
-            {"table": "dim_productos", "col": "nombre_producto", "friendly": "Nombre del Producto", "desc": "Nombre comercial del ítem o servicio tecnológico."},
-            {"table": "dim_productos", "col": "precio_unitario", "friendly": "Precio Unitario", "desc": "Precio de venta por unidad."},
-            {"table": "dim_clientes", "col": None, "friendly": "Directorio de Clientes", "desc": "Directorio de empresas compradoras y clientes institucionales."},
-            {"table": "dim_clientes", "col": "nombre_empresa", "friendly": "Razón Social o Empresa", "desc": "Nombre de la empresa cliente."},
-            {"table": "dim_clientes", "col": "sector_industria", "friendly": "Sector o Industria", "desc": "Área económica a la que pertenece el cliente (Banca, Minería, Retail, etc.)."},
-            {"table": "fact_ingresos_costos", "col": None, "friendly": "Resumen Financiero Mensual", "desc": "Métricas consolidadas mensuales de ingresos brutos, costos operativos y utilidad neta."},
-            {"table": "fact_ingresos_costos", "col": "ingreso_bruto", "friendly": "Ingresos Brutos Mensuales", "desc": "Ingreso total bruto generado en el mes."},
-            {"table": "fact_ingresos_costos", "col": "utilidad_neta", "friendly": "Utilidad Neta Mensual", "desc": "Beneficio neto mensual descontando costos operativos."},
-            {"table": "dim_servidores", "col": None, "friendly": "Inventario de Servidores TI", "desc": "Servidores físicos y virtuales de los centros de datos."},
-            {"table": "dim_servidores", "col": "nombre_host", "friendly": "Nombre de Host", "desc": "Identificador DNS/nombre de servidor en la red corporativa."},
-            {"table": "fact_incidentes_ti", "col": None, "friendly": "Registro de Incidentes TI", "desc": "Tickets de fallas técnicas, caídas de servicio y alertas de infraestructura."},
-            {"table": "fact_consumo_recursos", "col": None, "friendly": "Monitoreo de Recursos TI", "desc": "Telemetría periódica de uso de CPU, memoria RAM y tráfico de red por servidor."},
-        ]
-
-        for item in catalog_items:
-            existing = db.query(SemanticCatalog).filter(
-                SemanticCatalog.connection_id == connection_id,
-                SemanticCatalog.schema_name == "public",
-                SemanticCatalog.table_name == item["table"],
-                SemanticCatalog.column_name == item["col"]
-            ).first()
-            if not existing:
-                db.add(SemanticCatalog(
-                    connection_id=connection_id,
-                    schema_name="public",
-                    table_name=item["table"],
-                    column_name=item["col"],
-                    friendly_name=item["friendly"],
-                    description=item["desc"],
-                    business_formula=item.get("formula"),
-                    is_ai_generated=False
-                ))
-        db.commit()
-        logger.info(f"Gobernanza RBAC y Catálogo Semántico en '{METADATA_DB}' configurados con éxito.")
-
+        init_db(db)
+        if settings.DEMO_MODE_EFFECTIVE:
+            platform_conn = db.query(CorporateConnection).filter(
+                CorporateConnection.is_uploaded == False
+            ).order_by(CorporateConnection.id.asc()).first()
+            if platform_conn:
+                platform_conn.host = PG_HOST
+                platform_conn.port = PG_PORT
+                platform_conn.database_name = BUSINESS_DB
+                platform_conn.username = PG_USER
+                platform_conn.encrypted_password = encrypt_credential(PG_PASSWORD)
+                db.commit()
+        logger.info(f"Metadata de plataforma lista en '{METADATA_DB}'.")
     finally:
         db.close()
-        m_engine.dispose()
 
 def check_postgres_alive() -> bool:
     """Verifies that PostgreSQL server is reachable before attempting bootstrap."""
