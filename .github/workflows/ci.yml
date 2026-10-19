@@ -131,3 +131,29 @@ jobs:
       - name: Build frontend (vite build)
         run: |
           npm run build
+
+  frontend-tests:
+    name: Frontend Tests (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      # Mismo `npm ci` estricto que el job de typecheck: un lock desincronizado
+      # se rechaza en vez de taparse con un install.
+      - name: Install frontend dependencies
+        run: |
+          npm ci --no-audit --prefer-offline
+
+      # Tests de logica pura (entorno node, sin renderizado): 13 archivos / 90
+      # tests medidos el 18/10/2026. Existen desde hace tiempo, pero ningun job
+      # los corria: una regresion de logica pasaba CI igual.
+      - name: Run vitest suite
+        run: |
+          npm test

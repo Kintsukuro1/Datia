@@ -52,6 +52,7 @@ htmlcov/
 Thumbs.db
 
 # Agent skills & tooling (local only)
+AGENTS.md
 .agents/
 .opencode/
 opencode.json
