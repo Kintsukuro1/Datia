@@ -48,7 +48,7 @@ HOSTILE_KPI_TITLE = '<b>ALTAS</b> & mas'
 # Titulos de seccion del PDF, para contar la numeracion sin contar las
 # recomendaciones numeradas (que tambien arrancan con "N. ").
 SECTION_RE = re.compile(
-    r"^(\d+)\. (Diagn|Hallazgos|Recomendaciones|Visualizaci|Trazabilidad)", re.M
+    r"^(\d+)\. (Diagn|Hallazgos|Recomendaciones|Visualizaci|Trazabilidad|Proyecci)", re.M
 )
 
 # Snapshot completo (una consulta de ventas ya resuelta): lo que el servidor
@@ -116,6 +116,72 @@ SNAPSHOT = {
         "validation_status": "APROBADO",
     },
     "target_database": "postgres://cliente",
+}
+
+# Snapshot real de una corrida de /ml/projections/run (validation_status
+# "PROYECCION_ML"): sin filas ni KPIs, con serie, banda y MAPE por paso. El paso
+# 2 es el caso sin backtest propio (period/punto/banda/MAPE null,
+# extrapolated=True) y la serie trae un periodo null como los datos reales de la
+# conexion demo: la exportacion tiene que decir "No disponible" ahi, nunca un 0.
+PROJECTION_SNAPSHOT = {
+    "available": True,
+    "reason": None,
+    "question": "¿Cuánto vamos a vender el próximo trimestre?",
+    "horizon": 3,
+    "series": [
+        {"periodo": "2026-01", "valor": 120000.0},
+        {"periodo": "2026-02", "valor": 135500.5},
+        {"periodo": None, "valor": None},
+    ],
+    "steps": [
+        {"step": 1, "period": "2026-03", "point": 150000.0, "lower": -120000.0,
+         "upper": 180000.0, "band_pct": 20.0, "mape": 12.5, "n_backtests": 6,
+         "reliable": True, "extrapolated": False},
+        {"step": 2, "period": None, "point": None, "lower": None, "upper": None,
+         "band_pct": None, "mape": None, "n_backtests": 0,
+         "reliable": False, "extrapolated": True},
+    ],
+    "method": "holt_damped",
+    "beats_naive": False,
+    "mape": 12.5,
+    "mape_by_method": {"holt_damped": 12.5, "naive": 11.0},
+    "n_periods": 9,
+    "has_gaps": False,
+    "income_only": True,
+    "sql": "SELECT fecha, monto FROM movimientos",
+    "table": "movimientos",
+    "metric_column": "monto",
+    "date_column": "fecha",
+    "analysis_source": "llm",
+    "narration": "La serie mantiene una tendencia estable hacia el alza.",
+    "narration_source": "plantilla",
+    "audit_log_id": None,
+}
+
+# El otro camino de la misma auditoria: available=false con su motivo. Se audita
+# igual, asi que el Informe de esa corrida tambien tiene que poder exportarse.
+PROJECTION_UNAVAILABLE_SNAPSHOT = {
+    "available": False,
+    "reason": "La serie tiene menos de 6 periodos: no alcanza para un backtest honesto.",
+    "question": "¿Cuánto venderemos?",
+    "horizon": 3,
+    "series": [{"periodo": "2026-01", "valor": 120000.0}],
+    "steps": [],
+    "method": None,
+    "beats_naive": None,
+    "mape": None,
+    "mape_by_method": {},
+    "n_periods": 1,
+    "has_gaps": True,
+    "income_only": True,
+    "sql": None,
+    "table": "movimientos",
+    "metric_column": None,
+    "date_column": None,
+    "analysis_source": None,
+    "narration": None,
+    "narration_source": None,
+    "audit_log_id": None,
 }
 
 
@@ -559,6 +625,175 @@ class TestExportContent(unittest.TestCase):
                     path, json={"audit_log_id": entry.id}, headers=self.headers
                 )
                 self.assertEqual(response.status_code, 409)
+
+
+class TestProjectionExport(unittest.TestCase):
+    """El Informe de una proyeccion ML (snapshot `PROYECCION_ML`).
+
+    Una proyeccion no tiene filas ni KPIs: con la compilacion generica de
+    consulta, el documento saldria hueco. Y donde el motor publica null (paso
+    sin backtest propio, periodo nulo) el documento tiene que decir "No
+    disponible", nunca un 0 que nadie midio.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        db = SessionLocal()
+        init_db(db)
+        db.close()
+
+    def setUp(self):
+        self.client = TestClient(app)
+        self.db = SessionLocal()
+        self.user = self.db.query(User).filter(User.username == "admin").first()
+        self.jti = str(uuid.uuid4())
+        self.token = create_access_token(subject=self.user.id, jti=self.jti)
+        self.db.add(UserSession(user_id=self.user.id, jti=self.jti, is_revoked=False))
+        self.headers = {"Authorization": f"Bearer {self.token}"}
+        self.created_ids = []
+        self.db.commit()
+
+    def tearDown(self):
+        for audit_id in self.created_ids:
+            self.db.query(AuditLog).filter(AuditLog.id == audit_id).delete()
+        self.db.query(UserSession).filter(UserSession.jti == self.jti).delete()
+        self.db.commit()
+        self.db.close()
+
+    def _log_projection(self, snapshot) -> AuditLog:
+        """La fila tal como la escribe `ml_forecast/router.py` (ambos caminos)."""
+        entry = AuditLog(
+            user_id=self.user.id,
+            username=self.user.username,
+            user_role="Administrador",
+            question_prompt=snapshot["question"],
+            sql_generated=snapshot.get("sql"),
+            validation_status="PROYECCION_ML",
+            target_database="demo_conexion9",
+            execution_time_ms=812,
+            rows_returned=len(snapshot.get("series") or []),
+            result_snapshot=json.dumps(snapshot),
+        )
+        self.db.add(entry)
+        self.db.commit()
+        self.db.refresh(entry)
+        self.created_ids.append(entry.id)
+        return entry
+
+    def _row_of(self, ws, needle) -> dict:
+        """La fila donde `needle` vive en la columna A, como {letra: valor}."""
+        for row in ws.iter_rows(min_col=1, max_col=1):
+            if row[0].value == needle:
+                return {c.column_letter: c.value for c in ws[row[0].row]}
+        return {}
+
+    def _value_beside(self, ws, label):
+        """El valor de la celda inmediatamente a la derecha de `label`."""
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value == label:
+                    return ws.cell(row=cell.row, column=cell.column + 1).value
+        return None
+
+    def test_excel_projection_document_has_evidence_and_no_invented_zeros(self):
+        entry = self._log_projection(PROJECTION_SNAPSHOT)
+        response = self.client.post(
+            "/api/v1/reports/export/excel",
+            json={"audit_log_id": entry.id},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        wb = load_workbook(io.BytesIO(response.content))
+        self.assertIn("Proyección ML", wb.sheetnames)
+        ws = wb["Proyección ML"]
+
+        # Metodo y veredicto naive: la evidencia viaja con el documento.
+        self.assertEqual(self._value_beside(ws, "Método publicado"), "holt_damped")
+        self.assertEqual(
+            self._value_beside(ws, "¿Superó al método naive?"),
+            "No, ningún método superó al naive en el backtest.",
+        )
+
+        paso1 = self._row_of(ws, "Paso 1")
+        self.assertEqual(paso1["C"], "150.000")
+        # La banda cruza el cero: en Excel tiene que quedar el dato tal cual,
+        # sin el apostrofe del escape anti-formulas.
+        self.assertEqual(paso1["D"], "(-120.000 – 180.000)")
+        self.assertEqual(paso1["E"], "±20,0%")
+        self.assertEqual(paso1["H"], "Medida (backtest propio)")
+
+        # Ninguna celda legitima quedo mutilada por el escape de formulas.
+        mutiladas = [
+            c.value for row in ws.iter_rows() for c in row
+            if isinstance(c.value, str) and c.value.startswith("'")
+        ]
+        self.assertEqual(mutiladas, [])
+
+        # El paso sin backtest propio: null -> "No disponible", jamas un 0.
+        paso2 = self._row_of(ws, "Paso 2")
+        self.assertEqual(paso2["C"], "No disponible")
+        self.assertEqual(paso2["D"], "No disponible")
+        self.assertEqual(paso2["F"], "No disponible")
+        self.assertEqual(paso2["H"], "Sin backtest propio (banda heredada del último medido)")
+
+        # La serie publicada viaja completa; el periodo null se declara.
+        self.assertEqual(self._value_beside(ws, "2026-01"), "120.000")
+        self.assertEqual(self._value_beside(ws, "Sin periodo"), "No disponible")
+
+        # La trazabilidad es la del audit real de la proyeccion: sin filas de
+        # consulta, "No disponible" en vez de un 0 no medido.
+        ws_summary = wb["Resumen Ejecutivo"]
+        self.assertEqual(self._value_beside(ws_summary, "Base de Datos:"), "demo_conexion9")
+        trace_line = next(
+            c.value for row in ws_summary.iter_rows() for c in row
+            if isinstance(c.value, str) and c.value.startswith("Estado AST:")
+        )
+        self.assertIn("PROYECCION_ML", trace_line)
+        self.assertIn("Filas: No disponible", trace_line)
+
+    @unittest.skipUnless(HAS_PYMUPDF, "pymupdf no instalado: no se puede extraer texto del PDF")
+    def test_pdf_projection_document_renders_the_section(self):
+        entry = self._log_projection(PROJECTION_SNAPSHOT)
+        response = self.client.post(
+            "/api/v1/reports/export/pdf",
+            json={"audit_log_id": entry.id},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b"%PDF-"))
+
+        # Los textos largos de celda paginan con saltos de linea propios: se
+        # comparan sobre el texto aplanado, no sobre su layout.
+        flat = _pdf_text(response.content).replace("\n", " ")
+        self.assertIn("Proyección de Machine Learning", flat)
+        self.assertIn("holt_damped", flat)
+        self.assertIn("Medida (backtest propio)", flat)
+        self.assertIn("Sin backtest propio", flat)
+        self.assertIn("150.000", flat)
+        self.assertIn("No disponible", flat)
+        self.assertIn("2026-01", flat)
+
+        numbers = _section_numbers(flat)
+        self.assertEqual(numbers, list(range(1, len(numbers) + 1)), f"numeracion con hueco: {numbers}")
+
+    def test_unavailable_projection_states_the_reason_and_publishes_no_steps(self):
+        entry = self._log_projection(PROJECTION_UNAVAILABLE_SNAPSHOT)
+        response = self.client.post(
+            "/api/v1/reports/export/excel",
+            json={"audit_log_id": entry.id},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        ws = load_workbook(io.BytesIO(response.content))["Proyección ML"]
+
+        self.assertEqual(
+            self._value_beside(ws, "Sin proyección publicada:"),
+            PROJECTION_UNAVAILABLE_SNAPSHOT["reason"],
+        )
+        cells = [c.value for row in ws.iter_rows() for c in row]
+        self.assertNotIn("PASOS PROYECTADOS", cells)
+        # La serie que si se pudo leer viaja igual: negar sin mostrar que habia.
+        self.assertEqual(self._value_beside(ws, "2026-01"), "120.000")
 
 
 if __name__ == "__main__":

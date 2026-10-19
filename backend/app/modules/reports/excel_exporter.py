@@ -119,7 +119,80 @@ class ExcelExporter:
         ws_summary.column_dimensions['B'].width = 60
         ws_summary.column_dimensions['C'].width = 30
 
-        # Sheet 2: Datos (Opcional según preferencia del usuario)
+        # Sheet 2: Proyección ML (solo snapshots de /ml/projections/run)
+        projection = getattr(data, "projection", None)
+        if projection:
+            ws_proj = wb.create_sheet(title="Proyección ML")
+            ws_proj.views.sheetView[0].showGridLines = True
+
+            ws_proj.merge_cells("A1:H1")
+            proj_title = ws_proj["A1"]
+            proj_title.value = "PROYECCIÓN DE MACHINE LEARNING"
+            proj_title.font = font_title
+            proj_title.fill = fill_header
+            proj_title.alignment = Alignment(horizontal="center", vertical="center")
+
+            proj_header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+
+            def write_proj_table_header(row_idx, headers, start_col=1):
+                for offset, texto in enumerate(headers):
+                    cell = ws_proj.cell(row=row_idx, column=start_col + offset, value=texto)
+                    cell.font = proj_header_font
+                    cell.fill = fill_header
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.border = border_all
+
+            current_row = 3
+            if not projection.available:
+                ws_proj.cell(row=current_row, column=1, value="Sin proyección publicada:").font = font_bold
+                ws_proj.cell(
+                    row=current_row, column=2,
+                    value=projection.reason or "el servidor no informó un motivo",
+                ).font = font_normal
+                current_row += 2
+
+            ws_proj.cell(row=current_row, column=1, value="EVIDENCIA DE LA CORRIDA").font = font_section
+            current_row += 1
+            for etiqueta, valor in ReportDataCompiler.compile_projection_facts(data):
+                ws_proj.cell(row=current_row, column=1, value=etiqueta).font = font_bold
+                ws_proj.cell(row=current_row, column=2, value=valor).font = font_normal
+                current_row += 1
+            current_row += 1
+
+            if projection.steps:
+                ws_proj.cell(row=current_row, column=1, value="PASOS PROYECTADOS").font = font_section
+                current_row += 1
+                write_proj_table_header(
+                    current_row,
+                    ["Paso", "Periodo", "Punto", "Banda", "±%", "MAPE", "Backtests", "Evidencia"],
+                )
+                current_row += 1
+                for fila in ReportDataCompiler.compile_projection_step_rows(data):
+                    for offset, valor in enumerate(fila):
+                        cell = ws_proj.cell(row=current_row, column=1 + offset, value=valor)
+                        cell.font = font_normal
+                        cell.border = border_all
+                    current_row += 1
+                current_row += 1
+
+            if projection.series:
+                ws_proj.cell(row=current_row, column=1, value="SERIE HISTÓRICA PUBLICADA").font = font_section
+                current_row += 1
+                write_proj_table_header(current_row, ["Periodo", "Valor"])
+                current_row += 1
+                for fila in ReportDataCompiler.compile_projection_series_rows(data):
+                    for offset, valor in enumerate(fila):
+                        cell = ws_proj.cell(row=current_row, column=1 + offset, value=valor)
+                        cell.font = font_normal
+                        cell.border = border_all
+                    current_row += 1
+
+            ws_proj.column_dimensions["A"].width = 30
+            ws_proj.column_dimensions["B"].width = 46
+            for col_letter in "CDEFGH":
+                ws_proj.column_dimensions[col_letter].width = 18
+
+        # Sheet 3: Datos (Opcional según preferencia del usuario)
         if getattr(data, 'include_raw_data', True) and (data.data_rows or data.data_columns):
             ws_data = wb.create_sheet(title="Datos")
             ws_data.views.sheetView[0].showGridLines = True

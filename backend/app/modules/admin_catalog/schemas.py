@@ -249,6 +249,45 @@ class TraceabilityAuditData(BaseModel):
     schema_tables_used: List[str] = []
     explanation: Optional[str] = None
 
+# --- Proyeccion ML (snapshot de /ml/projections/run) ---
+#
+# Una proyeccion no tiene la forma de una consulta: no trae filas ni KPIs, trae
+# una serie, un metodo y pasos con distinta cantidad de evidencia. Estos espejos
+# de `ml_forecast.schemas` son lo que `reports/generator.py` compila cuando el
+# snapshot auditado es de una proyeccion (`validation_status="PROYECCION_ML"`).
+# Los `None` viajan tal cual: el documento escribe "No disponible", nunca un 0.
+class ProjectionExportStep(BaseModel):
+    step: int = 0
+    period: Optional[str] = None
+    point: Optional[float] = None
+    lower: Optional[float] = None
+    upper: Optional[float] = None
+    band_pct: Optional[float] = None
+    mape: Optional[float] = None
+    n_backtests: int = 0
+    reliable: bool = False
+    extrapolated: bool = False
+
+class ProjectionExportData(BaseModel):
+    available: bool = False
+    reason: Optional[str] = None
+    horizon: int = 0
+    series: List[Dict[str, Any]] = []
+    steps: List[ProjectionExportStep] = []
+    method: Optional[str] = None
+    beats_naive: Optional[bool] = None
+    mape: Optional[float] = None
+    mape_by_method: Dict[str, Optional[float]] = {}
+    n_periods: int = 0
+    has_gaps: bool = False
+    income_only: bool = True
+    table: Optional[str] = None
+    metric_column: Optional[str] = None
+    date_column: Optional[str] = None
+    analysis_source: Optional[str] = None
+    narration: Optional[str] = None
+    narration_source: Optional[str] = None
+
 class ReportExportRequest(BaseModel):
     audit_log_id: int
     chart_image_base64: Optional[str] = None
@@ -268,3 +307,4 @@ class ReportExportData(BaseModel):
     target_database: Optional[str] = None
     custom_notes: Optional[str] = None
     include_raw_data: bool = True
+    projection: Optional[ProjectionExportData] = None

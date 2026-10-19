@@ -192,6 +192,92 @@ class PDFExporter:
         story.append(diag_table)
         story.append(Spacer(1, 8))
 
+        # 4b. Proyección ML (solo snapshots de /ml/projections/run)
+        proj = getattr(data, "projection", None)
+        if proj:
+            story.append(section("Proyección de Machine Learning"))
+
+            if not proj.available:
+                story.append(Paragraph(
+                    f"<b>Sin proyección publicada:</b> "
+                    f"{escape(str(proj.reason or 'el servidor no informó un motivo'))}.",
+                    body_style
+                ))
+                story.append(Spacer(1, 4))
+
+            facts_rows = [
+                [Paragraph(f"<b>{escape(etiqueta)}:</b> {escape(valor)}", body_style)]
+                for etiqueta, valor in ReportDataCompiler.compile_projection_facts(data)
+            ]
+            facts_table = Table(facts_rows, colWidths=[540])
+            facts_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), COLOR_BG_LIGHT),
+                ('BOX', (0, 0), (-1, -1), 0.5, COLOR_BORDER),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            story.append(facts_table)
+            story.append(Spacer(1, 6))
+
+            if proj.steps:
+                step_headers = ["Paso", "Periodo", "Punto", "Banda", "±%", "MAPE", "Backtests", "Evidencia"]
+                step_rows = [
+                    [Paragraph(f"<b>{escape(str(celda))}</b>", body_style) for celda in step_headers]
+                ] + [
+                    [Paragraph(escape(str(celda)), body_style) for celda in fila]
+                    for fila in ReportDataCompiler.compile_projection_step_rows(data)
+                ]
+                steps_table = Table(
+                    step_rows,
+                    colWidths=[44, 56, 65, 84, 65, 65, 52, 109],
+                    repeatRows=1,
+                )
+                steps_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#EEF2FF")),
+                    ('INNERGRID', (0, 0), (-1, -1), 0.4, COLOR_BORDER),
+                    ('BOX', (0, 0), (-1, -1), 0.5, COLOR_BORDER),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 3),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                ]))
+                story.append(steps_table)
+                story.append(Spacer(1, 3))
+                story.append(Paragraph(
+                    "«No disponible»: el motor no publicó ese número (el paso no tiene "
+                    "backtest propio que lo respalde); nunca se imprime un 0 en su lugar.",
+                    subtitle_style
+                ))
+                story.append(Spacer(1, 6))
+
+            if proj.series:
+                story.append(Paragraph(
+                    f"<b>Serie histórica publicada ({len(proj.series)} periodos):</b>",
+                    body_style
+                ))
+                story.append(Spacer(1, 3))
+                series_rows = [
+                    [Paragraph("<b>Periodo</b>", body_style), Paragraph("<b>Valor</b>", body_style)]
+                ] + [
+                    [Paragraph(escape(str(celda)), body_style) for celda in fila]
+                    for fila in ReportDataCompiler.compile_projection_series_rows(data)
+                ]
+                series_table = Table(series_rows, colWidths=[270, 270], repeatRows=1)
+                series_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#EEF2FF")),
+                    ('INNERGRID', (0, 0), (-1, -1), 0.4, COLOR_BORDER),
+                    ('BOX', (0, 0), (-1, -1), 0.5, COLOR_BORDER),
+                    ('TOPPADDING', (0, 0), (-1, -1), 2),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                ]))
+                story.append(series_table)
+                story.append(Spacer(1, 6))
+
         # 5. Hallazgos Clave
         findings = ReportDataCompiler.compile_findings(data)
         if findings:

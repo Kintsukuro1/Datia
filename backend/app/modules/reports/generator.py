@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 from app.modules.auth.models import User
 from app.modules.telemetry_audit.models import AuditLog
 from app.api.deps import display_role_name
-from app.modules.admin_catalog.schemas import ReportExportData, ReportExportRequest
+from app.modules.admin_catalog.schemas import (
+    ReportExportData, ReportExportRequest, ProjectionExportData, TraceabilityAuditData,
+)
 from app.modules.reports.pdf_exporter import PDFExporter
 from app.modules.reports.excel_exporter import ExcelExporter
 
@@ -38,6 +40,59 @@ class ReportGeneratorService:
         if data_obj.traceability and data_obj.traceability.rows_returned:
             return data_obj.traceability.rows_returned
         return original_rows
+
+    # `ml_forecast/router.py` marca con este estado los DOS caminos de una
+    # proyeccion (publicada y no disponible). Es la unica senal de que el
+    # snapshot tiene forma de proyeccion y no de consulta.
+    PROJECTION_STATUS = "PROYECCION_ML"
+
+    @classmethod
+    def _build_export_data(cls, data_dict: dict, log_entry: AuditLog) -> ReportExportData:
+        """Arma el ReportExportData del snapshot auditado, sea consulta o proyeccion.
+
+        Una proyeccion ML no tiene filas ni KPIs: con la construccion generica
+        (`ReportExportData(**snapshot)`) el documento salia hueco — pregunta y
+        nada mas — mientras afirmaba ser un informe ejecutivo de una corrida que
+        si tenia serie, banda y MAPE. Aca se compila su propia seccion desde el
+        snapshot; de este punto en adelante los dos caminos son el mismo
+        documento.
+        """
+        if log_entry.validation_status != cls.PROJECTION_STATUS:
+            return ReportExportData(**data_dict)
+
+        projection = ProjectionExportData(**{
+            nombre: data_dict[nombre]
+            for nombre in ProjectionExportData.model_fields
+            if nombre in data_dict
+        })
+
+        # El Diagnostico del informe muestra la narrativa; su origen se declara
+        # al lado para que el lector sepa si la redacto el modelo local o una
+        # plantilla del servidor (misma regla que la pantalla).
+        narrativa = projection.narration or "No hay resumen disponible para esta consulta."
+        if projection.narration and projection.narration_source:
+            fuente = {"llm": "modelo local",
+                      "plantilla": "plantilla del servidor"}.get(
+                projection.narration_source, projection.narration_source)
+            narrativa = f"{narrativa} (Narrativa: {fuente}.)"
+
+        return ReportExportData(
+            question=data_dict.get("question") or "Proyección ML",
+            summary_text=narrativa,
+            traceability=TraceabilityAuditData(
+                sql_executed=data_dict.get("sql") or "",
+                execution_time_ms=log_entry.execution_time_ms,
+                # Una proyeccion no devuelve filas de consulta: None para que la
+                # linea de trazabilidad diga "No disponible" y no un 0 no medido.
+                rows_returned=None,
+                validation_status=log_entry.validation_status,
+            ),
+            projection=projection,
+            target_database=log_entry.target_database,
+            chart_image_base64=data_dict.get("chart_image_base64"),
+            custom_notes=data_dict.get("custom_notes"),
+            include_raw_data=data_dict.get("include_raw_data", True),
+        )
 
     @classmethod
     def export_pdf(cls, db: Session, current_user: User, req: ReportExportRequest) -> Tuple[bytes, str]:
@@ -83,7 +138,7 @@ class ReportGeneratorService:
                 data_dict["data_rows"] = []
                 data_dict["data_columns"] = []
 
-            data_obj = ReportExportData(**data_dict)
+            data_obj = cls._build_export_data(data_dict, log_entry)
             pdf_bytes = PDFExporter.generate_pdf(data_obj)
 
             export_audit = AuditLog(
@@ -154,7 +209,7 @@ class ReportGeneratorService:
                 data_dict["data_rows"] = []
                 data_dict["data_columns"] = []
 
-            data_obj = ReportExportData(**data_dict)
+            data_obj = cls._build_export_data(data_dict, log_entry)
             excel_bytes = ExcelExporter.generate_excel(data_obj)
 
             export_audit = AuditLog(
