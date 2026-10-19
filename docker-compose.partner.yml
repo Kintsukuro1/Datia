@@ -49,6 +49,10 @@ services:
       - HOST=0.0.0.0
       - PORT=8000
       - ENVIRONMENT=production
+      # Esta es una maquina de prueba: el seed de demo (admin/admin123 y el
+      # dataset de demostracion) tiene que correr aunque ENVIRONMENT sea
+      # production. El backend del repo lo pide explicito (init_db.py:319).
+      - DEMO_MODE=true
       # ':?' hace que compose se niegue a arrancar si faltan, en vez de caer
       # a la clave de desarrollo que esta publicada en el README.
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required - copy it from .env}

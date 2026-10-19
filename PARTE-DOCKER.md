@@ -10,13 +10,28 @@ Las tres imágenes viven en un solo repositorio: **`k1ntsu/dat.ia`**
 
 ## 1. Arrancar
 
+### Opción rápida (recomendada)
+
+Doble clic en **`setup.bat`**, en esta misma carpeta. El script hace todo:
+
+- crea el `.env` a partir de `.env.example` y genera los tres valores que no
+  pueden quedar en default: `FERNET_KEY`, `SECRET_KEY` y `POSTGRES_PASSWORD`;
+- verifica que Docker esté instalado y encendido (si no, te lo dice y no hace
+  nada más);
+- baja las imágenes, arranca los tres servicios y abre **http://localhost**.
+
+Se puede volver a ejecutar sin miedo: si ya había un `.env`, respeta los
+valores configurados y solo completa lo que falte.
+
+### Opción manual
+
 En esta carpeta:
 
 ```bash
 cp .env.example .env        # en Windows: copy .env.example .env
 ```
 
-Editá `.env` y cambiá **dos** líneas. Son las únicas dos que importan:
+Editá `.env` y cambiá **tres** líneas:
 
 ```bash
 # 1. Generá una clave y pegala. Comando:
@@ -26,6 +41,11 @@ FERNET_KEY=pega_aqui_la_clave
 
 # 2. Poné una contraseña para la base de datos
 POSTGRES_PASSWORD=una_contrasena_cualquiera
+
+# 3. Reemplazá la SECRET_KEY de la plantilla por cualquier cadena larga y
+#    única. Si queda la del repositorio, el backend NO arranca: con
+#    ENVIRONMENT=production la rechaza y el contenedor reinicia en bucle.
+SECRET_KEY=otra_cadena_larga_y_unica
 ```
 
 Después, **un solo comando**:
@@ -98,6 +118,23 @@ docker compose -f docker-compose.partner.yml down
 **Empezar de cero** (borra la base y toda la data):
 ```bash
 docker compose -f docker-compose.partner.yml down -v
+```
+
+**El backend reinicia en bucle y los logs dicen "SECRET_KEY no fue configurado para producción"**
+Quedó la `SECRET_KEY` de la plantilla en el `.env`. Ejecutá `setup.bat`
+(la reemplaza sola) o cambiá esa línea a mano por cualquier cadena larga y
+única. Con `ENVIRONMENT=production` el backend rechaza la clave de desarrollo.
+
+**Windows bloquea `setup.bat` ("Windows protegió su PC" o "Advertencia de seguridad: editor desconocido")**
+El archivo vino de internet (zip descargado) y Windows lo marca. Si el cartel
+ofrece **Más información**, clic ahí y después en **Ejecutar de todas formas**.
+Si en cambio es la advertencia con casilla, marcá **Ejecutar** igual. Para que
+no vuelva a aparecer: clic derecho en `setup.bat` → **Propiedades** → abajo,
+tildar **Desbloquear** → Aceptar (lo mismo para `setup.ps1`). O en PowerShell,
+dentro de la carpeta:
+
+```powershell
+Unblock-File .\setup.bat, .\setup.ps1
 ```
 
 **Ver los errores**:
