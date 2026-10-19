@@ -94,6 +94,31 @@ const detailToMessage = (detail: unknown, statusText: string): string => {
   return statusText || 'API Request Failed';
 };
 
+/**
+ * Mensaje legible de un error de la API, con `fallback` cuando no hay `detail`.
+ *
+ * `detailToMessage` normaliza `detail` en el interceptor, pero no todos los
+ * errores pasan por ahi (fetch directo del stream, mocks, errores sin
+ * respuesta). Este accesor unifica el patron `err.response?.data?.detail ||
+ * 'texto'` que estaba copiado en ~30 call sites.
+ *
+ * `fallbackToErrorMessage` reproduce los sitios que ademas probaban
+ * `err.message` (errores de red o excepciones locales) antes del texto fijo.
+ */
+export const getApiErrorMessage = (
+  err: unknown,
+  fallback: string,
+  fallbackToErrorMessage = false
+): string => {
+  const e = err as { response?: { data?: { detail?: unknown } }; message?: unknown };
+  const detail = e?.response?.data?.detail;
+  if (typeof detail === 'string' && detail.length > 0) return detail;
+  if (fallbackToErrorMessage && typeof e?.message === 'string' && e.message.length > 0) {
+    return e.message;
+  }
+  return fallback;
+};
+
 interface RequestConfig {
   params?: Record<string, any>;
   headers?: Record<string, string>;

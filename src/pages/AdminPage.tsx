@@ -13,6 +13,7 @@ import { useAuth } from '../features/auth/context/AuthContext';
 import { useNotifications } from '../context/NotificationContext';
 import { User } from '../types';
 import { resolveRoleLabel } from '../constants';
+import { getApiErrorMessage } from '../shared/api/api_client';
 
 export const AdminPage: React.FC = () => {
   const { notify } = useNotifications();
@@ -51,7 +52,7 @@ export const AdminPage: React.FC = () => {
         }))
       );
     } catch (err: any) {
-      notify('error', err.response?.data?.detail || 'No se pudo cargar la lista de usuarios del servidor.');
+      notify('error', getApiErrorMessage(err, 'No se pudo cargar la lista de usuarios del servidor.'));
     } finally {
       setUsersLoaded(true);
     }
@@ -65,7 +66,7 @@ export const AdminPage: React.FC = () => {
       // Surface the failure. Leaving the list empty renders "no sources
       // registered", which the admin reads as fact when the server is down.
       setConnectors([]);
-      notify('error', err.response?.data?.detail || 'No se pudieron cargar las fuentes de datos del servidor.');
+      notify('error', getApiErrorMessage(err, 'No se pudieron cargar las fuentes de datos del servidor.'));
     }
   };
 
@@ -92,7 +93,7 @@ export const AdminPage: React.FC = () => {
       notify('success', `La fuente de datos '${name}' fue eliminada.`);
     } catch (err: any) {
       // El servidor no la borró: la tarjeta se queda donde está.
-      notify('error', err.response?.data?.detail || `No se pudo eliminar '${name}'. Sigue registrada en el servidor.`);
+      notify('error', getApiErrorMessage(err, `No se pudo eliminar '${name}'. Sigue registrada en el servidor.`));
     }
   };
 
@@ -101,7 +102,7 @@ export const AdminPage: React.FC = () => {
       const updated = await connectorService.toggleActive(id);
       setConnectors(updated);
     } catch (err: any) {
-      notify('error', err.response?.data?.detail || 'No se pudo cambiar el estado de la fuente de datos.');
+      notify('error', getApiErrorMessage(err, 'No se pudo cambiar el estado de la fuente de datos.'));
     }
   };
 

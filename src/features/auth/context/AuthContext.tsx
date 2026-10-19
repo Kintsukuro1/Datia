@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { User, AppSettings } from '../../../types';
 import { authService } from '../services/auth_service';
-import { getAuthToken, PASSWORD_CHANGE_PENDING_EVENT } from '../../../shared/api/api_client';
+import { getApiErrorMessage, getAuthToken, PASSWORD_CHANGE_PENDING_EVENT } from '../../../shared/api/api_client';
 import { useSettings } from '../../settings/context/SettingsContext';
 
 interface AuthContextType {
@@ -89,7 +89,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.setItem(USER_KEY, JSON.stringify(res.user));
       } catch { /* ignore */ }
     } catch (err: any) {
-      const msg = err.response?.data?.detail || 'Error de inicio de sesión. Revisa usuario y contraseña.';
+      const msg = getApiErrorMessage(err, 'Error de inicio de sesión. Revisa usuario y contraseña.');
       setError(msg);
       throw new Error(msg);
     } finally {
@@ -104,7 +104,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await authService.register({ username, email, password });
       await login(username, password);
     } catch (err: any) {
-      const msg = err.response?.data?.detail || 'Error en el registro. Intenta con otro usuario o correo.';
+      const msg = getApiErrorMessage(err, 'Error en el registro. Intenta con otro usuario o correo.');
       setError(msg);
       throw new Error(msg);
     } finally {

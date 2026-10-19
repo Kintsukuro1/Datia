@@ -12,6 +12,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { authService } from '../../features/auth/services/auth_service';
+import { getApiErrorMessage } from '../../shared/api/api_client';
 import { useModalA11y } from '../../hooks/useModalA11y';
 
 interface MandatoryPasswordChangeModalProps {
@@ -111,7 +112,7 @@ export const MandatoryPasswordChangeModal: React.FC<MandatoryPasswordChangeModal
       await authService.changePassword(oldPassword, newPassword);
       onSuccess();
     } catch (err: any) {
-      const msg = err.response?.data?.detail || 'Error al actualizar la contraseña. Verifica tu clave actual.';
+      const msg = getApiErrorMessage(err, 'Error al actualizar la contraseña. Verifica tu clave actual.');
       setError(msg);
     } finally {
       setLoading(false);

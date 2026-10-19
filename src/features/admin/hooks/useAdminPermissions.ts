@@ -10,6 +10,7 @@ import {
   permissionService,
 } from '../services/permission_service';
 import { authService } from '../../auth/services/auth_service';
+import { getApiErrorMessage } from '../../../shared/api/api_client';
 
 export interface AdminRole {
   id: number;
@@ -48,8 +49,7 @@ export function useGovernanceCoverage(connectionId: number | null) {
       // el admin viene a leer.
       setCoverage(null);
       setCoverageError(
-        err?.response?.data?.detail ||
-          'No se pudo calcular la cobertura de permisos de esta fuente.'
+        getApiErrorMessage(err, 'No se pudo calcular la cobertura de permisos de esta fuente.')
       );
     } finally {
       setIsLoadingCoverage(false);
@@ -97,7 +97,7 @@ export function useAdminPermissions() {
       });
     } catch (err: any) {
       setPermissionsError(
-        err?.response?.data?.detail || 'No se pudo cargar la lista de fuentes de datos del servidor.'
+        getApiErrorMessage(err, 'No se pudo cargar la lista de fuentes de datos del servidor.')
       );
     }
   }, []);
@@ -114,7 +114,7 @@ export function useAdminPermissions() {
       // Sin roles no hay matriz honesta: se dice, no se inventan columnas.
       setRoles([]);
       setRolesError(
-        err?.response?.data?.detail || 'No se pudo cargar el catálogo de roles del servidor.'
+        getApiErrorMessage(err, 'No se pudo cargar el catálogo de roles del servidor.')
       );
     } finally {
       setRolesLoaded(true);
@@ -132,8 +132,7 @@ export function useAdminPermissions() {
       // son estados distintos y en default-deny se ven igual en pantalla.
       setPermissions([]);
       setPermissionsError(
-        err?.response?.data?.detail ||
-          'No se pudo leer la matriz de permisos del servidor. No se puede afirmar qué acceso existe.'
+        getApiErrorMessage(err, 'No se pudo leer la matriz de permisos del servidor. No se puede afirmar qué acceso existe.')
       );
     } finally {
       setIsLoadingPermissions(false);
@@ -311,8 +310,7 @@ export function useAdminPermissions() {
       // concedido cuando el PUT no lo confirmo.
       setDraft({});
       setSaveError(
-        err?.response?.data?.detail ||
-          'El servidor no confirmó la concesión. Ningún permiso fue aplicado y la matriz volvió a su estado anterior.'
+        getApiErrorMessage(err, 'El servidor no confirmó la concesión. Ningún permiso fue aplicado y la matriz volvió a su estado anterior.')
       );
     } finally {
       setIsSaving(false);

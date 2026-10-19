@@ -40,7 +40,7 @@ import {
   NullsAuditResponse,
 } from '../../features/admin/services/catalog_service';
 import { useAuth } from '../../features/auth/context/AuthContext';
-import { apiClient } from '../../shared/api/api_client';
+import { apiClient, getApiErrorMessage } from '../../shared/api/api_client';
 import { SystemHealthResponse } from '../../types';
 import { useModalA11y } from '../../hooks/useModalA11y';
 
@@ -382,7 +382,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
       setIsProcessing(false);
       setCurrentStep('choice');
     } catch (err: any) {
-      const msg = err.response?.data?.detail || err.message || 'Error al conectar/ingresar la fuente de datos.';
+      const msg = getApiErrorMessage(err, 'Error al conectar/ingresar la fuente de datos.', true);
       setErrorMessage(msg);
       setIsProcessing(false);
     }
@@ -635,7 +635,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
       onSuccess();
     } catch (err: any) {
       setIsApplyingNullPolicy(false);
-      setErrorMessage(err.response?.data?.detail || err.message || 'Error al aplicar el tratamiento de valores nulos.');
+      setErrorMessage(getApiErrorMessage(err, 'Error al aplicar el tratamiento de valores nulos.', true));
     }
   };
 

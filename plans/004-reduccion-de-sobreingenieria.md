@@ -5,6 +5,7 @@
 **Prioridad:** Media (es deuda; no hay hallazgo de seguridad nuevo acá)
 **Complejidad:** S por fase (5 fases independientes)
 **Riesgo:** Bajo en fases 1–3 · Medio en fase 4 (decisiones de producto) · Alto en fase 5 (estructural)
+**Estado:** ✅ Fases 1–4 y los diferidos `H1`/`F-05` ejecutados y verificados (19/10/2026). Abiertos: lote Docker/deps/scripts (exige build limpio), `DUP-09` y `H15`; Fase 5, por demanda.
 
 ---
 
@@ -102,10 +103,22 @@ subtests passed in 489.75s` sobre el árbol con Fases 1–3.
 Ejecutados: `F-01`, `F-02`, `H4`, `H5`, `H12`, `F-13`, `F-14`, `F-11`, `F-10`,
 `H3` (24 archivos de tests → `make_auth_headers` en `conftest.py`; el diff no
 elimina ningún `assert`).
-Diferidos con causa: `H1` (doble seeder: unificar exige verificación runtime de
-ambas rutas de arranque; no conviene a medias), `F-05` (la semántica del 404 es
-decisión de producto), `H15` (el solape cubre superficies distintas; recortar
-era cosmético).
+Diferidos con causa en ese pase: `H1` y `F-05` (exigían decisión de producto y
+verificación runtime; ejecutados en el pase del 19/10/2026, ver abajo) y `H15`
+(el solape cubre superficies distintas; recortar era cosmético).
+
+**Pase del 19/10/2026 (cerrado):** `H1` ejecutado —
+`setup_metadata_database` delega en `init_db` y conserva lo suyo: crear las
+bases, sembrar la base de negocio y refrescar las credenciales del conector de
+plataforma con los settings vigentes. Verificado con doble corrida de
+`scripts/setup_postgres_full.py` y re-ejecución de `init_db` sobre una base
+desechable: mismo estado (8 roles, 10 usuarios, 1 conector, 84 permisos de
+tabla, 58 de columna, 61 entradas de catálogo). `F-05` ejecutado — la
+resolución vive en `SchemaInspector.resolve_connection` (id explícito truthy →
+404 si no existe; luego la activa; luego la última) y el 404 se propaga en
+`governance_guard` y `sql_generator` en vez de degradar a "sin permisos";
+`SchemaIntrospectionError` mantiene la degradación de hoy. `H15` sigue
+diferido.
 
 Corrección hallada al ejecutar la suite: en `F-01` el helper quedó invocado como
 `cls._schema_field_for_role(...)`, pero `engine.py` expone los tres métodos como
@@ -142,6 +155,21 @@ Pendientes declarados: `DUP-05`, `DUP-08`, `DUP-09`, `ESTADO-01`, `DK-01..03`,
 `DEP-BE-04/05`, `SC-R-01`, `BS-04/05` (varios exigen build limpio de Docker o una
 base legacy, no verificables en local).
 
+**Pase del 19/10/2026 (cerrado):** `DUP-05` ejecutado — el bloque de botones de
+fuente (pills) pasa a `ConnectionPills`; los toolbars siguen propios porque
+difieren de verdad (subtítulo, refresco en encabezado vs. en la lista,
+insignias). `DUP-08` ejecutado — `getApiErrorMessage` en `api_client.ts`
+reemplaza `err.response?.data?.detail || 'texto'` en 33 sitios (los que además
+probaban `err.message` pasan el tercer argumento; el interceptor sigue
+normalizando `detail` a string). `ESTADO-01` cerrado como **no-go**:
+`field-sizing` es Baseline recién desde 2026-06-16 (Chrome/Edge 123, Firefox
+152, Safari 26.2; verificado este pase contra MDN BCD y webstatus.dev) y el
+efecto actual son 6 líneas que funcionan en todos lados; se revisa cuando la
+cobertura deje de ser un riesgo. `DUP-09` no ejecutado:
+unificar nav/tabs sin tests de renderizado es riesgo cosmético, no reducción
+verificable; queda disponible. Sigue pendiente el lote Docker/deps
+(`DK-01..03`, `DEP-BE-04/05`, `SC-R-01`, `BS-04/05`).
+
 ### Fase 4 — Decisiones de producto (requieren OK explícito)
 
 | ID | Decisión | Costo |
@@ -152,6 +180,18 @@ base legacy, no verificables en local).
 | `F-12` | `MAX_HISTORY_TURNS`: el setting no lee nadie (Fase 1 lo borra); si quieren el knob, se lee desde `settings` | bajo |
 | `F-16` | `audit_connection_nulls(db=...)` nunca usa `db`: quitar el parámetro (toca 2 call sites + 3 tests) | bajo |
 | `F-18` | Detección de `MagicMock` en producción: reemplazar por fixture que limpie el cache | medio |
+
+**Pase del 19/10/2026 (cerrado):** `INV-1` → se quita `holt_damped` junto con
+`statsmodels`, `scipy` y `pandas` (222,4 MB de sitios en disco medidos);
+`F-04` → se borra `thinking_process` del contrato (backend, tipo y JSX; la
+etiqueta `holt_damped` del frente se conserva para snapshots históricos);
+`F-17` → se borra el setting sin lectores; `F-16` → se quita el parámetro `db`
+inerte; `F-18` → causa real identificada (caché de clase compartido entre
+tests) y reemplazada por la fixture autouse `dynamic_schema_cache_clean`;
+`F-12` → se queda el literal `MAX_HISTORY_TURNS = 20` de
+`chat_engine/schemas.py`: no hay pedido del knob y el setting ya no existe.
+Verificación del pase: pytest `689 passed, 102 subtests passed` (7:44), `tsc
+--noEmit` exit 0, vitest `14 archivos / 95 tests`, `npm run build` OK.
 
 ### Fase 5 — Gigantes estructurales (por demanda, NO como proyecto)
 
@@ -186,7 +226,7 @@ sirve de mapa para cuando llegue ese momento.
 
 ## Anexo A — Inventario completo
 
-Leyenda estado: ✅ hecho en Fase 1 · 🔜 Fase 2/3 · ⚖️ decisión (Fase 4) · 🏗️ estructural (Fase 5) · ❎ no se toca (justificado)
+Leyenda estado: ✅ hecho (Fase 1 o pases del 18–19/10) · 🔜 Fase 2/3 · ⚖️ decisión (Fase 4) · 🏗️ estructural (Fase 5) · ❎ no se toca o no-go (justificado)
 
 | ID | Ubicación (referencia) | Qué | ~LOC | Riesgo | Estado |
 |---|---|---|---|---|---|
@@ -199,7 +239,7 @@ Leyenda estado: ✅ hecho en Fase 1 · 🔜 Fase 2/3 · ⚖️ decisión (Fase 4
 | H7 | `auth/schemas.py:26-54` | `TokenData`, `UserCreateByAdmin`, alias `UserCreate`, `UserUpdate` sin uso | ~20 | bajo | ✅ |
 | H8 | `auth/__init__.py`, `telemetry_audit/__init__.py`, `reports/__init__.py`, `reports/schemas.py` | Re-exports sin importadores | ~42 | bajo | ✅ |
 | H10 | `core/constants.py:38-44` | `DOMAIN_*` y `DEFAULT_LLM_MODEL` sin uso en backend | 7 | bajo | ✅ |
-| H11/F-12 | `core/config.py:53-56` | `MAX_HISTORY_TURNS` inerte (el límite real es literal en `chat_engine/schemas.py:14`) | 4 | bajo | ✅ (si se quiere el knob: Fase 4) |
+| H11/F-12 | `core/config.py:53-56` | `MAX_HISTORY_TURNS` inerte (el límite real es literal en `chat_engine/schemas.py:14`) | 4 | bajo | ❎ (decidido 19/10: no hay pedido del knob) |
 | H2a | `backend/scripts/bootstrap_postgres.py` | Sin referencias; delega en el camino vivo | 90 | bajo | ✅ |
 | H2b | `backend/scripts/verificar_intencion.py` | Duplicado 1:1 de `test_intent_classifier.py` | 25 | bajo | ✅ |
 | H2c | `backend/scripts/revision_de_funcionamiento.py` | One-off declarado ("corregidos hoy", 03/10) | 136 | bajo | ✅ |
@@ -217,26 +257,26 @@ Leyenda estado: ✅ hecho en Fase 1 · 🔜 Fase 2/3 · ⚖️ decisión (Fase 4
 | CI-02 | `ci.yml` jobs frontend | 2 jobs × `npm ci` → 1 job | — | bajo | ✅ |
 | SC-R-02 | `scripts/check-extra-charts.mjs` + `package.json:18` | Harness propio → test vitest (cierra hueco de CI) | 51 | bajo | ✅ |
 | DK-04 | `setup.ps1:155-158` | Comentario falso (fallback SQLite ya no existe en el código actual) → corregido; el bloque SE CONSERVA (imagen vieja posible: `up` sin `--build`) | 4 | bajo | ✅ (solo comentario) |
-| F-01 | `governance_guard.py:14-159` | 3 métodos con ~90 líneas de boilerplate idéntico | 146 | medio | 🔜 F2 |
-| F-02 | `chat_engine/router.py:121-159 × 269-298` | Auditoría de `/query` y `/query/stream` copiada | 28 | bajo | 🔜 F2 |
-| H1 | `init_db.py:258-651` × `scripts/setup_postgres_full.py:355-599` | Doble seeder corriendo en cada arranque | 110-150 | medio | 🔜 F2 |
-| H4 | `reports/generator.py:98-174 × 176-235` | `export_pdf`/`export_excel` mismo procedimiento | 60 | medio | 🔜 F2 |
-| H5 | `init_db.py:204-256` | ALTER inline redundante con `ensure_schema_migrations` | 47 | bajo | 🔜 F2 |
-| H3 | 31 archivos de `backend/tests` | Fixture JWT re-escrita | 250-310 | bajo | 🔜 F2 |
-| F-05 | `schema_inspector.py:53`, `engine.py:294`, `dynamic_schema.py:464`, `router.py:615`, `catalog_service.py:68` | Resolución de conexión ×5 | ~50 | medio | 🔜 F2 |
-| H12 | `auth/router.py:27-37` × `api/deps.py:175-176` | "Es admin" duplicado (seguridad) | 11 | medio | 🔜 F2 |
-| F-14 | `forecast_service.py:316-325` × `ml_service.py:399-408` | Mensajes idénticos | 10 | bajo | 🔜 F2 |
-| F-13 | `null_manager.py:246-287`, `null_handler.py:29` | Celda nula ×8 | 8 | bajo | 🔜 F2 |
-| F-11 | `sql_executor.py:79-81`, `engine.py:56` | Shim + alias solo-test | 4 | bajo | 🔜 F2 |
-| F-10 | `sql_executor.py:52-65` | Rama URL-string solo-test | 14 | medio | 🔜 F2 |
-| H15 | `test_traceability_defaults.py:41-65` | Solape con `test_reports_export` | 25 | bajo | 🔜 F2 |
+| F-01 | `governance_guard.py:14-159` | 3 métodos con ~90 líneas de boilerplate idéntico | 146 | medio | ✅ pase 18/10 |
+| F-02 | `chat_engine/router.py:121-159 × 269-298` | Auditoría de `/query` y `/query/stream` copiada | 28 | bajo | ✅ pase 18/10 |
+| H1 | `init_db.py:258-651` × `scripts/setup_postgres_full.py:355-599` | Doble seeder corriendo en cada arranque | 110-150 | medio | ✅ pase 19/10 |
+| H4 | `reports/generator.py:98-174 × 176-235` | `export_pdf`/`export_excel` mismo procedimiento | 60 | medio | ✅ pase 18/10 |
+| H5 | `init_db.py:204-256` | ALTER inline redundante con `ensure_schema_migrations` | 47 | bajo | ✅ pase 18/10 |
+| H3 | 31 archivos de `backend/tests` | Fixture JWT re-escrita | 250-310 | bajo | ✅ pase 18/10 (24 archivos + `conftest`) |
+| F-05 | `schema_inspector.py:53`, `engine.py:294`, `dynamic_schema.py:464`, `router.py:615`, `catalog_service.py:68` | Resolución de conexión ×5 | ~50 | medio | ✅ pase 19/10 |
+| H12 | `auth/router.py:27-37` × `api/deps.py:175-176` | "Es admin" duplicado (seguridad) | 11 | medio | ✅ pase 18/10 |
+| F-14 | `forecast_service.py:316-325` × `ml_service.py:399-408` | Mensajes idénticos | 10 | bajo | ✅ pase 18/10 |
+| F-13 | `null_manager.py:246-287`, `null_handler.py:29` | Celda nula ×8 | 8 | bajo | ✅ pase 18/10 (solo unificación; la rama que escribe es plan 002) |
+| F-11 | `sql_executor.py:79-81`, `engine.py:56` | Shim + alias solo-test | 4 | bajo | ✅ pase 18/10 |
+| F-10 | `sql_executor.py:52-65` | Rama URL-string solo-test | 14 | medio | ✅ pase 18/10 |
+| H15 | `test_traceability_defaults.py:41-65` | Solape con `test_reports_export` | 25 | bajo | ❎ (diferido con causa: el solape cubre superficies distintas; ver Fase 2) |
 | DUP-02 | 11 componentes | Copiar+flash ×11 (9 estados) | ~40 | bajo | 🔜 F3 |
 | DUP-04 | `bar/line/pie ChartConfig.ts` | `baseDark`+`dataZoom`+`markLine` ×3 | 70-90 | medio | 🔜 F3 |
-| DUP-05 | `AdminCatalogTab:124`, `AdminPermissionsTab:126`, `AdminLearnedTab:74` | Selector de fuente ×3 | ~100 | medio | 🔜 F3 |
+| DUP-05 | `AdminCatalogTab:124`, `AdminPermissionsTab:126`, `AdminLearnedTab:74` | Selector de fuente ×3 | ~100 | medio | ✅ pase 19/10 (`ConnectionPills`) |
 | DUP-06 | 3 tabs admin | Banner de error ×7 | ~56 | bajo | 🔜 F3 |
-| DUP-08 | 36 sitios `src` | `err.response?.data?.detail \|\| ...` | 36 | bajo | 🔜 F3 |
-| DUP-09 | `Header.tsx`, `AdminPage.tsx` | Nav ×8 + tabs ×6 | ~160 | medio | 🔜 F3 |
-| ESTADO-01 | `ChatPromptInput.tsx:31-36` | Auto-resize por efecto (¿CSS `field-sizing`?) | ~12 | medio | 🔜 F3 |
+| DUP-08 | 36 sitios `src` | `err.response?.data?.detail \|\| ...` | 36 | bajo | ✅ pase 19/10 (33 sitios → `getApiErrorMessage`) |
+| DUP-09 | `Header.tsx`, `AdminPage.tsx` | Nav ×8 + tabs ×6 | ~160 | medio | ❎ (no ejecutado: sin tests de render; ver Fase 3) |
+| ESTADO-01 | `ChatPromptInput.tsx:31-36` | Auto-resize por efecto (¿CSS `field-sizing`?) | ~12 | medio | ❎ no-go (Baseline 2026-06-16: Chrome/Edge 123, Firefox 152, Safari 26.2; ver Fase 3) |
 | ESTADO-02 | 11 componentes | 9 `copied*` + timers (cae con DUP-02) | ~30 | bajo | 🔜 F3 |
 | DK-01 | `docker-compose.yml` × `docker-compose.partner.yml` | ~75 líneas espejo (ya divergieron) | ~75 | medio | 🔜 F3 |
 | DK-02 | `backend/Dockerfile:6-10` | `gcc`+`libpq-dev` con wheels binarios (verificar build) | — | medio | 🔜 F3 |
@@ -248,17 +288,17 @@ Leyenda estado: ✅ hecho en Fase 1 · 🔜 Fase 2/3 · ⚖️ decisión (Fase 4
 | BS-04 | `scripts/migrate_fix_rbac_permissions.py` | Migración sin referencias **sin filtro `granted_by_admin`** (riesgo latente) | 67 | medio | 🔜 F3 |
 | BS-05 | `scripts/check_credential_health.py` | Diagnóstico sin referencias (solapa `rotate --dry-run`) | 45 | medio | 🔜 F3 |
 | DOC-01 | `PARTE-DOCKER.md` | Huérfano; duplica secretos de README | 108 | bajo | 🔜 F3 |
-| INV-1 | `ml_models.py:38,61,167-194` | `statsmodels`+`pandas`+`scipy` por 1 de 4 métodos | ~222 MB | alto | ⚖️ F4 |
-| F-04 | `sql_generator.py:59,97` → UI | `thinking_process` muerto end-to-end | ~30 | medio | ⚖️ F4 |
-| F-17 | `core/config.py:77` | `OPENAI_COMPATIBLE_API_KEY` sin lectores | 1 | bajo | ⚖️ F4 |
-| F-16 | `null_manager.py:28` | `db` nunca usado | 1 | bajo | ⚖️ F4 |
-| F-18 | `dynamic_schema.py:444` | `MagicMock` detectado en producción | 1 | medio | ⚖️ F4 |
+| INV-1 | `ml_models.py:38,61,167-194` | `statsmodels`+`pandas`+`scipy` por 1 de 4 métodos | ~222 MB | alto | ✅ pase 19/10 |
+| F-04 | `sql_generator.py:59,97` → UI | `thinking_process` muerto end-to-end | ~30 | medio | ✅ pase 19/10 |
+| F-17 | `core/config.py:77` | `OPENAI_COMPATIBLE_API_KEY` sin lectores | 1 | bajo | ✅ pase 19/10 |
+| F-16 | `null_manager.py:28` | `db` nunca usado | 1 | bajo | ✅ pase 19/10 |
+| F-18 | `dynamic_schema.py:444` | `MagicMock` detectado en producción | 1 | medio | ✅ pase 19/10 (fixture `dynamic_schema_cache_clean`) |
 | F-19/H16/GIGANTE-01..05 | 10 archivos (>600 líneas) | Responsabilidades mezcladas | — | alto | 🏗️ F5 |
 | DUP-07 | 14 modales | Cáscara de overlay ×14 — **no hacer**: costo/beneficio malo (ya razonado en `useModalA11y`) | ~210 | alto | ❎ |
 | MUERTO-06/07 | `types/index.ts:93-115`, 29 exports | Contrato tipado del payload / ruido inofensivo | — | — | ❎ (dejados a propósito) |
 | (proyecciones) | `ProjectionsPage`/`estimate`, formatters | Ya evaluados en la auditoría previa; `estimate` aceptado salvo recorte futuro | — | — | ❎ |
 
-## Anexo B — Decisiones pendientes (Fase 4)
+## Anexo B — Decisiones de Fase 4 (resueltas el 19/10/2026; se conservan las recomendaciones originales como registro)
 
 1. **`INV-1`** — `holt_damped` y sus 3 dependencias (222 MB instalados, import 3,14 s):
    ¿se quedan? Recomendación: sacar el método ahora (la doctrina del módulo es

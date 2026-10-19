@@ -1,8 +1,9 @@
 import React from 'react';
-import { Sparkles, Check, Plus, BookOpen, Database, RefreshCw, HardDrive, AlertCircle } from 'lucide-react';
+import { Sparkles, Check, Plus, BookOpen, Database, RefreshCw, AlertCircle } from 'lucide-react';
 import { ErrorBanner } from '../shared/ErrorBanner';
 import { CatalogEditModal } from './CatalogEditModal';
 import { CatalogAddModal } from './CatalogAddModal';
+import { ConnectionPills } from './ConnectionPills';
 import { SemanticCatalogSection } from './catalog/SemanticCatalogSection';
 import { DataDictionarySection } from './catalog/DataDictionarySection';
 import { useAdminCatalog } from '../../features/admin/hooks/useAdminCatalog';
@@ -122,36 +123,13 @@ export const AdminCatalogTab: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {connectors.map((c) => {
-              const isSelected = c.id === selectedConnectionId;
-              return (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => handleSelectConnection(c.id)}
-                  className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs transition-all ${
-                    isSelected
-                      ? 'bg-brand-50 text-brand-700 border border-brand-300 dark:bg-purple-600/20 dark:text-purple-300 dark:border-purple-500/50 shadow-xs font-bold'
-                      : 'bg-white dark:bg-dark-card/60 text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-card border border-slate-200 dark:border-dark-border font-medium'
-                  }`}
-                >
-                  <span
-                    className={`w-2 h-2 rounded-full shrink-0 ${
-                      c.is_active ? 'bg-emerald-500 dark:bg-emerald-400 shadow-xs' : 'bg-slate-400 dark:bg-gray-500'
-                    }`}
-                  />
-                  <span className="truncate max-w-[150px] sm:max-w-[200px]">{c.name}</span>
-                  <span className="text-[9px] uppercase font-mono px-1.5 py-0.5 bg-slate-100 dark:bg-dark-base rounded text-slate-600 dark:text-gray-400">
-                    {c.db_type}
-                  </span>
-                  {c.is_uploaded && (
-                    <span title="Archivo importado">
-                      <HardDrive className="w-3 h-3 text-cyan-600 dark:text-cyan-400 shrink-0" />
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            <ConnectionPills
+              connectors={connectors}
+              selectedConnectionId={selectedConnectionId}
+              onSelect={handleSelectConnection}
+              showDbType
+              showUploaded
+            />
 
             <button
               type="button"

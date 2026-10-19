@@ -1,4 +1,4 @@
-import { apiClient } from '../../../shared/api/api_client';
+import { apiClient, getApiErrorMessage } from '../../../shared/api/api_client';
 
 export interface CorporateConnection {
   id: number;
@@ -162,7 +162,7 @@ export const connectorService = {
     } catch (err: any) {
       return {
         success: false,
-        message: err.response?.data?.detail || `No se pudo conectar a ${data.host}:${data.port} (${data.db_type.toUpperCase()}). Verifica la dirección y puerto.`,
+        message: getApiErrorMessage(err, `No se pudo conectar a ${data.host}:${data.port} (${data.db_type.toUpperCase()}). Verifica la dirección y puerto.`),
         latency_ms: 0,
       };
     }

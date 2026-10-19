@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { connectorService } from '../services/connector_service';
 import { CorporateConnection } from '../services/connector_service';
 import { GoldenQuery, learningMemoryService } from '../services/learning_memory_service';
+import { getApiErrorMessage } from '../../../shared/api/api_client';
 
 /**
  * Estado de la pestana "Aprendizaje": que aprendio el motor de esta conexion y
@@ -36,8 +37,7 @@ export function useAdminLearned() {
       })
       .catch((err: any) =>
         setError(
-          err?.response?.data?.detail ||
-            'No se pudo cargar la lista de fuentes de datos del servidor.'
+          getApiErrorMessage(err, 'No se pudo cargar la lista de fuentes de datos del servidor.')
         )
       );
   }, []);
@@ -53,8 +53,7 @@ export function useAdminLearned() {
       // son afirmaciones distintas y esta pantalla es de control.
       setItems([]);
       setError(
-        err?.response?.data?.detail ||
-          'No se pudo leer la memoria de aprendizaje del servidor. No se puede afirmar qué se está inyectando en el prompt.'
+        getApiErrorMessage(err, 'No se pudo leer la memoria de aprendizaje del servidor. No se puede afirmar qué se está inyectando en el prompt.')
       );
     } finally {
       setIsLoading(false);
@@ -79,8 +78,7 @@ export function useAdminLearned() {
         return true;
       } catch (err: any) {
         setActionError(
-          err?.response?.data?.detail ||
-            'El servidor no confirmó el borrado. La memoria sigue inyectándose en el prompt.'
+          getApiErrorMessage(err, 'El servidor no confirmó el borrado. La memoria sigue inyectándose en el prompt.')
         );
         return false;
       } finally {

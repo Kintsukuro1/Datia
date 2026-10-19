@@ -4,6 +4,7 @@ import { UserItem } from './AdminUsersTab';
 import { authService } from '../../features/auth/services/auth_service';
 import { useModalA11y } from '../../hooks/useModalA11y';
 import { resolveRoleLabel } from '../../constants';
+import { getApiErrorMessage } from '../../shared/api/api_client';
 
 interface UserAddModalProps {
   isOpen: boolean;
@@ -64,7 +65,7 @@ export const UserAddModal: React.FC<UserAddModalProps> = ({
       onSuccess(createdItem);
       onClose();
     } catch (err: any) {
-      setCreateError(err.response?.data?.detail || 'Error al registrar el nuevo usuario.');
+      setCreateError(getApiErrorMessage(err, 'Error al registrar el nuevo usuario.'));
     } finally {
       setIsSubmitting(false);
     }

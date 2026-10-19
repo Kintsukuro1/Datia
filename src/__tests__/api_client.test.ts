@@ -215,7 +215,7 @@ describe('api_client: el detail de un 422 llega como string, no como array', () 
       caught = e;
     }
 
-    // Es lo que leen los ~29 `err.response?.data?.detail || 'fallback'`.
+    // Es lo que lee `getApiErrorMessage` en todos los callers.
     expect(Array.isArray(caught.response.data.detail)).toBe(false);
     expect(typeof caught.response.data.detail).toBe('string');
     expect(caught.response.data.detail).toBe('Field required');

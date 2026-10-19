@@ -1,5 +1,6 @@
 import { useReducer, useEffect } from 'react';
 import { CorporateConnection, ConnectionFormData, connectorService, ConnectionTestResult } from '../services/connector_service';
+import { getApiErrorMessage } from '../../../shared/api/api_client';
 
 interface State {
   name: string;
@@ -151,7 +152,7 @@ export function useConnectorForm(
       onSaveSuccess();
       onClose();
     } catch (err: any) {
-      const msg = err.response?.data?.detail || 'Error al guardar la conexión en PostgreSQL.';
+      const msg = getApiErrorMessage(err, 'Error al guardar la conexión en PostgreSQL.');
       dispatch({ type: 'SET_ERROR', message: msg });
     } finally {
       dispatch({ type: 'SET_SUBMITTING', submitting: false });

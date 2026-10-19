@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { BrainCircuit, RefreshCw, Trash2, X, Star } from 'lucide-react';
 import { ErrorBanner } from '../shared/ErrorBanner';
+import { ConnectionPills } from './ConnectionPills';
 import { GoldenQuery } from '../../features/admin/services/learning_memory_service';
 import { useAdminLearned } from '../../features/admin/hooks/useAdminLearned';
 import { useModalA11y } from '../../hooks/useModalA11y';
@@ -74,25 +75,11 @@ export const AdminLearnedTab: React.FC = () => {
         <div className="bg-slate-50 dark:bg-dark-base/80 p-3 rounded-2xl border border-slate-200 dark:border-dark-border flex flex-col md:flex-row md:items-center justify-between gap-3">
           <span className="text-xs font-semibold text-slate-900 dark:text-white whitespace-nowrap">Fuente de Datos:</span>
           <div className="flex flex-wrap items-center gap-2">
-            {connectors.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => handleSelectConnection(c.id)}
-                className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs transition-all ${
-                  c.id === selectedConnectionId
-                    ? 'bg-brand-50 text-brand-700 border border-brand-300 dark:bg-purple-600/20 dark:text-purple-300 dark:border-purple-500/50 shadow-xs font-bold'
-                    : 'bg-white dark:bg-dark-card/60 text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-card border border-slate-200 dark:border-dark-border font-medium'
-                }`}
-              >
-                <span
-                  className={`w-2 h-2 rounded-full shrink-0 ${
-                    c.is_active ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-slate-400 dark:bg-gray-500'
-                  }`}
-                />
-                <span className="truncate max-w-[150px] sm:max-w-[200px]">{c.name}</span>
-              </button>
-            ))}
+            <ConnectionPills
+              connectors={connectors}
+              selectedConnectionId={selectedConnectionId}
+              onSelect={handleSelectConnection}
+            />
           </div>
         </div>
       )}

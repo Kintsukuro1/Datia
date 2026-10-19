@@ -8,6 +8,7 @@ import {
   CorporateConnection,
   connectorService,
 } from '../services/connector_service';
+import { getApiErrorMessage } from '../../../shared/api/api_client';
 
 export function useAdminCatalog() {
   const [subTab, setSubTab] = useState<'catalog' | 'dictionary'>('catalog');
@@ -78,7 +79,7 @@ export function useAdminCatalog() {
     } catch (err: any) {
       // Se limpian los items: los de la conexion anterior en pantalla serian
       // datos viejos afirmando ser de la conexion actual.
-      setCatalogViewErrorMsg(err.response?.data?.detail || err.message || 'No se pudo cargar el catálogo semántico.');
+      setCatalogViewErrorMsg(getApiErrorMessage(err, 'No se pudo cargar el catálogo semántico.', true));
       setItems([]);
     } finally {
       setIsLoadingCatalog(false);
@@ -100,7 +101,7 @@ export function useAdminCatalog() {
       });
       setExpandedTables(initialExpanded);
     } catch (err: any) {
-      setDictionaryViewErrorMsg(err.response?.data?.detail || err.message || 'No se pudo cargar el diccionario de datos.');
+      setDictionaryViewErrorMsg(getApiErrorMessage(err, 'No se pudo cargar el diccionario de datos.', true));
       setDataDictionary(null);
       setExpandedTables({});
     } finally {
@@ -150,7 +151,7 @@ export function useAdminCatalog() {
       await fetchDictionaryData(selectedConnectionId);
       setTimeout(() => setEnrichSuccessMsg(null), 5000);
     } catch (err: any) {
-      const msg = err.response?.data?.detail || err.message || 'Error al auto-enriquecer el catálogo.';
+      const msg = getApiErrorMessage(err, 'Error al auto-enriquecer el catálogo.', true);
       setEnrichErrorMsg(msg);
       setTimeout(() => setEnrichErrorMsg(null), 6000);
     } finally {
@@ -170,7 +171,7 @@ export function useAdminCatalog() {
       setEditingItem(null);
     } catch (err: any) {
       // No se parchea el estado local: el catalogo en la BD no cambio.
-      setCatalogErrorMsg(err.response?.data?.detail || err.message || 'No se pudo guardar la edición del catálogo.');
+      setCatalogErrorMsg(getApiErrorMessage(err, 'No se pudo guardar la edición del catálogo.', true));
     }
   };
 
@@ -197,7 +198,7 @@ export function useAdminCatalog() {
       return true;
     } catch (err: any) {
       // Sin exito visual: la regla no se creo.
-      setCatalogErrorMsg(err.response?.data?.detail || err.message || 'No se pudo crear la regla del catálogo.');
+      setCatalogErrorMsg(getApiErrorMessage(err, 'No se pudo crear la regla del catálogo.', true));
       return false;
     }
   };
@@ -213,7 +214,7 @@ export function useAdminCatalog() {
     } catch (err: any) {
       // No va a catalogErrorMsg: ese se muestra dentro del modal "Añadir Regla"
       // y un borrado no tiene nada que ver con ese formulario.
-      setCatalogViewErrorMsg(err.response?.data?.detail || err.message || 'No se pudo eliminar la regla del catálogo.');
+      setCatalogViewErrorMsg(getApiErrorMessage(err, 'No se pudo eliminar la regla del catálogo.', true));
     }
   };
 

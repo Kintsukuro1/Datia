@@ -1,4 +1,4 @@
-import { apiClient, parseSseEvent } from '../../../shared/api/api_client';
+import { apiClient, getApiErrorMessage, parseSseEvent } from '../../../shared/api/api_client';
 import { QueryResult } from '../../../types';
 
 /**
@@ -314,7 +314,7 @@ export const queryService = {
     } catch (err: any) {
       return {
         success: false,
-        message: err.response?.data?.detail || 'Error al registrar calificación.',
+        message: getApiErrorMessage(err, 'Error al registrar calificación.'),
         learning_saved: false,
       };
     }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { AppSettings } from '../../../types';
 import { llmClientService, LLMConnectionTestResult, LLMCompletionTestResult } from '../../chat/services/llm_service';
-import { apiClient } from '../../../shared/api/api_client';
+import { apiClient, getApiErrorMessage } from '../../../shared/api/api_client';
 import { DEFAULT_OLLAMA_URL, DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER, LLM_PROVIDER_DEFAULTS, type LLMProviderKey } from '../../../constants';
 
 type LLMProvider = AppSettings['llm_provider'];
@@ -194,7 +194,7 @@ const fallback = LLM_PROVIDER_DEFAULTS[String(newProvider) as LLMProviderKey];
     } catch (err: any) {
       setPgStatus({
         success: false,
-        message: err.response?.data?.detail || `No se pudo conectar al servidor PostgreSQL en ${pgHost}:${pgPort}.`
+        message: getApiErrorMessage(err, `No se pudo conectar al servidor PostgreSQL en ${pgHost}:${pgPort}.`)
       });
     } finally {
       isTestingPGRef.current = false;

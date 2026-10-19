@@ -4,6 +4,7 @@ import { UserItem } from './AdminUsersTab';
 import { authService } from '../../features/auth/services/auth_service';
 import { useModalA11y } from '../../hooks/useModalA11y';
 import { resolveRoleLabel, PLATFORM_ADMIN_ROLE_NAME } from '../../constants';
+import { getApiErrorMessage } from '../../shared/api/api_client';
 
 interface UserEditModalProps {
   isOpen: boolean;
@@ -46,7 +47,7 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
           // Sin catalogo no se puede pintar un select honesto: se muestra el
           // error en vez de un dropdown con roles inventados.
           setRoles([]);
-          setRolesError(err?.response?.data?.detail || 'No se pudo cargar el catálogo de roles del servidor.');
+          setRolesError(getApiErrorMessage(err, 'No se pudo cargar el catálogo de roles del servidor.'));
         }
       });
     return () => {
@@ -91,8 +92,7 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
       onClose();
     } catch (err: any) {
       setSubmitError(
-        err?.response?.data?.detail ||
-          'No se pudo actualizar el usuario en el servidor. El cambio no se aplicó.'
+        getApiErrorMessage(err, 'No se pudo actualizar el usuario en el servidor. El cambio no se aplicó.')
       );
     } finally {
       setIsSubmitting(false);

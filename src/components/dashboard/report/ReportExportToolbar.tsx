@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { reportService } from '../../../features/dashboard/services/report_service';
 import { useModalA11y } from '../../../hooks/useModalA11y';
+import { getApiErrorMessage } from '../../../shared/api/api_client';
 
 interface ReportExportToolbarProps {
   result: QueryResult;
@@ -56,7 +57,7 @@ export const ReportExportToolbar: React.FC<ReportExportToolbarProps> = ({
         include_raw_data: customized ? includeRawData : true,
       });
     } catch (err: any) {
-      onExportError(err.response?.data?.detail || 'Error al generar el informe en PDF.');
+      onExportError(getApiErrorMessage(err, 'Error al generar el informe en PDF.'));
     } finally {
       setIsExportingPdf(false);
     }
@@ -74,7 +75,7 @@ export const ReportExportToolbar: React.FC<ReportExportToolbarProps> = ({
         include_raw_data: customized ? includeRawData : true,
       });
     } catch (err: any) {
-      onExportError(err.response?.data?.detail || 'Error al generar el archivo Excel.');
+      onExportError(getApiErrorMessage(err, 'Error al generar el archivo Excel.'));
     } finally {
       setIsExportingExcel(false);
     }

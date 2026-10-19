@@ -4,6 +4,7 @@ import { Database, Loader2, TrendingUp } from 'lucide-react';
 import { useChatEngine } from '../features/chat/hooks/useChatEngine';
 import { projectionService, type ProjectionResult } from '../features/projections/services/projection_service';
 import { ProjectionResults } from '../features/projections/components/ProjectionResults';
+import { getApiErrorMessage } from '../shared/api/api_client';
 
 /**
  * Seccion "Proyecciones": pregunta -> Enter -> estimacion de duracion ->
@@ -96,7 +97,7 @@ export const ProjectionsPage: React.FC = () => {
       setResult(response);
     } catch (err: any) {
       setError(
-        err?.response?.data?.detail || err?.message || 'No se pudo ejecutar la proyección.'
+        getApiErrorMessage(err, 'No se pudo ejecutar la proyección.', true)
       );
     }
     setPhase('done');

@@ -8,11 +8,11 @@ import {
   AlertTriangle,
   Check,
   Lock,
-  HardDrive,
   EyeOff,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { ErrorBanner } from '../shared/ErrorBanner';
+import { ConnectionPills } from './ConnectionPills';
 import {
   useAdminPermissions,
   useGovernanceCoverage,
@@ -127,38 +127,13 @@ export const AdminPermissionsTab: React.FC = () => {
             <span className="font-semibold text-slate-900 dark:text-white whitespace-nowrap">Fuente de Datos:</span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {connectors.map((c) => {
-              const isSelected = c.id === selectedConnectionId;
-              return (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => handleSelectConnection(c.id)}
-                  className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs transition-all ${
-                    isSelected
-                      ? 'bg-brand-50 text-brand-700 border border-brand-300 dark:bg-purple-600/20 dark:text-purple-300 dark:border-purple-500/50 shadow-xs font-bold'
-                      : 'bg-white dark:bg-dark-card/60 text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-card border border-slate-200 dark:border-dark-border font-medium'
-                  }`}
-                >
-                  <span
-                    className={`w-2 h-2 rounded-full shrink-0 ${
-                      c.is_active ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-slate-400 dark:bg-gray-500'
-                    }`}
-                  />
-                  <span className="truncate max-w-[150px] sm:max-w-[200px]">{c.name}</span>
-                  {c.requires_permission_review && (
-                    <span title="Pendiente de revisión de permisos">
-                      <AlertTriangle className="w-3 h-3 text-amber-500 dark:text-amber-400 shrink-0" />
-                    </span>
-                  )}
-                  {c.is_uploaded && (
-                    <span title="Archivo importado">
-                      <HardDrive className="w-3 h-3 text-cyan-600 dark:text-cyan-400 shrink-0" />
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            <ConnectionPills
+              connectors={connectors}
+              selectedConnectionId={selectedConnectionId}
+              onSelect={handleSelectConnection}
+              showReviewWarning
+              showUploaded
+            />
           </div>
         </div>
       )}
