@@ -70,7 +70,11 @@ _MAX_PROMPT_COLUMNS = 120
 # Presupuesto de la respuesta del analisis: el JSON son tres claves cortas. Un
 # techo bajo evita que el modelo "explique" antes del JSON y gaste la latencia.
 _ANALYSIS_MAX_TOKENS = 120
-_NARRATION_MAX_TOKENS = 300
+# 420 y no 300: con 300 el modelo cortaba la tercera frase a mitad ("...la
+# proyeccion" sin terminar) y ese texto truncado viaja a la UI y al Informe. El
+# costo son ~15 s mas en CPU; el presupuesto real lo acotan el system prompt y el
+# pedido de 2 o 3 parrafos.
+_NARRATION_MAX_TOKENS = 420
 
 _ANALYSIS_SYSTEM_PROMPT = (
     "Eres un asistente de analisis de datos. Recibes una pregunta de negocio y la "
@@ -172,24 +176,23 @@ def _canonical_column(value: Any, by_lower: Dict[str, Dict[str, Any]], predicate
 
 
 def _validate_llm_choice(raw: Any, cols: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Eleccion del LLM validada contra las columnas reales, o None (violacion).
+    """Eleccion del LLM validada contra las columnas reales; None solo si `raw` no es un objeto.
 
-    Devolver None significa "esto no se puede usar": el llamador cae a la
-    heuristica. No se corrige ni se recorta la respuesta del modelo —un nombre
-    parecido no es el nombre— y tampoco se mezcla media eleccion del LLM con
-    media heuristica: o los dos nombres son validos o decide `resolve_columns`.
+    Los dos nombres se validan por separado: quedan en None los que no existen
+    en los metadatos o no pasan el predicado de tipo (y el llamador decide la
+    heuristica para ambos: media eleccion del LLM no se mezcla). El horizonte es
+    INDEPENDIENTE de los nombres: un modelo que eligio mal la columna de fecha
+    igual puede haber leido bien "los proximos 12 meses", y descartar esa
+    lectura entera por un nombre es tirar la parte util de la respuesta.
     """
     if not isinstance(raw, dict):
         return None
     by_lower = {str(c.get("name", "")).lower(): c for c in cols if c.get("name")}
     metric = _canonical_column(raw.get("metric_column"), by_lower, _is_num_col)
     date = _canonical_column(raw.get("date_column"), by_lower, _is_date_col)
-    if not metric or not date:
-        return None
 
-    # El horizonte es independiente de los nombres: si el modelo propone un 18,
-    # el pedido del usuario sigue siendo valido y se usa ese. No se recorta a 12
-    # ni se redondea: se ignora.
+    # Si el modelo propone un 18, el pedido del usuario sigue siendo valido y se
+    # usa ese. No se recorta a 12 ni se redondea: se ignora.
     horizon = raw.get("horizon")
     if isinstance(horizon, str) and horizon.strip().isdigit():
         horizon = int(horizon.strip())
@@ -260,10 +263,12 @@ async def analyze_question(
 
     Cualquier violacion —nombre inventado, tipo equivocado, JSON roto, respuesta
     vacia o excepcion/timeout del LLM— cae al fallback heuristico con
-    `source="heuristica"`. El fallback puede no tener metrica ni fecha: devuelve
-    None igual y `run_projection` dira el motivo nombrando la tabla y las
-    columnas revisadas (el mismo mensaje honesto que el forecast del chat), en
-    vez de inventar un nombre para poder responder algo.
+    `source="heuristica"`. El horizonte es la excepcion: si el modelo lo extrajo
+    bien ({3, 6, 12}), se conserva aunque las columnas hayan caido a la
+    heuristica. El fallback puede no tener metrica ni fecha: devuelve None igual
+    y `run_projection` dira el motivo nombrando la tabla y las columnas
+    revisadas (el mismo mensaje honesto que el forecast del chat), en vez de
+    inventar un nombre para poder responder algo.
     """
     fallback = {
         "table": table,
@@ -283,7 +288,18 @@ async def analyze_question(
 
     choice = _validate_llm_choice(raw, cols)
     if choice is None:
-        logger.info("El LLM no devolvio una eleccion de columnas utilizable; se usa la heuristica.")
+        logger.info("El LLM no devolvio un objeto utilizable; se usa la heuristica.")
+        return fallback
+
+    if not (choice["metric_column"] and choice["date_column"]):
+        # Un nombre invalido tumba las DOS columnas (no se mezcla media eleccion
+        # del LLM con media heuristica), pero el horizonte sobrevive: es la
+        # unica parte de la respuesta que no depende de los nombres.
+        logger.info(
+            "El LLM eligio columnas no utilizables (metrica=%r, fecha=%r); columnas por heuristica.",
+            choice["metric_column"], choice["date_column"],
+        )
+        fallback["horizon"] = choice["horizon"] or horizon
         return fallback
 
     return {
@@ -515,6 +531,12 @@ def _narration_prompt(payload: Dict[str, Any]) -> str:
     return (
         "Numeros ya calculados (JSON):\n"
         f"{body}\n\n"
+        "En cada paso, `mape` es el error medido de ESE paso (null = ese paso no "
+        "tiene backtest propio) y `extrapolated` marca banda heredada del ultimo "
+        "paso medido, que no es una medicion de ese paso; `n_backtests` cuenta los "
+        "backtests de ESE paso, no la cantidad de datos historicos. Un MAPE mas "
+        "bajo es mejor: el metodo publicado supera al naive solo si su MAPE es "
+        "menor, y `beats_naive: true` es ese veredicto ya calculado.\n\n"
         "Redacta la lectura de esta proyeccion para el usuario, con su limitacion de "
         "confianza explicita."
     )

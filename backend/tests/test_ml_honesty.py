@@ -12,7 +12,10 @@ capa de SERVICIO que lo publica por HTTP, sin base de datos:
    (`extrapolated=True`), con el periodo futuro calculado por la calculadora.
 3. El analisis solo puede elegir columnas REALES: un nombre inventado, un tipo
    equivocado, un horizonte fuera de la lista o un JSON roto caen a la
-   heuristica declarada (`analysis_source="heuristica"`).
+   heuristica declarada (`analysis_source="heuristica"`). La unica parte de la
+   respuesta que sobrevive a una columna rechazada es el horizonte: el modelo
+   puede haber leido bien "los proximos 12 meses" aunque su nombre de fecha no
+   sirva.
 4. La narrativa tiene contrato y respaldo: sin LLM se publica la plantilla
    determinista, que dice los mismos hechos (metodo, periodos, MAPE, pasos sin
    evidencia) y nunca queda vacia.
@@ -106,25 +109,29 @@ def test_has_gaps_detecta_hueco_y_eje_ilegible():
 
 # --- 3: las columnas las elige el backend, no el texto del LLM ----------------
 
-def _analizar(respuesta_o_excepcion, horizonte=6):
+def _analizar(respuesta_o_excepcion, horizonte=6, cols=COLS):
     if isinstance(respuesta_o_excepcion, Exception):
         mock = AsyncMock(side_effect=respuesta_o_excepcion)
     else:
         mock = AsyncMock(return_value=respuesta_o_excepcion)
     with patch(_LLM, new=mock):
         return asyncio.run(ml_service.analyze_question(
-            "proyecta los ingresos", "movimientos", COLS, resolve_columns(COLS), horizonte))
+            "proyecta los ingresos", "movimientos", cols, resolve_columns(cols), horizonte))
 
 
 def test_el_analisis_solo_acepta_nombres_reales():
-    # Nombres inventados, tipos equivocados, respuestas que no son un objeto:
-    # nada de eso se "arregla", se descarta entero.
+    # El nombre inventado y el tipo equivocado no se "arreglan": esa columna
+    # queda en None y `analyze_question` decide las DOS por heuristica.
+    invalido = ml_service._validate_llm_choice(
+        {"metric_column": "ingresos_totales", "date_column": "fecha"}, COLS)
+    assert (invalido["metric_column"], invalido["date_column"]) == (None, "fecha")
     assert ml_service._validate_llm_choice(
-        {"metric_column": "ingresos_totales", "date_column": "fecha"}, COLS) is None
+        {"metric_column": "descripcion", "date_column": "fecha"}, COLS
+    )["metric_column"] is None
     assert ml_service._validate_llm_choice(
-        {"metric_column": "descripcion", "date_column": "fecha"}, COLS) is None
-    assert ml_service._validate_llm_choice(
-        {"metric_column": "valor", "date_column": "descripcion"}, COLS) is None
+        {"metric_column": "valor", "date_column": "descripcion"}, COLS
+    )["date_column"] is None
+    # Respuesta que no es un objeto: ahi si no hay nada que rescatar.
     assert ml_service._validate_llm_choice("no es un objeto", COLS) is None
 
     # Una eleccion valida se canonicaliza al nombre REAL de los metadatos.
@@ -137,6 +144,34 @@ def test_el_analisis_solo_acepta_nombres_reales():
     )["horizon"] is None
     # El fallback heuristico tambien resuelve un nombre real (el unico numerico).
     assert resolve_columns(COLS)["value_col"] == "valor"
+
+
+# La forma real de la tabla demo: la columna se llama "periodo" pero es TEXT, y
+# el SQL de la serie solo sabe leer una columna de fecha de verdad.
+COLS_TEXTO = [
+    {"name": "fecha", "type": "timestamp", "is_pk": False},
+    {"name": "periodo", "type": "text", "is_pk": False},
+    {"name": "monto", "type": "bigint", "is_pk": False},
+]
+
+
+def test_el_horizonte_del_llm_sobrevive_a_una_columna_de_fecha_rechazada():
+    """El caso vivo de la tabla demo: el modelo elige `periodo` (TEXT) como fecha.
+
+    Esa eleccion no se puede usar (el SQL de la serie exige tipo fecha), pero el
+    horizonte que el modelo extrajo de la pregunta ("12 meses") se conserva y la
+    eleccion de columnas cae ENTERA a la heuristica — sin mezclar.
+    """
+    out = _analizar(
+        '{"metric_column": "monto", "date_column": "periodo", "horizon": 12}',
+        cols=COLS_TEXTO)
+    assert out["source"] == "heuristica"
+    assert (out["metric_column"], out["date_column"]) == ("monto", "fecha")
+    assert out["horizon"] == 12
+
+    # Sin horizonte valido del modelo, sigue mandando el del pedido.
+    out = _analizar('{"metric_column": "monto", "date_column": "periodo"}', cols=COLS_TEXTO)
+    assert out["horizon"] == 6
 
 
 def test_el_analisis_inventado_cae_a_heuristica_declarada():
@@ -195,6 +230,20 @@ def test_la_narrativa_con_llm_publica_su_texto():
     with patch(_LLM, new=AsyncMock(return_value="Lectura en dos frases.")):
         assert asyncio.run(ml_service.narrate(_payload_proyectado(6))) == (
             "Lectura en dos frases.", "llm")
+
+
+def test_el_prompt_de_la_narrativa_explica_los_campos_por_paso():
+    # Sin la leyenda, el modelo confundio el `band_pct` de un paso con el `mape`
+    # de otro (visto en vivo con Qwen2.5-Coder): los campos tienen que estar
+    # nombrados en el prompt, no solo presentes en el JSON.
+    prompt = ml_service._narration_prompt(_payload_proyectado(6))
+    assert "`mape` es el error medido de ESE paso" in prompt
+    assert "`extrapolated` marca banda heredada" in prompt
+    # Visto en vivo dos veces con Qwen2.5-Coder: leyo 961.7 como "mayor" que
+    # 1436.9 (es menor, y menor es mejor) y confundio n_backtests con historia.
+    assert "Un MAPE mas bajo es mejor" in prompt
+    assert "`n_backtests` cuenta los backtests de ESE paso" in prompt
+    assert "`beats_naive: true` es ese veredicto ya calculado" in prompt
 
 
 # --- 5: la estimacion no mide, reusa lo medido --------------------------------
