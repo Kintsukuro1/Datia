@@ -24,7 +24,7 @@ import { ProjectionResults } from '../features/projections/components/Projection
 const GENERATION_PHASES = [
   'Analizando la pregunta y eligiendo tabla y métrica...',
   'Leyendo los datos con tus permisos vigentes...',
-  'Calculando la proyección (walk-forward de 4 métodos)...',
+  'Calculando la proyección (walk-forward de 3 métodos)...',
   'Redactando la lectura de los resultados...',
 ];
 

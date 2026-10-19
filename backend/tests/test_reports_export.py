@@ -143,10 +143,10 @@ PROJECTION_SNAPSHOT = {
          "band_pct": None, "mape": None, "n_backtests": 0,
          "reliable": False, "extrapolated": True},
     ],
-    "method": "holt_damped",
+    "method": "ols_trend",
     "beats_naive": False,
     "mape": 12.5,
-    "mape_by_method": {"holt_damped": 12.5, "naive": 11.0},
+    "mape_by_method": {"ols_trend": 12.5, "naive": 11.0},
     "n_periods": 9,
     "has_gaps": False,
     "income_only": True,
@@ -695,7 +695,7 @@ class TestProjectionExport(unittest.TestCase):
         ws = wb["Proyección ML"]
 
         # Metodo y veredicto naive: la evidencia viaja con el documento.
-        self.assertEqual(self._value_beside(ws, "Método publicado"), "holt_damped")
+        self.assertEqual(self._value_beside(ws, "Método publicado"), "ols_trend")
         self.assertEqual(
             self._value_beside(ws, "¿Superó al método naive?"),
             "No, ningún método superó al naive en el backtest.",
@@ -753,7 +753,7 @@ class TestProjectionExport(unittest.TestCase):
         # comparan sobre el texto aplanado, no sobre su layout.
         flat = _pdf_text(response.content).replace("\n", " ")
         self.assertIn("Proyección de Machine Learning", flat)
-        self.assertIn("holt_damped", flat)
+        self.assertIn("ols_trend", flat)
         self.assertIn("Medida (backtest propio)", flat)
         self.assertIn("Sin backtest propio", flat)
         self.assertIn("150.000", flat)

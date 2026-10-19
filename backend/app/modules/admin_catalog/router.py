@@ -183,7 +183,7 @@ def audit_connection_nulls(
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada.")
     try:
-        return NullManagerService.audit_connection_nulls(conn, db)
+        return NullManagerService.audit_connection_nulls(conn)
     except SchemaIntrospectionError as ex:
         # Mismo criterio que /catalog/data-dictionary: la peticion es valida, la
         # base de la conexion no se pudo leer. Sin este catch daba 500; antes de

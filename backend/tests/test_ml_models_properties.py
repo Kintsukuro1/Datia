@@ -201,12 +201,8 @@ class TestAvailableYSinNan:
                 medibles = sum(
                     1 for t in range(MIN_PERIODS, n) if t + j < n and con_ceros[t + j] > 0
                 )
-                if method == "holt_damped":
-                    # Holt puede no converger en algun origen: aporta menos.
-                    assert len(propios) <= medibles, (method, j)
-                else:
-                    # Estos tres siempre ajustan: el unico filtro es el actual.
-                    assert len(propios) == medibles, (method, j, propios)
+                # Los tres metodos ajustan siempre: el unico filtro es el actual.
+                assert len(propios) == medibles, (method, j, propios)
                 # Un 0.0 es un acierto exacto (pred == actual > 0) y es lo que
                 # tiene que salir; el bug seria un residuo calculado sobre un
                 # actual 0, o uno negativo.

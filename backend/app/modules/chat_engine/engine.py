@@ -384,7 +384,6 @@ class QueryEngine:
 
         # BRANCH B: Data Analysis / Report / Hybrid
         candidate_sql = None
-        thinking_process: Optional[str] = None
         schema_context = ""
 
         if remediation_action and original_sql:
@@ -408,7 +407,7 @@ class QueryEngine:
                     return ResponseBuilder.build_rbac_denied_response(effective_question, str(e))
 
         if not candidate_sql:
-            candidate_sql, thinking_process, rbac_denial, schema_context, is_llm_active = await SQLGenerator.generate_candidate_sql(
+            candidate_sql, rbac_denial, schema_context, is_llm_active = await SQLGenerator.generate_candidate_sql(
                 question=effective_question,
                 user_role=user_role,
                 allowed_tables=allowed_tables,
@@ -548,7 +547,6 @@ class QueryEngine:
                 final_summary=conversational,
                 final_exec_report=None,
                 conversational=conversational,
-                thinking_process=thinking_process,
                 suggested_questions=[],
                 clarification_options=[],
                 anomalies_detected=[],
@@ -653,7 +651,6 @@ class QueryEngine:
             final_summary=final_summary,
             final_exec_report=final_exec_report,
             conversational=conversational,
-            thinking_process=thinking_process,
             suggested_questions=suggested_questions,
             clarification_options=clarification_opts,
             anomalies_detected=anomalies_detected,

@@ -166,7 +166,6 @@ class QueryResponse(BaseModel):
     conversational_response: Optional[str] = None # Respuesta conversacional estructurada
     grounding_info: Optional[str] = None # Información de las tablas/registros reales de la BD consultados
     presentation_hints: Optional[PresentationHints] = None
-    thinking_process: Optional[str] = None # Razonamiento CoT intermedio
     suggested_questions: List[str] = [] # Preguntas sugeridas de seguimiento (Next Best Questions)
     clarification_options: List[str] = [] # Opciones interactivas ante ambigüedad
     anomalies_detected: List[Dict[str, Any]] = [] # Alertas de anomalías estadísticas detectadas

@@ -76,8 +76,8 @@ def test_la_serie_real_publica_naive_y_lo_declara():
     assert projection["beats_naive"] is False
     assert projection["mape"] == 9.0
     assert projection["n_periods"] == 9
-    # Los cuatro candidatos se calcularon: el naive gano, no fue el unico.
-    assert set(projection["mape_by_method"]) == {"naive", "mean", "ols_trend", "holt_damped"}
+    # Los tres candidatos se calcularon: el naive gano, no fue el unico.
+    assert set(projection["mape_by_method"]) == {"naive", "mean", "ols_trend"}
     assert projection["mape_by_method"]["naive"] == min(projection["mape_by_method"].values())
 
 

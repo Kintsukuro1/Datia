@@ -118,7 +118,7 @@ class TestDeleteRowsDoesNotEatTheStringNone(NullManagerTestCase):
 
     def test_audit_does_not_count_string_none_as_null(self):
         conn = self._make_conn()
-        audit = NullManagerService.audit_connection_nulls(conn, self.db)
+        audit = NullManagerService.audit_connection_nulls(conn)
 
         self.assertFalse(
             audit["has_nulls"],
@@ -346,7 +346,7 @@ class TestScanMarksUnverifiableColumns(NullManagerTestCase):
             return real_execute(self, statement, *args, **kwargs)
 
         with patch.object(SAConnection, "execute", flaky_execute):
-            audit = NullManagerService.audit_connection_nulls(conn, self.db)
+            audit = NullManagerService.audit_connection_nulls(conn)
 
         self.assertFalse(
             audit["is_complete"],
@@ -405,7 +405,7 @@ class TestQuotedIdentifiers(NullManagerTestCase):
 
     def test_audit_and_delete_rows_survive_quoted_identifiers(self):
         conn = self._make_conn()
-        audit = NullManagerService.audit_connection_nulls(conn, self.db)
+        audit = NullManagerService.audit_connection_nulls(conn)
 
         self.assertTrue(audit["has_nulls"])
         self.assertTrue(audit["is_complete"])

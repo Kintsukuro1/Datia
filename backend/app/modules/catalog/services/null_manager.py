@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -38,7 +38,7 @@ class NullManagerService:
     """
 
     @classmethod
-    def audit_connection_nulls(cls, conn: CorporateConnection, db: Optional[Session] = None) -> Dict[str, Any]:
+    def audit_connection_nulls(cls, conn: CorporateConnection) -> Dict[str, Any]:
         tables_meta = SchemaInspector.introspect_connection_metadata(conn)
         tables_with_nulls: List[Dict[str, Any]] = []
 
@@ -147,7 +147,7 @@ class NullManagerService:
             }
 
         try:
-            audit = cls.audit_connection_nulls(conn, db)
+            audit = cls.audit_connection_nulls(conn)
         except Exception:
             # La politica NO se persiste si ni siquiera pudimos mirar la base.
             db.rollback()

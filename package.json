@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Plataforma Web para Democratización de Datos Corporativos con IA Local y PostgreSQL",
   "author": "Felipe",
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
   "scripts": {
     "dev": "concurrently -k -p \"[{name}]\" -n \"BACKEND,FRONTEND\" -c \"cyan.bold,magenta.bold\" \"node scripts/run-backend.js\" \"vite\"",
     "dev:frontend": "vite",

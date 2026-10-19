@@ -70,7 +70,6 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5-coder:7b"
     OPENAI_COMPATIBLE_URL: str = "http://localhost:8000/v1"
-    OPENAI_COMPATIBLE_API_KEY: str = "lm-studio"
 
     # Ventana de contexto por request. Antes era el literal 16384 repetido en
     # tres lugares de `llm_service.py`. Qwen2.5-Coder-7B tiene 32K nativos

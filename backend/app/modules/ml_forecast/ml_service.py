@@ -4,7 +4,7 @@ Que aporta este modulo sobre lo que ya existe
 --------------------------------------------
 La serie la arma `forecast_service` (misma fact table autorizada, mismo
 `ASTValidator`, mismo `SQLExecutor`, mismo enmascarado) y la proyeccion la
-calcula `ml_models` (cuatro metodos, backtest walk-forward, banda por paso).
+calcula `ml_models` (tres metodos, backtest walk-forward, banda por paso).
 Aca viven las tres piezas que faltaban para publicarlas por HTTP:
 
 1. `load_fact_context`: resuelve la fact table del rol y sus columnas REALES.
@@ -462,12 +462,12 @@ def _template_narration(payload: Dict[str, Any]) -> str:
 
     if payload.get("beats_naive"):
         partes.append(
-            f"Se probaron los cuatro metodos ({probados}) y el publicado es '{method}': le gano "
+            f"Se probaron los tres metodos ({probados}) y el publicado es '{method}': le gano "
             "estrictamente al naive en el backtest walk-forward."
         )
     else:
         partes.append(
-            f"Se probaron los cuatro metodos ({probados}) y ninguno le gano estrictamente al naive "
+            f"Se probaron los tres metodos ({probados}) y ninguno le gano estrictamente al naive "
             f"(el valor del ultimo periodo): el publicado es '{method}', el mas simple de los que empatan."
         )
 

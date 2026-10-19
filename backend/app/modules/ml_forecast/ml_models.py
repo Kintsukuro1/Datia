@@ -1,14 +1,18 @@
-"""Proyecciones a varios pasos: cuatro metodos, el backtest elige uno y publica su banda.
+"""Proyecciones a varios pasos: tres metodos, el backtest elige uno y publica su banda.
 
 Por que existe, si ya hay un forecast
 -------------------------------------
 `forecast_calculator.forecast_next_period` publica un unico metodo (naive, el
 ultimo valor) sobre series de ~9 periodos, elegido A MANO porque gano el
 backtest. Ese numero es honesto pero es uno solo: no hay forma de saber si una
-tendencia clara o un Holt amortiguado habrian errado menos, porque nunca se
-calcularon. Este modulo los calcula, mide el error de cada uno caminando hacia
-adelante y publica el de menor error medido. La incognita deja de ser una
-creencia.
+tendencia clara habria errado menos, porque nunca se calculo. Este modulo las
+calcula, mide el error de cada candidato caminando hacia adelante y publica el
+de menor error medido. La incognita deja de ser una creencia.
+
+Un cuarto candidato, Holt amortiguado (`statsmodels`), se retiro en el plan 004
+(fase 4, INV-1): 222 MB de dependencias y 2,8 s de import para competir en un
+backtest donde la doctrina es que gana el error medido. Si la evidencia lo
+vuelve a pedir, se reintroduce como cualquier otro candidato.
 
 Las dos reglas que sostienen el numero
 --------------------------------------
@@ -31,11 +35,9 @@ from __future__ import annotations
 
 import math
 import statistics
-import warnings
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 # Los helpers privados se importan A PROPOSITO, no se copian: la regla de banda
 # (`max(cuantil 80, peor residuo)`) y la normalizacion numerica tienen que ser
@@ -58,7 +60,7 @@ MIN_BACKTESTS_RELIABLE = 4
 # Orden = desempate por simplicidad. Con dos MAPE iguales gana el primero, y el
 # primero es el naive: entre un modelo simple y uno complejo que miden lo mismo,
 # el simple tiene menos formas de romperse en produccion.
-METHODS: Tuple[str, ...] = ("naive", "mean", "ols_trend", "holt_damped")
+METHODS: Tuple[str, ...] = ("naive", "mean", "ols_trend")
 
 
 # ----------------------------------------------------------------------------
@@ -163,35 +165,6 @@ def _fit_predict(method: str, history: Sequence[float], horizon: int) -> List[Op
         coef = numpy.polyfit(numpy.arange(n, dtype=float), points, 1)
         future = numpy.arange(n, n + horizon, dtype=float)
         return [_finite(v) for v in numpy.polyval(coef, future)]
-
-    if method == "holt_damped":
-        if n < 2:
-            return nothing
-        try:
-            # Unico lugar del modulo con una libreria que puede no converger. La
-            # regla es: un ajuste que no converge = ese origen no aporta residuo,
-            # nunca una excepcion al usuario. Si el metodo perdiera TODOS los
-            # origenes, el backtest lo descarta solo, con numeros.
-            #
-            # `catch_warnings` NO es cosmetico: statsmodels avisa por
-            # `RuntimeWarning: divide by zero in log` y `ConvergenceWarning` en
-            # series cortas o con ajuste perfecto, y son avisos de su diagnostico
-            # interno, no una senal para el usuario. Sin silenciarlos, cada
-            # request llena el log con trazas de la libreria y el unico aviso que
-            # importa —el error del backtest— queda enterrado. La senal que
-            # decide es la de abajo: si `forecast` devuelve numeros finitos.
-            # (Ceiling: `catch_warnings` toca un filtro global, asi que con dos
-            # requests simultaneos lo peor que puede pasar es que un warning de
-            # otro hilo se muestre u oculte. Ningun numero cambia.)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                fitted = ExponentialSmoothing(
-                    points, trend="add", damped_trend=True, initialization_method="estimated"
-                ).fit()
-                predicted = fitted.forecast(horizon)
-        except Exception:
-            return nothing
-        return [_finite(v) for v in predicted]
 
     # Metodo desconocido: es un error de llamada, no un dato que falte. Devolver
     # None lo escondería detras de un "no se" y el typo sobreviviria al test.

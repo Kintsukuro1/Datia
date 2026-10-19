@@ -114,7 +114,6 @@ export interface QueryResult {
   conversational_response?: string; // Respuesta conversacional estructurada
   grounding_info?: string; // Información de las tablas o registros reales de la BD consultados
   presentation_hints?: PresentationHints;
-  thinking_process?: string;
   suggested_questions?: string[];
   clarification_options?: string[];
   anomalies_detected?: Array<{

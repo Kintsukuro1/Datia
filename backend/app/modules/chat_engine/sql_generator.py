@@ -28,10 +28,10 @@ class SQLGenerator:
         is_admin: bool = False,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         dialect: str = "postgres",
-    ) -> Tuple[Optional[str], Optional[str], Optional[str], str, bool]:
+    ) -> Tuple[Optional[str], Optional[str], str, bool]:
         """
         Generates candidate SQL from natural language query.
-        Returns: (candidate_sql, thinking_process, rbac_denial_reason, schema_context, is_llm_active)
+        Returns: (candidate_sql, rbac_denial_reason, schema_context, is_llm_active)
         """
         schema_context = ""
         try:
@@ -56,7 +56,6 @@ class SQLGenerator:
         conv_context = PromptManager.format_conversation_context(conversation_history) if conversation_history else ""
 
         candidate_sql = None
-        thinking_process = None
         rbac_denial = None
         is_llm_active = False
 
@@ -82,7 +81,7 @@ class SQLGenerator:
                 denied_match = re.search(r'<acceso_denegado>\s*(.*?)\s*</acceso_denegado>', llm_response_text, re.DOTALL | re.IGNORECASE)
                 if denied_match and not is_admin_user:
                     rbac_denial = denied_match.group(1).strip()
-                    return None, None, rbac_denial, schema_context, is_llm_active
+                    return None, rbac_denial, schema_context, is_llm_active
 
                 # Check textual RBAC denial without SQL (only for non-admin roles)
                 lower_llm = llm_response_text.lower()
@@ -92,9 +91,7 @@ class SQLGenerator:
                     "no tiene autorizacion", "no esta autorizado"
                 ]) and "```sql" not in llm_response_text:
                     rbac_denial = f"Gobernanza RBAC: Acceso denegado. El perfil '{user_role}' no tiene autorización para acceder a estos datos."
-                    return None, None, rbac_denial, schema_context, is_llm_active
-
-                thinking_process = None
+                    return None, rbac_denial, schema_context, is_llm_active
 
                 # Extract SQL block
                 sql_match = re.search(r'```sql\s*(.*?)\s*```', llm_response_text, re.DOTALL | re.IGNORECASE)
@@ -110,4 +107,4 @@ class SQLGenerator:
         except Exception:
             is_llm_active = False
 
-        return candidate_sql, thinking_process, rbac_denial, schema_context, is_llm_active
+        return candidate_sql, rbac_denial, schema_context, is_llm_active

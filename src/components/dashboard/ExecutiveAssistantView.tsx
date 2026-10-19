@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { QueryResult } from '../../types';
 import { AssistantHeader } from '../../features/dashboard/components/assistant/AssistantHeader';
 import { AssistantMarkdownBody } from '../../features/dashboard/components/assistant/AssistantMarkdownBody';
-import { ShieldCheck, Brain, ChevronDown, AlertTriangle, HelpCircle, Sparkles, Trash2, BarChart3, MapPin } from 'lucide-react';
+import { ShieldCheck, AlertTriangle, HelpCircle, Sparkles, Trash2, BarChart3, MapPin } from 'lucide-react';
 import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 
 interface ExecutiveAssistantViewProps {
@@ -19,7 +19,6 @@ export const ExecutiveAssistantView: React.FC<ExecutiveAssistantViewProps> = ({
   onFollowUp,
 }) => {
   const { copied, copy } = useCopyFeedback();
-  const [showThinking, setShowThinking] = useState(false);
 
   const rawContent = result.conversational_response || result.summary_text || '';
 
@@ -45,28 +44,6 @@ export const ExecutiveAssistantView: React.FC<ExecutiveAssistantViewProps> = ({
 
       {/* Main Content Area */}
       <div className="assistant-response-card light-ai-primary-card glass-panel border border-white/10 rounded-2xl p-5 sm:p-6 shadow-2xl space-y-4">
-        {/* Chain-of-Thought (CoT) Reasoning Accordion (#1) */}
-        {result.thinking_process && (
-          <div className="rounded-xl border border-brand-500/25 bg-brand-500/5 dark:bg-brand-500/10 overflow-hidden text-xs">
-            <button
-              type="button"
-              onClick={() => setShowThinking(!showThinking)}
-              className="w-full flex items-center justify-between px-3.5 py-2 text-left font-semibold text-brand-800 dark:text-brand-300 hover:bg-brand-500/10 transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <Brain className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />
-                <span>Razonamiento analítico (Chain-of-Thought)</span>
-              </div>
-              <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showThinking ? 'rotate-180' : ''}`} />
-            </button>
-            {showThinking && (
-              <div className="px-3.5 py-2.5 border-t border-brand-500/20 text-slate-700 dark:text-gray-300 whitespace-pre-wrap font-mono text-[11px] leading-relaxed bg-black/5 dark:bg-black/20">
-                {result.thinking_process}
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Narrative Analysis Body with Badges & Tooltips */}
         <AssistantMarkdownBody rawContent={rawContent} />
 
