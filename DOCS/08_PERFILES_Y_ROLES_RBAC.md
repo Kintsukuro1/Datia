@@ -194,6 +194,8 @@ Cada capa frena por su cuenta. El aislamiento no depende de ninguna en particula
 
 **Por qué las tres hacen falta.** La capa 2 es la que da el mensaje útil ("su perfil no tiene autorización para información financiera"), pero es la más débil: es coincidencia de palabras. Si un rol nuevo no matchea ninguna rama, la pregunta sigue de largo — y ahí siguen las capas 1 y 3, que no dependen de vocabulario. Verificado: el Gerente de Talento tiene bypass del guard para preguntas de negocio, pero su SQL contra `fact_ventas` lo rechaza el AST con `Gobernanza RBAC: Acceso denegado`.
 
+**Proyecciones ML no agrega una cuarta capa.** Los endpoints de proyecciones corren las mismas barreras sobre la tabla elegida: verificación de rol asignado, guard de dominio y validador AST sobre el SQL de la serie. Si el guard corta, la corrida se audita como `RECHAZADO_RBAC` sin tocar la base. El Informe exportado desde la sección Proyecciones se compila del snapshot ya auditado, así que hereda los mismos cortes.
+
 ---
 
 ## 5. Origen de los Datos

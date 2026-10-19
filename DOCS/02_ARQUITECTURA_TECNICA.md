@@ -56,6 +56,7 @@ El sistema está concebido como una **aplicación web autocontenida (self-hosted
   - **Dashboard Canvas:** Renderizado dinámico de tarjetas KPI, gráficos temporales/categóricos y comparativas.
   - **Data Grid:** Tabla con ordenamiento, filtrado y paginación rápida para grandes volúmenes de registros devueltos.
   - **Inspector de Trazabilidad:** Modal/Acordeón con la explicación metodológica, descripción de campos y visualización del SQL auditado.
+  - **Sección Proyecciones (`/projections`):** Proyección multi-paso con banda por paso, evidencia del backtest (MAPE, backtests propios, "sin backtest propio") y export al Informe. El chat redirige con la pregunta precargada ("Abrir en Proyecciones"); no calcula proyecciones por su cuenta.
 
 ### 2.2. Capa de Backend Core y Gobernanza
 - **Gestión de Identidades:** Almacén de credenciales locales (hashing seguro con **bcrypt**, `backend/app/core/security.py`) con caducidad de sesiones locales. Argon2 no está implementado.
@@ -72,6 +73,10 @@ El sistema está concebido como una **aplicación web autocontenida (self-hosted
     2. Prohíbe de forma tajante `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `TRUNCATE`, `EXEC`, `CREATE`, `GRANT`, `REVOKE`.
     3. Extrae todas las tablas y columnas referenciadas en el query y verifica que todas pertenezcan a la lista blanca del rol del usuario.
     4. Inyecta automáticamente límites (`LIMIT` / `TOP`) para evitar desbordes de memoria.
+- **Módulo de Proyecciones ML (`backend/app/modules/ml_forecast/`):** serie temporal sobre la fact table autorizada del rol.
+  - `ml_models.py`: motor puro (naive, media, tendencia OLS, Holt amortiguado) con backtest walk-forward; la banda al 80% sale del error medido, no de un supuesto. Sin IO.
+  - `ml_service.py`: carga el contexto de la fact table, elige métrica y eje temporal (LLM local o heurística, validado contra los metadatos autorizados) y arma el SQL de la serie reusando `forecast_service`.
+  - `router.py`: `/ml/projections/estimate` (estimación instantánea, sin LLM) y `/ml/projections/run`; cada corrida se audita con `validation_status="PROYECCION_ML"` y su `result_snapshot` completo (serie, pasos y evidencia), que es lo que después compila el Informe.
 
 ### 2.3. Capa de Inteligencia Local (LLM Adapter)
 - **Conector Local Agnóstico:**

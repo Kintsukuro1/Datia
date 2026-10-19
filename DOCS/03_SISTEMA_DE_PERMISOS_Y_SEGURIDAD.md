@@ -141,3 +141,5 @@ Para cumplimiento corporativo, cada interacción se registra localmente en la ba
 | `rows_returned` | Cantidad de filas devueltas | `1 fila` |
 
 Este registro garantiza que los administradores puedan auditar qué usuarios consultan qué datos y detectar posibles intentos de acceso no autorizado.
+
+**Proyecciones ML.** Los endpoints de proyecciones (`/ml/projections/estimate` y `/ml/projections/run`) pasan por las mismas barreras que el chat: rol asignado (corte con auditoría), guard de dominio y validador AST sobre el SQL de la serie. Cada corrida queda auditada con `validation_status="PROYECCION_ML"` (o `RECHAZADO_RBAC` si la cortó la gobernanza, sin tocar la base) y su `result_snapshot` completo. El Informe exportado desde la sección Proyecciones se compila desde ese snapshot y registra su propia exportación (`EXPORTADO_PDF` / `EXPORTADO_EXCEL`).

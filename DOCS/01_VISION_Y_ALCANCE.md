@@ -138,6 +138,16 @@ Cada respuesta generada para el usuario en la interfaz contiene 4 bloques clave:
 3. **Tabla Interactiva de Datos:** Visualización tabular paginada, ordenable por columnas y con buscador integrado.
 4. **Panel Desplegable de Trazabilidad:** Documentación del origen del dato, descripción de los campos involucrados y la sentencia SQL ejecutada para máxima transparencia y auditoría.
 
+### 6.1. Sección de Proyecciones ML (implementada)
+
+Además del entregable por consulta, la aplicación tiene una sección **Proyecciones** (`/projections`): el usuario pide una proyección a 3, 6 o 12 pasos sobre la métrica numérica de su tabla autorizada, y el sistema la calcula con un motor estadístico local (naive, media, tendencia OLS y Holt amortiguado, elegidos por backtest walk-forward).
+
+Reglas de honestidad de la sección (visibles en la UI y en el Informe exportado):
+- La banda por paso, el MAPE, `n_backtests` y el veredicto "¿le ganó al naive?" se publican siempre; un número que nadie midió se muestra "—" / "No disponible", nunca como 0.
+- Si la serie no alcanza o la gobernanza niega una columna, la respuesta es `available=false` **con su motivo** (no un error), y la serie leída viaja igual para que el lector pueda accionar.
+- El chat no calcula proyecciones: detecta la intención y ofrece "Abrir en Proyecciones" con la pregunta precargada.
+- Cada corrida queda auditada (`validation_status="PROYECCION_ML"`) y se puede exportar al **Informe ejecutivo** (PDF/Excel) desde la propia página, compilado desde el snapshot de auditoría.
+
 ---
 
 ## 7. Criterios de Éxito del Proyecto

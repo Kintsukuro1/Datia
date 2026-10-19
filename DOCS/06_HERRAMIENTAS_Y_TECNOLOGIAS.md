@@ -141,6 +141,15 @@ El sistema se ha diseñado bajo la premisa no negociable de **operación 100% of
   - **Fernet (AES-256):** Cifrado de contraseñas de conexión almacenadas en la base de metadatos. La clave viene de `FERNET_KEY` o, si no se define, de un SHA-256 de `SECRET_KEY`.
   - **python-jose:** Emisión/validación de JWT de sesión (`python-jose[cryptography]` en `requirements.txt`).
 
+### 3.7. Motor Estadístico de Proyecciones (`numpy`, `statsmodels`)
+
+- **¿Qué son?:** Librerías estándar de cálculo numérico y series de tiempo en Python, con wheels precompilados (sin binarios externos ni compiladores).
+- **¿Por qué se eligieron?:** El módulo `ml_forecast` necesita ajustar suavizado exponencial (Holt amortiguado) y operar numéricamente sobre la serie sin depender de servicios externos, GPU ni internet.
+- **¿Para qué se usan en el proyecto?:**
+  - `statsmodels` (`ExponentialSmoothing`): método Holt amortiguado de `ml_models.py`, uno de los candidatos del backtest walk-forward junto a naive, media y tendencia OLS (estos últimos con `numpy` y stdlib).
+  - `numpy`: conversión numérica de la serie y estabilidad de los cálculos de banda al 80% y MAPE por paso.
+  - La banda y el error **no** salen de estas librerías por sí mismas: salen del error medido por backtest sobre la serie real (ver Documento 01 §6.1).
+
 ---
 
 ## 4. Persistencia Interna y Motor de IA Local
@@ -186,3 +195,5 @@ El sistema se ha diseñado bajo la premisa no negociable de **operación 100% of
 | **Drivers BD** | Conectividad | `psycopg[binary]` (la ingesta de archivos usa `sqlite3`, de la stdlib). MySQL/MSSQL planificados, sin driver ni rama en el builder. | Conexiones `READ ONLY` (`SET TRANSACTION READ ONLY`) a bases de datos corporativas. |
 | **PostgreSQL** | Persistencia | Robusto, ACID, manejo eficiente de JSON y registros de auditoría. | Almacenamiento interno de usuarios, RBAC, catálogo y logs. |
 | **Ollama API** | IA Local | API HTTP local estándar en `localhost:11434` 100% offline. | Inferencia Text-to-SQL, síntesis de negocio y auto-enriquecimiento. |
+| **numpy / statsmodels** | Proyecciones ML | Series de tiempo con wheels precompilados, 100% offline. | Holt amortiguado y cálculo numérico del backtest walk-forward en `ml_forecast`. |
+| **reportlab / openpyxl** | Informe ejecutivo | Generación local de PDF/XLSX sin servicios externos. | Export del Informe (consulta o proyección) compilado desde el snapshot de auditoría. |
