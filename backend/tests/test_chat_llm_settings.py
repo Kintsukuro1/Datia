@@ -13,7 +13,6 @@ default. Estos tests fijan las tres propiedades del fix:
    el primer endpoint al que le pegan es el servidor de Ajustes.
 """
 import unittest
-import uuid
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -21,9 +20,9 @@ from fastapi.testclient import TestClient
 from main import app
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
-from app.modules.auth.models import User, UserSession
-from app.core.security import create_access_token
 from app.modules.chat_engine.llm_service import LLMService
+
+from conftest import make_auth_headers
 
 
 def _fake_http_client(captured):
@@ -99,12 +98,8 @@ class TestChatLLMSettingsRelay(unittest.TestCase):
         # config de la request, no como termino la request.
         self.client = TestClient(app, raise_server_exceptions=False)
         self.db = SessionLocal()
-        self.admin_user = self.db.query(User).filter(User.username == "admin").first()
-        self.admin_jti = str(uuid.uuid4())
-        self.admin_token = create_access_token(subject=self.admin_user.id, jti=self.admin_jti)
-        self.db.add(UserSession(user_id=self.admin_user.id, jti=self.admin_jti, is_revoked=False))
-        self.db.commit()
-        self.headers = {"Authorization": f"Bearer {self.admin_token}"}
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
 
     def tearDown(self):
         self.db.close()

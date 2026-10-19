@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import MagicMock
 from app.modules.chat_engine.engine import QueryEngine
+from app.modules.chat_engine.sql_executor import SQLExecutor
+from app.modules.chat_engine.ast_validator import ASTValidator
 from app.core.prompts import PromptManager
 
 class TestDynamicPrompts(unittest.TestCase):
@@ -28,9 +30,9 @@ class TestDynamicPrompts(unittest.TestCase):
         self.assertIn("dim_servidores", prompt)
 
     def test_grounding_query_generation_dynamic(self):
-        """Verifica que _get_grounding_query_for_question genere una consulta sobre la primera tabla autorizada."""
+        """Verifica que get_grounding_query genere una consulta sobre la primera tabla autorizada."""
         allowed_tables = {"dim_clientes", "fact_ventas"}
-        sql = QueryEngine._get_grounding_query_for_question(
+        sql = SQLExecutor.get_grounding_query(
             question="¿Cuántos clientes tenemos?",
             user_role="Economista",
             allowed_tables=allowed_tables
@@ -41,12 +43,34 @@ class TestDynamicPrompts(unittest.TestCase):
     def test_grounding_query_fallback_table(self):
         """Verifica que si ninguna tabla coincide explícitamente en el texto, se use la primera autorizada en orden alfabético."""
         allowed_tables = {"fact_inventario", "dim_almacen"}
-        sql = QueryEngine._get_grounding_query_for_question(
+        sql = SQLExecutor.get_grounding_query(
             question="Resumen general",
             user_role="TI",
             allowed_tables=allowed_tables
         )
         self.assertIn("dim_almacen", sql)
+
+    def test_grounding_query_quotes_table_names(self):
+        """Un nombre con comilla debe sobrevivir al guardarrail que ejecuta el grounding.
+
+        Sin citar, `SELECT * FROM ventas"raras` no parsea para sqlglot: la rama
+        conversacional quedaba sin filas de contexto para el LLM (fail closed,
+        pero silencioso).
+        """
+        allowed_tables = {'ventas"raras'}
+        sql = SQLExecutor.get_grounding_query(
+            question="Resumen general",
+            user_role="TI",
+            allowed_tables=allowed_tables
+        )
+        self.assertIn('"ventas""raras"', sql)
+        ASTValidator.validate_and_secure_sql(
+            sql,
+            dialect="postgres",
+            allowed_tables=allowed_tables,
+            table_columns={'ventas"raras': ["id"]},
+            is_admin=False
+        )
 
     def test_prompt_manager_unified_synthesis_prompts(self):
         """Verifica que el prompt de síntesis unificada adapte su enfoque según el rol y especifique las 4 claves JSON requeridas."""

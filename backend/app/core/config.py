@@ -50,10 +50,6 @@ class Settings(BaseSettings):
             return self.DEMO_MODE
         return self.ENVIRONMENT.lower() != "production"
 
-    # Cuantos turnos de historial acepta el chat como maximo.
-    # Vive en Settings (y no junto al schema) porque es un limite de la
-    # plataforma, no del contrato de un endpoint.
-    MAX_HISTORY_TURNS: int = 20
     DEFAULT_SECRET_KEY: str = "democratizacion_datos_super_secret_key_local_2026_aes256_change_in_prod"
 
     # Secret Key for JWT Tokens and AES Encryption

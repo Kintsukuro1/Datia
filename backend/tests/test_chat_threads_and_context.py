@@ -3,8 +3,10 @@ from fastapi.testclient import TestClient
 from app.core.database import Base, engine, SessionLocal
 from app.modules.auth.models import User, Role
 from app.modules.chat_engine.models import ChatConversation, QueryLearningMemory
-from app.core.security import get_password_hash, create_access_token
+from app.core.security import get_password_hash
 from main import app
+
+from conftest import make_auth_headers
 
 @pytest.fixture(scope="module")
 def setup_db():
@@ -36,23 +38,14 @@ def setup_db():
     db.close()
     yield user
 
-import uuid
-from app.modules.auth.models import UserSession
-
 @pytest.fixture
 def auth_headers(setup_db):
+    # Sesion viva via helper: el preambulo comun vive en conftest.
     db = SessionLocal()
-    jti = str(uuid.uuid4())
-    token = create_access_token(subject=setup_db.id, jti=jti)
-    session = UserSession(
-        user_id=setup_db.id,
-        jti=jti,
-        is_revoked=False
-    )
-    db.add(session)
-    db.commit()
-    db.close()
-    return {"Authorization": f"Bearer {token}"}
+    try:
+        return make_auth_headers(db, setup_db.username)
+    finally:
+        db.close()
 
 
 
@@ -190,15 +183,24 @@ def test_readonly_safety():
     """`execute_raw_sql` abre la transaccion en solo-lectura: un DDL tiene que
     fallar aunque el caller lo pida."""
     from app.modules.chat_engine.sql_executor import SQLExecutor
+    from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
     from app.core.config import settings
+    from app.core.security import encrypt_credential
     import pytest
 
-    url = (
-        f"postgresql+psycopg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
-        f"@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+    conn = CorporateConnection(
+        name="readonly-safety-test",
+        db_type=DatabaseType.POSTGRESQL,
+        host=settings.POSTGRES_SERVER,
+        port=settings.POSTGRES_PORT,
+        database_name=settings.POSTGRES_DB,
+        username=settings.POSTGRES_USER,
+        encrypted_password=encrypt_credential(settings.POSTGRES_PASSWORD),
+        is_active=True,
+        is_uploaded=True
     )
     with pytest.raises(Exception) as ctx:
-        SQLExecutor.execute_raw_sql(url, "CREATE TABLE forbidden_test (id INT);")
+        SQLExecutor.execute_raw_sql(conn, "CREATE TABLE forbidden_test (id INT);")
     self_msg = str(ctx.value).lower()
     assert "read-only" in self_msg or "readonly" in self_msg, self_msg
 

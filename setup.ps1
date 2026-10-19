@@ -152,10 +152,11 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# El backend puede arrancar "healthy" mientras cae a SQLite en silencio si
-# Postgres conserva una contrasena vieja (database.py hace el fallback en el
-# import). Esa es la misma instalacion rota-disfrazada-de-ok que ya nos mordio
-# dos veces, asi que se verifica el marcador del motor real en los logs.
+# El backend puede arrancar "healthy" sin estar contra el Postgres real si la
+# imagen es vieja: las instalaciones anteriores traian un fallback silencioso a
+# SQLite que el codigo actual ya NO tiene (database.py falla ruidoso en el
+# import). `docker compose up` reutiliza la imagen local si existe, asi que se
+# verifica el marcador del motor real en los logs.
 $usesPg = @(docker compose -f $compose logs backend 2>$null | Select-String "Motor de base de datos activo: POSTGRESQL")
 if ($usesPg.Count -eq 0) {
     Write-Host ""

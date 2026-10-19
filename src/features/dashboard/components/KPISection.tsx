@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   TrendingUp,
   TrendingDown,
@@ -9,11 +9,10 @@ import {
   Filter,
   Copy,
   Check,
-  Sparkles,
 } from 'lucide-react';
 import { QueryResult, KPICard } from '../../../types';
 import { formatMetricNumber } from './charts/theme';
-import { copyToClipboard } from '../../../shared/clipboard';
+import { useCopyFeedback } from '../../../hooks/useCopyFeedback';
 
 interface KPISectionProps {
   kpis?: QueryResult['kpis'];
@@ -350,11 +349,10 @@ const PercentageTrack: React.FC<{ percent: number }> = ({ percent }) => {
 
 interface SingleCardProps {
   kpi: KPICard;
-  idx: number;
 }
 
-const SingleKPICard: React.FC<SingleCardProps> = ({ kpi, idx }) => {
-  const [copied, setCopied] = useState(false);
+const SingleKPICard: React.FC<SingleCardProps> = ({ kpi }) => {
+  const { copied, copy } = useCopyFeedback(1600);
 
   const archetypeId = detectArchetype(kpi.title, kpi.value, kpi.subtitle);
   const theme = ARCHETYPE_THEMES[archetypeId];
@@ -370,11 +368,7 @@ const SingleKPICard: React.FC<SingleCardProps> = ({ kpi, idx }) => {
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
     const copyText = `${cleanTitle}: ${prefix}${numberPart}${suffix}${filterTag ? ` (${filterTag})` : ''} - ${cleanSubtitle}`;
-    void copyToClipboard(copyText).then((ok: boolean) => {
-      if (!ok) return;
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    });
+    void copy(copyText);
   };
 
   const IconComponent = theme.icon;
@@ -519,7 +513,7 @@ export const KPISection: React.FC<KPISectionProps> = ({ kpis }) => {
     <div className="w-full space-y-2">
       <div className={`grid ${gridLayout} gap-3.5`}>
         {kpis.map((kpi, idx) => (
-          <SingleKPICard key={kpi.title ? `${kpi.title}-${idx}` : idx} kpi={kpi} idx={idx} />
+          <SingleKPICard key={kpi.title ? `${kpi.title}-${idx}` : idx} kpi={kpi} />
         ))}
       </div>
     </div>

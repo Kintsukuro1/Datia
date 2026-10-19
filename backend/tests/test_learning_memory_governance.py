@@ -9,7 +9,6 @@ ni de deshacerlo.
 Estos tests fijan los tres bordes: quien puede mirar/borrar, el aislamiento por
 conexion, y que el listado refleje el uso REAL (`execution_count`).
 """
-import uuid
 import unittest
 
 from fastapi.testclient import TestClient
@@ -17,9 +16,9 @@ from fastapi.testclient import TestClient
 from main import app
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
-from app.modules.auth.models import User, UserSession
 from app.modules.chat_engine.models import QueryLearningMemory
-from app.core.security import create_access_token
+
+from conftest import make_auth_headers
 
 
 # Prefijo de las filas que crea el test. El aislamiento por `connection_id` es lo
@@ -41,11 +40,8 @@ class TestLearningMemoryGovernance(unittest.TestCase):
         self.db = SessionLocal()
         self.users = {}
         for username in ("admin", "juan_ti"):
-            u = self.db.query(User).filter(User.username == username).first()
-            jti = str(uuid.uuid4())
-            self.db.add(UserSession(user_id=u.id, jti=jti, is_revoked=False))
-            self.db.commit()
-            self.users[username] = {"Authorization": f"Bearer {create_access_token(subject=u.id, jti=jti)}"}
+            # Sesion viva via helper: el preambulo comun vive en conftest.
+            self.users[username] = make_auth_headers(self.db, username)
         self.admin_headers = self.users["admin"]
         self.user_headers = self.users["juan_ti"]
         # Dos conexiones distintas para probar el aislamiento por `connection_id`.

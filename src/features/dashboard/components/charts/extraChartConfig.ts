@@ -1,4 +1,4 @@
-import { BASE_TOOLTIP, CHART_FONT_FAMILY, axisRotateAngle, buildTooltipHtml, truncateAxisLabel, THEME_COLORS, computeChartStats, formatMetricNumber } from './theme';
+import { BASE_TOOLTIP, CHART_FONT_FAMILY, axisRotateAngle, makeTooltipFormatter, truncateAxisLabel, THEME_COLORS, computeChartStats, formatMetricNumber } from './theme';
 
 type ExtraChartType = 'radial' | 'scatter' | 'gauge' | 'treemap';
 
@@ -29,16 +29,7 @@ export function buildExtraChartOption(params: {
   const yValues = processedRows.map((r) => Number(r[numCol]) || 0);
   const stats = computeChartStats(processedRows, catCol, numCol);
 
-  const formatTooltipHtml = (name: string, val: number) => {
-    const pctStr = stats.total > 0 ? `${((val / stats.total) * 100).toFixed(1)}%` : '';
-    return buildTooltipHtml(
-      name,
-      formatMetricNumber(val, isCurrency),
-      pctStr,
-      numCol?.replace(/_/g, ' ') ?? '',
-      currentTheme.primary
-    );
-  };
+  const formatTooltipHtml = makeTooltipFormatter(stats, numCol, isCurrency, currentTheme.primary);
 
   const formatAxisLabel = (val: string) => truncateAxisLabel(val);
 

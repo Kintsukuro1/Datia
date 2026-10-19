@@ -198,7 +198,9 @@ export const catalogService = {
   },
 
   async applyNullPolicy(connectionId: number, policy: 'delete_rows' | 'mode' | 'nearest' | 'open'): Promise<{ status: string; policy: string; message: string }> {
-    const res = await apiClient.post(`/catalog/connections/${connectionId}/nulls-policy`, { policy });
+    // El backend exige confirmación server-side para las políticas destructivas;
+    // el clic en el paso "nulls_check" del wizard es esa confirmación.
+    const res = await apiClient.post(`/catalog/connections/${connectionId}/nulls-policy`, { policy, confirm: true });
     return res.data;
   },
 };

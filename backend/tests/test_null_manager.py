@@ -27,6 +27,7 @@ from conftest import (
 )
 
 from app.modules.catalog.services.null_manager import NullManagerService
+from app.modules.catalog.services.schema_inspector import quote_sql_identifier
 from app.modules.chat_engine.engine import QueryEngine
 
 
@@ -60,7 +61,9 @@ class NullManagerTestCase(unittest.TestCase):
                     "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
                 ))]
                 for name in names:
-                    c.execute(text(f'DROP TABLE IF EXISTS public."{name}" CASCADE'))
+                    c.execute(text(
+                        f'DROP TABLE IF EXISTS public.{quote_sql_identifier(name)} CASCADE'
+                    ))
         finally:
             eng.dispose()
 
@@ -72,13 +75,16 @@ class NullManagerTestCase(unittest.TestCase):
         finally:
             eng.dispose()
 
-    def _rows(self, table):
+    def _query(self, sql):
         eng = pg_source_engine(self.pg_db)
         try:
             with eng.begin() as c:
-                return [tuple(r) for r in c.execute(text(f'SELECT * FROM "{table}" ORDER BY 1'))]
+                return [tuple(r) for r in c.execute(text(sql))]
         finally:
             eng.dispose()
+
+    def _rows(self, table):
+        return self._query(f'SELECT * FROM {quote_sql_identifier(table)} ORDER BY 1')
 
     def _make_conn(self, db_name=None):
         conn = MagicMock()
@@ -123,7 +129,7 @@ class TestDeleteRowsDoesNotEatTheStringNone(NullManagerTestCase):
 
     def test_delete_rows_keeps_rows_whose_value_is_the_string_none(self):
         conn = self._make_conn()
-        result = NullManagerService.apply_null_policy(conn, "delete_rows", self.db)
+        result = NullManagerService.apply_null_policy(conn, "delete_rows", self.db, confirm=True)
 
         rows = self._rows("clientes")
         self.assertEqual(len(rows), 3, f"delete_rows borro filas con dato legitimo: {rows}")
@@ -136,12 +142,65 @@ class TestDeleteRowsDoesNotEatTheStringNone(NullManagerTestCase):
         self._exec("INSERT INTO clientes VALUES (4, NULL, 'activo')")
 
         conn = self._make_conn()
-        result = NullManagerService.apply_null_policy(conn, "delete_rows", self.db)
+        result = NullManagerService.apply_null_policy(conn, "delete_rows", self.db, confirm=True)
 
         rows = self._rows("clientes")
         self.assertEqual(len(rows), 3)
         self.assertNotIn((4, None, "activo"), rows)
         self.assertEqual(result["status"], "success")
+        self.assertEqual(result["rows_affected"], 1)
+
+
+class TestConfirmationIsRequired(NullManagerTestCase):
+    """La mutacion fisica no puede dispararse sin confirmacion explicita.
+
+    El clic en la UI no viaja al backend: sin `confirm`, un cliente directo con
+    token de admin borraba filas en un solo request.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._exec("CREATE TABLE pendientes (id INTEGER PRIMARY KEY, valor TEXT)")
+        self._exec("INSERT INTO pendientes VALUES (1, NULL), (2, 'ok')")
+
+    def test_destructive_policy_without_confirm_is_rejected(self):
+        conn = self._make_conn()
+        with self.assertRaises(ValueError) as ctx:
+            NullManagerService.apply_null_policy(conn, "delete_rows", self.db)
+
+        self.assertIn("confirm", str(ctx.exception))
+        self.assertEqual(conn.null_policy, "open", "la politica se persistio antes de rechazar")
+        self.assertEqual(len(self._rows("pendientes")), 2, "se escribio sin confirmacion")
+
+    def test_open_policy_does_not_require_confirm(self):
+        conn = self._make_conn()
+        result = NullManagerService.apply_null_policy(conn, "open", self.db)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(conn.null_policy, "open")
+
+
+class TestModeTieIsDeterministic(NullManagerTestCase):
+    """Dos valores con la misma frecuencia: gana el menor, siempre.
+
+    Antes `ORDER BY COUNT(*) DESC LIMIT 1` dejaba el empate al azar del
+    planner: la misma base podia remediarse distinto entre corridas.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._exec("CREATE TABLE empate_moda (id INTEGER PRIMARY KEY, valor INTEGER)")
+        self._exec(
+            "INSERT INTO empate_moda VALUES (1, 20), (2, 20), (3, 10), (4, 10), (5, NULL)"
+        )
+
+    def test_tie_goes_to_the_lowest_value(self):
+        result = NullManagerService.apply_null_policy(
+            self._make_conn(), "mode", self.db, confirm=True
+        )
+
+        rows = dict(self._rows("empate_moda"))
+        self.assertEqual(rows[5], 10, f"el empate no eligio el menor: {rows}")
         self.assertEqual(result["rows_affected"], 1)
 
 
@@ -162,7 +221,7 @@ class TestZeroRowsIsNotSuccess(NullManagerTestCase):
 
     def test_mode_on_all_null_column_does_not_report_success(self):
         conn = self._make_conn()
-        result = NullManagerService.apply_null_policy(conn, "mode", self.db)
+        result = NullManagerService.apply_null_policy(conn, "mode", self.db, confirm=True)
 
         self.assertEqual(
             result["status"], "no_op",
@@ -173,7 +232,7 @@ class TestZeroRowsIsNotSuccess(NullManagerTestCase):
 
     def test_nearest_on_all_null_column_does_not_report_success(self):
         conn = self._make_conn()
-        result = NullManagerService.apply_null_policy(conn, "nearest", self.db)
+        result = NullManagerService.apply_null_policy(conn, "nearest", self.db, confirm=True)
 
         self.assertEqual(result["status"], "no_op")
         self.assertEqual(result["rows_affected"], 0)
@@ -195,7 +254,7 @@ class TestZeroRowsIsNotSuccess(NullManagerTestCase):
         }
         with patch.object(NullManagerService, "audit_connection_nulls", return_value=audit_ok):
             with self.assertRaises(OperationalError):
-                NullManagerService.apply_null_policy(conn, "delete_rows", self.db)
+                NullManagerService.apply_null_policy(conn, "delete_rows", self.db, confirm=True)
 
         self.db.rollback.assert_called_once()
         self.db.commit.assert_not_called()
@@ -207,7 +266,7 @@ class TestZeroRowsIsNotSuccess(NullManagerTestCase):
         self._exec("INSERT INTO mixta VALUES (2, NULL)")
 
         conn = self._make_conn()
-        result = NullManagerService.apply_null_policy(conn, "mode", self.db)
+        result = NullManagerService.apply_null_policy(conn, "mode", self.db, confirm=True)
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["rows_affected"], 1)
@@ -231,7 +290,7 @@ class TestNearestUsesThePrecedingValue(NullManagerTestCase):
 
     def test_forward_fill_takes_previous_value(self):
         conn = self._make_conn()
-        result = NullManagerService.apply_null_policy(conn, "nearest", self.db)
+        result = NullManagerService.apply_null_policy(conn, "nearest", self.db, confirm=True)
 
         rows = self._rows("salarios")
         self.assertEqual(result["status"], "success")
@@ -253,7 +312,7 @@ class TestNearestUsesThePrecedingValue(NullManagerTestCase):
         src = py_inspect.getsource(NullManagerService.apply_null_policy)
 
         self.assertIn(
-            'AND t."{c_name}" IS NULL', src,
+            'AND t.{quoted_col} IS NULL', src,
             "el UPDATE de forward-fill debe filtrar por IS NULL: si no, pisa datos validos",
         )
 
@@ -314,11 +373,54 @@ class TestScanMarksUnverifiableColumns(NullManagerTestCase):
             },
         ):
             conn = self._make_conn()
-            result = NullManagerService.apply_null_policy(conn, "delete_rows", self.db)
+            result = NullManagerService.apply_null_policy(conn, "delete_rows", self.db, confirm=True)
 
         self.assertEqual(result["status"], "no_op")
         self.assertIn("INCOMPLETO", result["message"])
         self.assertIn("permisos de columna", result["message"])
+
+
+class TestQuotedIdentifiers(NullManagerTestCase):
+    """Un identificador con comilla no rompe el audit ni la remediacion.
+
+    `SchemaInspector` y `NullManagerService` armaban SQL con f-strings: una
+    tabla `ventas"raras` producia `FROM "ventas"raras"` (sintaxis invalida o
+    inyeccion). El COUNT fallaba, `row_count` quedaba en 0, el audit saltaba la
+    tabla y una base con nulos se reportaba como limpia.
+    """
+
+    TABLE = 'ventas"raras'
+    COLUMN = 'monto"bruto'
+
+    def setUp(self):
+        super().setUp()
+        self._exec(
+            'CREATE TABLE "ventas""raras" '
+            '("id" INTEGER PRIMARY KEY, "monto""bruto" INTEGER)'
+        )
+        self._exec('INSERT INTO "ventas""raras" VALUES (1, NULL), (2, 10)')
+
+    def tearDown(self):
+        self._exec('DROP TABLE IF EXISTS "ventas""raras"')
+
+    def test_audit_and_delete_rows_survive_quoted_identifiers(self):
+        conn = self._make_conn()
+        audit = NullManagerService.audit_connection_nulls(conn, self.db)
+
+        self.assertTrue(audit["has_nulls"])
+        self.assertTrue(audit["is_complete"])
+        self.assertEqual(audit["total_tables_with_nulls"], 1)
+        table = audit["tables"][0]
+        self.assertEqual(table["table_name"], self.TABLE)
+        self.assertEqual(table["total_rows"], 2)
+        null_cols = [c["column_name"] for c in table["columns_with_nulls"]]
+        self.assertEqual(null_cols, [self.COLUMN])
+
+        result = NullManagerService.apply_null_policy(conn, "delete_rows", self.db, confirm=True)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["rows_affected"], 1)
+        self.assertEqual(self._query('SELECT * FROM "ventas""raras" ORDER BY 1'), [(2, 10)])
 
 
 class TestPolicyIsNotPersistedBeforeItIsApplied(NullManagerTestCase):
@@ -340,7 +442,7 @@ class TestPolicyIsNotPersistedBeforeItIsApplied(NullManagerTestCase):
             side_effect=RuntimeError("no se pudo abrir la base"),
         ):
             with self.assertRaises(RuntimeError):
-                NullManagerService.apply_null_policy(conn, "delete_rows", self.db)
+                NullManagerService.apply_null_policy(conn, "delete_rows", self.db, confirm=True)
 
         self.db.commit.assert_not_called()
         self.db.rollback.assert_called_once()
@@ -359,7 +461,7 @@ class TestPolicyIsNotPersistedBeforeItIsApplied(NullManagerTestCase):
         }
         with patch.object(NullManagerService, "audit_connection_nulls", return_value=audit_ok):
             with self.assertRaises(OperationalError):
-                NullManagerService.apply_null_policy(conn, "delete_rows", self.db)
+                NullManagerService.apply_null_policy(conn, "delete_rows", self.db, confirm=True)
 
         self.db.commit.assert_not_called()
         self.db.rollback.assert_called_once()
@@ -367,7 +469,7 @@ class TestPolicyIsNotPersistedBeforeItIsApplied(NullManagerTestCase):
     def test_success_commits_exactly_once_at_the_end(self):
         self._exec("INSERT INTO t VALUES (2, 'X')")
         conn = self._make_conn()
-        result = NullManagerService.apply_null_policy(conn, "mode", self.db)
+        result = NullManagerService.apply_null_policy(conn, "mode", self.db, confirm=True)
 
         self.assertEqual(result["status"], "success")
         self.db.commit.assert_called_once()
@@ -376,11 +478,8 @@ class TestPolicyIsNotPersistedBeforeItIsApplied(NullManagerTestCase):
 class _NullDbFixture(NullManagerTestCase):
     """Base PostgreSQL desechable con `test_sales`, para el flujo del chat.
 
-    `engine.execute_query` descartaba el retorno de `NullManagerService.apply_null_policy`.
-    El servicio ya devuelve `status: "no_op"` / `rows_affected: 0` cuando no
-    remedio nada, pero el chat miraba el exito viejo: el usuario clickeaba
-    "eliminar nulos", la base no se tocaba y la respuesta decia
-    "Tratamiento de nulos aplicado".
+    El chat remedia SOLO en memoria (plan 002): estos tests fijan que no toque
+    la base fisica y que no cambie la politica administrativa de la conexion.
     """
 
     def setUp(self):
@@ -398,91 +497,113 @@ class _NullDbFixture(NullManagerTestCase):
         mock_db.query.return_value.order_by.return_value.first.return_value = conn
         return mock_db
 
-    def _run_chat(self, mock_conn):
+    def _run_chat(self, mock_conn, sql="SELECT * FROM test_sales",
+                  action="eliminar registros con nulos"):
         """Ejecuta el flujo de remediacion del chat con el LLM apagado.
 
-        Lo que este test verifica es el AVISO de remediacion, no la narrativa:
-        sin el mock cada test espera los timeouts reales del LLM (~23s) y el
-        resultado depende de si hay un modelo levantado. Con el LLM caido el
-        motor tiene que seguir funcionando y diciendo lo mismo.
+        Lo que estos tests verifican es la remediacion y su aviso, no la
+        narrativa: sin el mock cada test espera los timeouts reales del LLM
+        (~23s) y el resultado depende de si hay un modelo levantado.
         """
         with patch(
             "app.modules.chat_engine.llm_service.LLMService.generate_completion",
             new=AsyncMock(return_value=None),
         ):
             return asyncio.run(QueryEngine.execute_query(
-                question="Tratar nulos en test_sales (eliminar registros con nulos) para la consulta: SELECT * FROM test_sales",
+                question=f"Tratar nulos en test_sales ({action}) para la consulta: {sql}",
                 user_role="Administrador",
                 is_admin=True,
                 db=self._mock_db_with(mock_conn),
                 connection_id=1,
-                conversation_history=[
-                    {"question": "SELECT * FROM test_sales", "sql": "SELECT * FROM test_sales"}
-                ],
+                conversation_history=[{"question": sql, "sql": sql}],
             ))
 
     def _chat(self):
         return self._run_chat(self._make_conn())
 
 
-class TestChatReportsNullRemediationResult(_NullDbFixture):
-    """Lo que el CHAT dice tras remediar: tiene que calcar lo que el servicio reporto."""
+class TestChatRemediatesOnlyInMemory(_NullDbFixture):
+    """El chat no ejecuta DELETE/UPDATE contra la base corporativa (plan 002)."""
 
-    def test_no_op_is_communicated_instead_of_claiming_success(self):
-        no_op = {
-            "status": "no_op",
-            "policy": "delete_rows",
-            "rows_affected": 0,
-            "message": "No se detectaron valores nulos: no había nada que remediar.",
-        }
-        with patch("app.modules.chat_engine.engine.NullManagerService.apply_null_policy", return_value=no_op):
+    def test_chat_remediates_the_response_and_leaves_the_database_untouched(self):
+        mock_conn = self._make_conn()
+
+        with patch(
+            "app.modules.chat_engine.engine.NullManagerService.apply_null_policy",
+            side_effect=AssertionError("el chat no puede llamar al escritor fisico"),
+        ):
             response = self._chat()
+
+        self.assertEqual({r["id"] for r in response.data_rows}, {1, 3})
+        self.assertTrue(all(r.get("category") is not None for r in response.data_rows))
+        self.assertIn("Tratamiento de nulos", response.conversational_response)
+        self.assertIn("La base de datos no se modificó", response.conversational_response)
+
+        # Las 3 filas fisicas siguen ahi, incluida la del nulo.
+        rows = self._rows("test_sales")
+        self.assertEqual(len(rows), 3)
+        self.assertIn((2, None, 200.0), rows)
+
+    def test_chat_does_not_change_the_admin_policy(self):
+        mock_conn = self._make_conn()
+        mock_conn.null_policy = "delete_rows"
+
+        with patch(
+            "app.modules.chat_engine.engine.NullManagerService.apply_null_policy",
+            side_effect=AssertionError("el chat no puede llamar al escritor fisico"),
+        ):
+            self._run_chat(mock_conn)
+
+        self.assertEqual(
+            mock_conn.null_policy, "delete_rows",
+            "el chat no debe reescribir la politica configurada por el administrador",
+        )
+
+    def test_query_without_nulls_reports_no_op_instead_of_claiming_success(self):
+        response = self._run_chat(
+            self._make_conn(), sql="SELECT * FROM test_sales WHERE id = 1"
+        )
 
         text = response.conversational_response
         self.assertIn("No se remedió ningún valor nulo", text)
-        self.assertIn("no había nada que remediar", text)
+        self.assertIn("La base de datos no se modificó", text)
         self.assertNotIn(
             "Tratamiento de nulos",
             text,
-            "el banner de exito no puede seguir apareciendo cuando no se remedio nada",
+            "el banner de exito no puede aparecer cuando no se remedio nada",
         )
 
-    def test_zero_rows_with_success_status_is_also_not_claimed_as_applied(self):
-        """El `status` viejo ya daba success con 0 filas: el aviso no depende solo de el."""
-        with patch(
-            "app.modules.chat_engine.engine.NullManagerService.apply_null_policy",
-            return_value={"status": "success", "policy": "mode", "rows_affected": 0, "message": "0 celdas."},
-        ):
-            response = self._chat()
+    def test_all_null_column_mode_reports_no_op(self):
+        """Sin valores validos no hay moda: no se puede afirmar que se remedio."""
+        response = self._run_chat(
+            self._make_conn(),
+            sql="SELECT * FROM test_sales WHERE id = 2",
+            action="adaptar a la moda",
+        )
 
         self.assertIn("No se remedió ningún valor nulo", response.conversational_response)
         self.assertNotIn("Tratamiento de nulos", response.conversational_response)
 
-    def test_remediation_with_rows_affected_is_reported_as_applied(self):
-        applied = {
-            "status": "success",
-            "policy": "delete_rows",
-            "rows_affected": 2,
-            "message": "Remediación de nulos aplicada bajo la política 'delete_rows': 2 celda(s) modificada(s).",
-        }
-        with patch("app.modules.chat_engine.engine.NullManagerService.apply_null_policy", return_value=applied):
-            response = self._chat()
 
-        text = response.conversational_response
-        self.assertIn("Tratamiento de nulos", text)
-        self.assertIn("Eliminación de registros con nulos", text)
-        self.assertNotIn("No se remedió ningún valor nulo", text)
+class TestInMemoryScope(unittest.TestCase):
+    """La definicion de "nulo" es la misma en el chat y en la auditoria: NULL de SQL.
 
-    def test_policy_is_still_forced_to_open_afterwards(self):
-        """El aviso no puede cambiar la politica aplicada: sigue siendo 'open'."""
-        no_op = {"status": "no_op", "policy": "delete_rows", "rows_affected": 0, "message": "nada que remediar"}
-        mock_conn = self._make_conn()
-        mock_conn.null_policy = "delete_rows"
+    Antes `es_celda_nula` contaba tambien los textos 'none'/'null', asi que la
+    remediacion in-memory borraba o reemplazaba contenido legitimo que el audit
+    fisico (`IS NULL`) ni siquiera contaba como nulo.
+    """
 
-        with patch("app.modules.chat_engine.engine.NullManagerService.apply_null_policy", return_value=no_op):
-            self._run_chat(mock_conn)
+    def test_texto_none_no_es_nulo(self):
+        rows = [{"id": 1, "proveedor": "None"}, {"id": 2, "proveedor": None}]
+        out = NullManagerService.apply_in_memory_remediation(
+            rows, ["id", "proveedor"], "delete_rows"
+        )
+        self.assertEqual([r["id"] for r in out], [1])
 
-        self.assertEqual(mock_conn.null_policy, "open")
+    def test_mode_tie_in_memory_goes_to_the_lowest_value(self):
+        rows = [{"v": 20}, {"v": 20}, {"v": 10}, {"v": 10}, {"v": None}]
+        out = NullManagerService.apply_in_memory_remediation(rows, ["v"], "mode")
+        self.assertEqual(out[-1]["v"], 10)
 
 
 if __name__ == "__main__":

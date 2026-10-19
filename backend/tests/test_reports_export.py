@@ -36,6 +36,8 @@ from app.modules.admin_catalog.schemas import (
 from app.modules.reports.excel_exporter import ExcelExporter
 from app.modules.reports.pdf_exporter import PDFExporter
 
+from conftest import make_auth_headers
+
 HAS_PYMUPDF = importlib.util.find_spec("fitz") is not None
 
 # Todo lo que un LLM o un usuario podrian escribir de verdad: markup, ampersand,
@@ -241,18 +243,8 @@ class TestExportHttpContract(unittest.TestCase):
         self.db = SessionLocal()
 
         self.user = self.db.query(User).filter(User.username == "admin").first()
-        self.jti = str(uuid.uuid4())
-        self.token = create_access_token(subject=self.user.id, jti=self.jti)
-
-        session = UserSession(
-            user_id=self.user.id,
-            jti=self.jti,
-            is_revoked=False
-        )
-        self.db.add(session)
-        self.db.commit()
-
-        self.headers = {"Authorization": f"Bearer {self.token}"}
+        # Sesion viva via helper: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
 
         # AuditLog con result_snapshot para el usuario admin
         self.audit_log = AuditLog(
@@ -380,13 +372,8 @@ class TestExportHttpContract(unittest.TestCase):
         self.db.commit()
         self.db.refresh(log_a)
 
-        # 4. JWT de User B
-        jti_b = str(uuid.uuid4())
-        token_b = create_access_token(subject=user_b.id, jti=jti_b)
-        session_b = UserSession(user_id=user_b.id, jti=jti_b, is_revoked=False)
-        self.db.add(session_b)
-        self.db.commit()
-        headers_b = {"Authorization": f"Bearer {token_b}"}
+        # 4. JWT de User B (sesion viva via helper: el preambulo vive en conftest)
+        headers_b = make_auth_headers(self.db, user_b.username)
 
         try:
             # User B intenta exportar el audit log de User A

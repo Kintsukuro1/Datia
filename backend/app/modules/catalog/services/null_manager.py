@@ -3,7 +3,20 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.modules.admin_catalog.models import CorporateConnection
-from app.modules.catalog.services.schema_inspector import SchemaInspector
+from app.modules.catalog.services.schema_inspector import (
+    SchemaInspector,
+    quote_sql_identifier as quote_ident,
+)
+
+def es_celda_nula(v: Any) -> bool:
+    """Celda sin dato: SOLO `None` (NULL de SQL).
+
+    Los textos 'none'/'null' NO cuentan como nulo: son contenido real (un
+    proveedor, un estado, una observacion) y tratarlos como hueco borraba
+    filas vivas. El audit y `apply_null_policy` ya usan `IS NULL`; esto alinea
+    la remediacion in-memory del chat y sus avisos con esa misma definicion.
+    """
+    return v is None
 
 class NullManagerService:
     """
@@ -29,9 +42,11 @@ class NullManagerService:
         tables_meta = SchemaInspector.introspect_connection_metadata(conn)
         tables_with_nulls: List[Dict[str, Any]] = []
 
-        from app.core.database import build_engine_for_connector
-        eng = build_engine_for_connector(conn)
-        with eng.connect() as connection:
+        # `connector_engine` y no `build_engine_for_connector`: libera el pool al
+        # salir de la auditoria. Crear el engine a mano dejaba los sockets del
+        # pool sin cerrar en cada request (mismo patron que schema_inspector).
+        from app.core.database import connector_engine
+        with connector_engine(conn) as eng, eng.connect() as connection:
             for tbl_info in tables_meta:
                 tbl_name = tbl_info["table_name"]
                 schema_name = tbl_info.get("schema_name", "public")
@@ -45,7 +60,10 @@ class NullManagerService:
                     col_name = col["name"]
                     try:
                         res = connection.execute(
-                            text(f'SELECT COUNT(*) FROM "{schema_name}"."{tbl_name}" WHERE "{col_name}" IS NULL')
+                            text(
+                                f'SELECT COUNT(*) FROM {quote_ident(schema_name)}.{quote_ident(tbl_name)} '
+                                f'WHERE {quote_ident(col_name)} IS NULL'
+                            )
                         ).scalar()
                         null_count = int(res or 0)
                         if null_count > 0:
@@ -90,9 +108,28 @@ class NullManagerService:
         }
 
     @classmethod
-    def apply_null_policy(cls, conn: CorporateConnection, policy: str, db: Session) -> Dict[str, Any]:
+    def apply_null_policy(
+        cls, conn: CorporateConnection, policy: str, db: Session, confirm: bool = False
+    ) -> Dict[str, Any]:
+        """Remediacion FISICA de la base corporativa (DELETE/UPDATE + commit).
+
+        Reservada al endpoint administrativo
+        `/catalog/connections/{id}/nulls-policy`, que exige `get_current_admin`.
+        El chat NO usa este metodo: aplica `apply_in_memory_remediation` sobre
+        las filas de la respuesta y deja la base intacta (plan 002).
+
+        `confirm=True` es obligatorio para las politicas que escriben. El clic
+        en la UI no viaja al backend: sin este flag, cualquier cliente con
+        token de admin disparaba DELETE/UPDATE en un solo request.
+        """
         if policy not in ("delete_rows", "mode", "nearest", "open"):
             raise ValueError(f"Política de nulos no soportada: {policy}")
+
+        if policy != "open" and not confirm:
+            raise ValueError(
+                f"La política '{policy}' modifica la base corporativa (DELETE/UPDATE). "
+                "Reenvíe la petición con confirm=true para ejecutarla."
+            )
 
         # Un SOLO commit, al final. Persistir la politica al principio dejaba la
         # conexion diciendo "política activa" cuando el audit o la remediacion
@@ -146,42 +183,59 @@ class NullManagerService:
                         if not cols:
                             continue
 
+                        quoted_schema = quote_ident(schema_name)
+                        quoted_table = quote_ident(tbl_name)
                         if policy == "delete_rows":
-                            conds = " OR ".join([f'"{c["column_name"]}" IS NULL' for c in cols])
-                            res = connection.execute(text(f'DELETE FROM "{schema_name}"."{tbl_name}" WHERE {conds}'))
+                            conds = " OR ".join(
+                                f'{quote_ident(c["column_name"])} IS NULL' for c in cols
+                            )
+                            res = connection.execute(
+                                text(f'DELETE FROM {quoted_schema}.{quoted_table} WHERE {conds}')
+                            )
                             rows_affected += max(res.rowcount or 0, 0)
 
                         elif policy == "mode":
                             for c in cols:
-                                c_name = c["column_name"]
+                                quoted_col = quote_ident(c["column_name"])
                                 mode_row = connection.execute(
-                                    text(f'SELECT "{c_name}" FROM "{schema_name}"."{tbl_name}" WHERE "{c_name}" IS NOT NULL GROUP BY "{c_name}" ORDER BY COUNT(*) DESC LIMIT 1')
+                                    text(
+                                        f'SELECT {quoted_col} FROM {quoted_schema}.{quoted_table} '
+                                        f'WHERE {quoted_col} IS NOT NULL GROUP BY {quoted_col} '
+                                        # Desempate explicito: con dos valores igual de
+                                        # frecuentes, `COUNT(*) DESC` solo no define
+                                        # ganador y el planner elegia distinto entre
+                                        # corridas. Gana el menor.
+                                        f'ORDER BY COUNT(*) DESC, {quoted_col} ASC LIMIT 1'
+                                    )
                                 ).fetchone()
                                 if mode_row and mode_row[0] is not None:
                                     res = connection.execute(
-                                        text(f'UPDATE "{schema_name}"."{tbl_name}" SET "{c_name}" = :m_val WHERE "{c_name}" IS NULL'),
+                                        text(
+                                            f'UPDATE {quoted_schema}.{quoted_table} '
+                                            f'SET {quoted_col} = :m_val WHERE {quoted_col} IS NULL'
+                                        ),
                                         {"m_val": mode_row[0]}
                                     )
                                     rows_affected += max(res.rowcount or 0, 0)
 
                         elif policy == "nearest":
                             for c in cols:
-                                c_name = c["column_name"]
+                                quoted_col = quote_ident(c["column_name"])
                                 # Forward-fill REAL: LAG() sobre ctid. Antes se
                                 # hacia `LIMIT 1` sin ORDER BY, que devuelve una
                                 # fila arbitraria: con salario=[100,NULL,500]
                                 # rellenaba 100 en vez del precedente 500.
                                 res = connection.execute(text(
                                     f'WITH ordered AS ('
-                                    f'  SELECT ctid AS rid, "{c_name}" AS v,'
-                                    f'         LAG("{c_name}") OVER (ORDER BY ctid) AS prev_v'
-                                    f'  FROM "{schema_name}"."{tbl_name}"'
+                                    f'  SELECT ctid AS rid, {quoted_col} AS v,'
+                                    f'         LAG({quoted_col}) OVER (ORDER BY ctid) AS prev_v'
+                                    f'  FROM {quoted_schema}.{quoted_table}'
                                     f'), filled AS ('
                                     f'  SELECT rid, COALESCE(v, prev_v) AS nv FROM ordered'
                                     f') '
-                                    f'UPDATE "{schema_name}"."{tbl_name}" t SET "{c_name}" = f.nv '
+                                    f'UPDATE {quoted_schema}.{quoted_table} t SET {quoted_col} = f.nv '
                                     f'FROM filled f '
-                                    f'WHERE t.ctid = f.rid AND t."{c_name}" IS NULL AND f.nv IS NOT NULL'
+                                    f'WHERE t.ctid = f.rid AND t.{quoted_col} IS NULL AND f.nv IS NOT NULL'
                                 ))
                                 rows_affected += max(res.rowcount or 0, 0)
                                 # Los nulos iniciales (sin predecessor) toman el
@@ -190,11 +244,11 @@ class NullManagerService:
                                 # contaria filas "afectadas" que en realidad no
                                 # cambiaron de valor.
                                 res = connection.execute(text(
-                                    f'UPDATE "{schema_name}"."{tbl_name}" SET "{c_name}" = ('
-                                    f'  SELECT "{c_name}" FROM "{schema_name}"."{tbl_name}"'
-                                    f'  WHERE "{c_name}" IS NOT NULL ORDER BY ctid LIMIT 1)'
-                                    f' WHERE "{c_name}" IS NULL'
-                                    f' AND EXISTS (SELECT 1 FROM "{schema_name}"."{tbl_name}" WHERE "{c_name}" IS NOT NULL)'
+                                    f'UPDATE {quoted_schema}.{quoted_table} SET {quoted_col} = ('
+                                    f'  SELECT {quoted_col} FROM {quoted_schema}.{quoted_table}'
+                                    f'  WHERE {quoted_col} IS NOT NULL ORDER BY ctid LIMIT 1)'
+                                    f' WHERE {quoted_col} IS NULL'
+                                    f' AND EXISTS (SELECT 1 FROM {quoted_schema}.{quoted_table} WHERE {quoted_col} IS NOT NULL)'
                                 ))
                                 rows_affected += max(res.rowcount or 0, 0)
                     connection.commit()
@@ -243,7 +297,7 @@ class NullManagerService:
         for r in rows:
             for c in columns:
                 v = r.get(c)
-                if v is None or str(v).strip().lower() in ("none", "null"):
+                if es_celda_nula(v):
                     null_cols.add(c)
 
         if not null_cols:
@@ -252,7 +306,7 @@ class NullManagerService:
         if policy == "delete_rows":
             return [
                 r for r in rows
-                if not any(r.get(c) is None or str(r.get(c)).strip().lower() in ("none", "null") for c in null_cols)
+                if not any(es_celda_nula(r.get(c)) for c in null_cols)
             ]
 
         if policy == "mode":
@@ -260,12 +314,15 @@ class NullManagerService:
             for col in null_cols:
                 valid_vals = [
                     r[col] for r in new_rows
-                    if r.get(col) is not None and str(r.get(col)).strip().lower() not in ("none", "null")
+                    if not es_celda_nula(r.get(col))
                 ]
                 if valid_vals:
-                    mode_val = max(set(valid_vals), key=valid_vals.count)
+                    # Desempate determinista: entre dos valores con la misma
+                    # frecuencia gana el menor, igual que `ORDER BY ..., col ASC`
+                    # del camino fisico. Antes decidia el orden interno del set.
+                    mode_val = max(sorted(set(valid_vals)), key=valid_vals.count)
                     for r in new_rows:
-                        if r.get(col) is None or str(r.get(col)).strip().lower() in ("none", "null"):
+                        if es_celda_nula(r.get(col)):
                             r[col] = mode_val
             return new_rows
 
@@ -274,17 +331,17 @@ class NullManagerService:
             for col in null_cols:
                 last_val = None
                 for r in new_rows:
-                    if r.get(col) is not None and str(r.get(col)).strip().lower() not in ("none", "null"):
+                    if not es_celda_nula(r.get(col)):
                         last_val = r[col]
                     elif last_val is not None:
                         r[col] = last_val
                 first_val = next(
-                    (r[col] for r in new_rows if r.get(col) is not None and str(r.get(col)).strip().lower() not in ("none", "null")),
+                    (r[col] for r in new_rows if not es_celda_nula(r.get(col))),
                     None
                 )
                 if first_val is not None:
                     for r in new_rows:
-                        if r.get(col) is None or str(r.get(col)).strip().lower() in ("none", "null"):
+                        if es_celda_nula(r.get(col)):
                             r[col] = first_val
             return new_rows
 

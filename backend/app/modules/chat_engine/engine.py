@@ -53,7 +53,6 @@ class QueryEngine:
     _generate_conversational_response = IntentClassifier.generate_conversational_response
     _generate_unified_synthesis_with_llm = KPICalculator.generate_unified_synthesis_with_llm
     _build_dynamic_visualization = KPICalculator.build_dynamic_visualization
-    _get_grounding_query_for_question = SQLExecutor.get_grounding_query
     _retrieve_few_shot_memories = SQLExecutor.retrieve_few_shot_memories
     _persist_learning_memory = SQLExecutor.persist_learning_memory
 
@@ -303,40 +302,6 @@ class QueryEngine:
                 # best-effort, y por eso usa el mismo helper.
                 discard_failed_transaction(db)
 
-        # El retorno de `apply_null_policy` NO se descarta: devuelve `status:
-        # no_op` / `rows_affected: 0` cuando no remedio nada. Mirar solo el exito
-        # hacia que el chat anunciara "remediacion aplicada" sobre una base sin
-        # remediar. La politica aplicada no cambia aqui; solo se comunica el
-        # resultado (el banner de la seccion 8 usa este texto en vez del exito).
-        remediation_notice: Optional[str] = None
-        if remediation_action and conn_record and db:
-            try:
-                result = NullManagerService.apply_null_policy(conn_record, remediation_action, db) or {}
-                conn_record.null_policy = 'open'
-                db.commit()
-                if result.get("status") != "success" or not (result.get("rows_affected") or 0):
-                    remediation_notice = (
-                        "⚠️ **No se remedió ningún valor nulo**\n\n"
-                        f"{result.get('message') or 'La remediación no modificó ninguna celda.'}\n\n"
-                    )
-            except Exception as ex:
-                logger.warning(f"Error applying null remediation to DB: {ex}")
-                # Medido contra PostgreSQL, y NO es el mismo estado que una query
-                # fallida: un `db.commit()` que revienta en el flush deja la sesion
-                # en `PendingRollbackError` ("rolled back due to a previous
-                # exception during flush"), mientras que una sentencia fallida la
-                # deja en `InFailedSqlTransaction`. Los dos envenenan la sesion y
-                # los dos se limpian con el mismo rollback; lo que cambia es que
-                # aqui el fallo puede venir del propio commit, asi que el rollback
-                # va DESPUES de la excepcion, nunca antes.
-                discard_failed_transaction(db)
-                # `apply_null_policy` revierte la política si falla: tampoco se
-                # logro remediar nada, y decirlo es lo unico honesto.
-                remediation_notice = (
-                    "⚠️ **No se remedió ningún valor nulo**\n\n"
-                    f"La remediación falló y se revirtió: {ex}. La base queda sin cambios.\n\n"
-                )
-
         engine_dialect = "postgres"
         if conn_record is None:
             # Sin conexion no hay base a la que apuntar. Antes se caia a la ruta
@@ -518,16 +483,40 @@ class QueryEngine:
         exec_time_ms = int((time.time() - start_time) * 1000)
         columns = list(rows[0].keys()) if rows else []
 
-        # 7. Null Detection & Interactive Remediation
+        # 7. Null Detection & Interactive Remediation (SOLO en memoria)
+        #
+        # El chat no escribe en la base corporativa: la accion elegida por el
+        # usuario se aplica a las filas de ESTA respuesta y nada mas. La
+        # escritura fisica vive en `NullManagerService.apply_null_policy`, que
+        # solo expone el endpoint administrativo de politica de nulos.
         nulls_detected: Optional[Dict[str, Any]] = None
         null_cols_in_rows, null_rows_count = NullHandler.inspect_nulls(rows)
         conn_policy = getattr(conn_record, 'null_policy', 'open') or 'open'
         is_remediation = bool(remediation_action)
+        remediation_notice: Optional[str] = None
 
-        if remediation_action and null_cols_in_rows:
-            rows = NullManagerService.apply_in_memory_remediation(rows, columns, remediation_action)
-            null_cols_in_rows = set()
-            null_rows_count = 0
+        if remediation_action:
+            if null_cols_in_rows:
+                remediated_rows = NullManagerService.apply_in_memory_remediation(
+                    rows, columns, remediation_action
+                )
+                if remediated_rows == rows:
+                    remediation_notice = (
+                        "⚠️ **No se remedió ningún valor nulo**\n\n"
+                        "La consulta no tenía nulos que se pudieran tratar con la "
+                        "política elegida (por ejemplo, una columna 100% nula no "
+                        "tiene valor para imputar). La base de datos no se modificó.\n\n"
+                    )
+                else:
+                    rows = remediated_rows
+                null_cols_in_rows = set()
+                null_rows_count = 0
+            else:
+                remediation_notice = (
+                    "⚠️ **No se remedió ningún valor nulo**\n\n"
+                    "La consulta no devolvió valores nulos que se pudieran tratar. "
+                    "La base de datos no se modificó.\n\n"
+                )
 
         # Early pause on Prompt 1 when nulls are found under policy 'open'
         if null_rows_count > 0 and conn_policy == 'open' and not is_remediation:

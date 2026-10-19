@@ -4,7 +4,6 @@ import { ExecutiveDashboardView } from '../dashboard/ExecutiveDashboardView';
 import {
   Bot,
   User as UserIcon,
-  ShieldCheck,
   Server,
   Wifi,
   WifiOff,
@@ -23,7 +22,7 @@ import { queryService } from '../../features/chat/services/query_service';
 import { connectorService } from '../../features/admin/services/connector_service';
 import { useNotifications } from '../../context/NotificationContext';
 import { buildDynamicChartOption, deriveProcessedRows, THEME_COLORS, ChartType } from '../dashboard/executiveDashboardUtils';
-import { copyToClipboard } from '../../shared/clipboard';
+import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 
 interface ChatMessageItemProps {
   result: QueryResult;
@@ -80,8 +79,8 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
   onFollowUp,
 }) => {
   const { notify } = useNotifications();
-  const [copiedSql, setCopiedSql] = useState(false);
-  const [copiedShareLink, setCopiedShareLink] = useState(false);
+  const { copied: copiedSql, copy: copySql } = useCopyFeedback();
+  const { copied: copiedShareLink, copy: copyShareLink } = useCopyFeedback();
   const [isGolden, setIsGolden] = useState(false);
   const [feedbackStatus, setFeedbackStatus] = useState<'positive' | 'negative' | null>(null);
   const [isPinned, setIsPinned] = useState(false);
@@ -118,11 +117,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
     const threadId = activeThreadId || (result as any).thread_id;
     if (!threadId) return;
     const shareUrl = `${window.location.origin}${window.location.pathname}?thread=${encodeURIComponent(threadId)}`;
-    void copyToClipboard(shareUrl).then((ok: boolean) => {
-      if (!ok) return;
-      setCopiedShareLink(true);
-      setTimeout(() => setCopiedShareLink(false), 2000);
-    });
+    void copyShareLink(shareUrl);
   };
 
   const handleToggleGolden = async () => {
@@ -193,11 +188,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
 
   const handleCopySql = () => {
     if (result.traceability?.sql_executed) {
-      void copyToClipboard(result.traceability.sql_executed).then((ok: boolean) => {
-        if (!ok) return;
-        setCopiedSql(true);
-        setTimeout(() => setCopiedSql(false), 2000);
-      });
+      void copySql(result.traceability.sql_executed);
     }
   };
 

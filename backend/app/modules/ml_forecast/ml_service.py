@@ -51,6 +51,8 @@ from app.modules.chat_engine.forecast_service import (
     # divergen en el primer arreglo y el mismo rol termina leyendo otra tabla
     # segun por que endpoint entro.
     _load_fact_table,
+    _motivo_sin_eje_temporal,
+    _motivo_sin_metrica,
     _run_guarded_sql,
     build_series_sql,
     resolve_columns,
@@ -316,11 +318,6 @@ async def analyze_question(
 # Proyeccion (serie + modelo + metadatos)
 # ----------------------------------------------------------------------------
 
-def _columnas_revisadas(cols: List[Dict[str, Any]]) -> str:
-    """Lista de columnas para los motivos de "no se puede": sin esto hay que adivinar."""
-    return ", ".join(str(c.get("name")) for c in cols)
-
-
 def _has_gaps(normalized: List[Optional[str]]) -> bool:
     """True si el eje de periodos no es continuo, o si no se pudo leer.
 
@@ -394,18 +391,13 @@ def run_projection(
     if not connection:
         raise ForecastUnavailable(f"No existe la conexion {connection_id}.")
 
-    # Mismos mensajes que `run_forecast`: nombran la tabla y listan las columnas
-    # revisadas. Un "no hay datos" sin las columnas obliga a adivinar cual falta.
+    # Los motivos vienen de `forecast_service` (misma fuente que `run_forecast`):
+    # nombran la tabla y listan las columnas revisadas. Un "no hay datos" sin las
+    # columnas obliga a adivinar cual falta.
     if not date_column:
-        raise ForecastUnavailable(
-            f"La tabla '{table}' no tiene columna de fecha o periodo; no hay eje temporal sobre "
-            f"el que proyectar. Columnas revisadas: {_columnas_revisadas(cols)}"
-        )
+        raise ForecastUnavailable(_motivo_sin_eje_temporal(table, cols))
     if not metric_column:
-        raise ForecastUnavailable(
-            f"La tabla '{table}' no tiene columna numerica de monto; no hay nada que predecir. "
-            f"Columnas revisadas: {_columnas_revisadas(cols)}"
-        )
+        raise ForecastUnavailable(_motivo_sin_metrica(table, cols))
 
     dialect = "postgres"
     sql = build_series_sql(table, date_column, metric_column, dialect)

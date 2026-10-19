@@ -16,7 +16,8 @@ import {
   Type,
 } from 'lucide-react';
 import { reportService } from '../../features/dashboard/services/report_service';
-import { copyToClipboard } from '../../shared/clipboard';
+import { useCopyFeedback } from '../../hooks/useCopyFeedback';
+import { downloadBlob } from '../../shared/download';
 
 type ColumnType = 'currency' | 'number' | 'date' | 'string';
 
@@ -121,7 +122,7 @@ export const DataGridTable: React.FC<DataGridTableProps> = ({ columns, rows, que
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [currentPage, setCurrentPage] = useState(1);
   const [isExportingExcel, setIsExportingExcel] = useState(false);
-  const [copiedTSV, setCopiedTSV] = useState(false);
+  const { copied: copiedTSV, copy: copyTSV } = useCopyFeedback();
   const [pageSize, setPageSize] = useState<number>(10);
 
   const columnTypes = useMemo(() => {
@@ -187,11 +188,7 @@ export const DataGridTable: React.FC<DataGridTableProps> = ({ columns, rows, que
     const body = sortedRows
       .map((row) => columns.map((col) => row[col] ?? '').join('\t'))
       .join('\n');
-    void copyToClipboard(`${header}\n${body}`).then((ok: boolean) => {
-      if (!ok) return;
-      setCopiedTSV(true);
-      setTimeout(() => setCopiedTSV(false), 2000);
-    });
+    void copyTSV(`${header}\n${body}`);
   };
 
   const handleExportCSV = () => {
@@ -209,12 +206,7 @@ export const DataGridTable: React.FC<DataGridTableProps> = ({ columns, rows, que
       .map((row) => columns.map((col) => csvCell(row[col])).join(','))
       .join('\n');
     const blob = new Blob([`${header}\n${body}`], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `exportacion_datos_${Date.now()}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, `exportacion_datos_${Date.now()}.csv`);
   };
 
   const handleExportExcel = async () => {

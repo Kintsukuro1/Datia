@@ -18,7 +18,6 @@ Lo que se verifica aca:
 import io
 import os
 import unittest
-import uuid
 
 from fastapi.testclient import TestClient
 
@@ -28,8 +27,9 @@ from app.db.init_db import init_db
 from app.modules.admin_catalog.models import (
     CorporateConnection, DatabaseType, RoleTablePermission,
 )
-from app.modules.auth.models import Role, User, UserSession
-from app.core.security import create_access_token
+from app.modules.auth.models import Role
+
+from conftest import make_auth_headers
 
 DEMO_BUSINESS_TABLES = {
     "dim_categorias", "dim_productos", "dim_clientes",
@@ -54,11 +54,8 @@ class TestDefaultDenyPermissions(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.db = SessionLocal()
-        self.admin = self.db.query(User).filter(User.username == "admin").first()
-        self.jti = str(uuid.uuid4())
-        self.db.add(UserSession(user_id=self.admin.id, jti=self.jti, is_revoked=False))
-        self.db.commit()
-        self.headers = {"Authorization": f"Bearer {create_access_token(subject=self.admin.id, jti=self.jti)}"}
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
 
     def tearDown(self):
         self.db.close()
@@ -306,11 +303,8 @@ class TestDefaultDenyPermissions(unittest.TestCase):
 
     def test_grant_endpoint_requires_admin(self):
         """El granting es de admin: un usuario normal no puede concederse acceso."""
-        eco = self.db.query(User).filter(User.username == "economista").first()
-        jti = str(uuid.uuid4())
-        self.db.add(UserSession(user_id=eco.id, jti=jti, is_revoked=False))
-        self.db.commit()
-        h = {"Authorization": f"Bearer {create_access_token(subject=eco.id, jti=jti)}"}
+        # Sesion viva via helper: el preambulo comun vive en conftest.
+        h = make_auth_headers(self.db, "economista")
 
         conn = self._platform_connection()
         role = self._role("Analista Financiero & Comercial")

@@ -174,8 +174,9 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
 
     def _cuenta(self, role):
         """(user_id, headers). Con `role=None`: la cuenta sin rol asignado."""
-        from app.core.security import create_access_token
-        from app.modules.auth.models import User, UserSession
+        from app.modules.auth.models import User
+
+        from conftest import make_auth_headers
 
         username = f"mlrbac_{uuid.uuid4().hex[:8]}"
         u = User(
@@ -185,10 +186,8 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
         self.db.add(u)
         self.db.commit()
         self.users.append(u.id)
-        jti = str(uuid.uuid4())
-        self.db.add(UserSession(user_id=u.id, jti=jti, is_revoked=False))
-        self.db.commit()
-        return u.id, {"Authorization": f"Bearer {create_access_token(subject=u.id, jti=jti)}"}
+        # Sesion viva via helper: el preambulo comun vive en conftest.
+        return u.id, make_auth_headers(self.db, username)
 
     def _correr(self, headers, conn_id, horizon=6):
         with _llm_caido():

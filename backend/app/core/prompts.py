@@ -85,6 +85,23 @@ def _wrap_data_block(content: str) -> str:
     return f"<{_DATA_TAG}>\n{content.replace(f'</{_DATA_TAG}>', '')}\n</{_DATA_TAG}>"
 
 
+def _role_focus(user_role: str) -> str:
+    """Enfoque tematico por rol, compartido por los prompts de analisis.
+
+    Estaba copiado entero en `get_data_analysis_conversational_system_prompt` y
+    en `get_unified_synthesis_system_prompt`: las mismas cinco ramas en dos
+    lugares que podian divergir sin que nadie lo notara.
+    """
+    role_lower = user_role.lower()
+    if any(w in role_lower for w in ["econ", "financ", "contab"]):
+        return "Enfoque en métricas financieras, eficiencia de costos, márgenes, variaciones porcentuales y retorno económico."
+    if any(w in role_lower for w in ["direc", "geren", "ejecut", "admin"]):
+        return "Enfoque estratégico de alto nivel: síntesis ejecutiva, impacto en el negocio, decisiones críticas y prioridades."
+    if any(w in role_lower for w in ["operat", "logist", "ti", "sistem"]):
+        return "Enfoque operativo: cuellos de botella, tiempos de respuesta, volúmenes transaccionales y acciones correctivas inmediatas."
+    return f"Enfoque analítico adaptado a las responsabilidades y contexto del rol '{user_role}'."
+
+
 # --- Dialecto SQL -----------------------------------------------------------
 #
 # Por que hace falta en el prompt
@@ -307,15 +324,7 @@ class PromptManager:
 
     @staticmethod
     def get_data_analysis_conversational_system_prompt(user_role: str) -> str:
-        role_lower = user_role.lower()
-        if any(w in role_lower for w in ["econ", "financ", "contab"]):
-            role_focus = "Enfoque en métricas financieras, eficiencia de costos, márgenes, variaciones porcentuales y retorno económico."
-        elif any(w in role_lower for w in ["direc", "geren", "ejecut", "admin"]):
-            role_focus = "Enfoque estratégico de alto nivel: síntesis ejecutiva, impacto en el negocio, decisiones críticas y prioridades."
-        elif any(w in role_lower for w in ["operat", "logist", "ti", "sistem"]):
-            role_focus = "Enfoque operativo: cuellos de botella, tiempos de respuesta, volúmenes transaccionales y acciones correctivas inmediatas."
-        else:
-            role_focus = f"Enfoque analítico adaptado a las responsabilidades y contexto del rol '{user_role}'."
+        role_focus = _role_focus(user_role)
 
         return (
             f"Eres DATIA, la plataforma inteligente de analítica y democratización de datos para el rol '{user_role}'.\n"
@@ -402,15 +411,7 @@ class PromptManager:
     # -----------------------------------------------------------------
     @staticmethod
     def get_unified_synthesis_system_prompt(user_role: str) -> str:
-        role_lower = user_role.lower()
-        if any(w in role_lower for w in ["econ", "financ", "contab"]):
-            role_focus = "Enfoque en métricas financieras, eficiencia de costos, márgenes, variaciones porcentuales y retorno económico."
-        elif any(w in role_lower for w in ["direc", "geren", "ejecut", "admin"]):
-            role_focus = "Enfoque estratégico de alto nivel: síntesis ejecutiva, impacto en el negocio, decisiones críticas y prioridades."
-        elif any(w in role_lower for w in ["operat", "logist", "ti", "sistem"]):
-            role_focus = "Enfoque operativo: cuellos de botella, tiempos de respuesta, volúmenes transaccionales y acciones correctivas inmediatas."
-        else:
-            role_focus = f"Enfoque analítico adaptado a las responsabilidades y contexto del rol '{user_role}'."
+        role_focus = _role_focus(user_role)
 
         return (
             f"Eres DATIA, la plataforma inteligente de analítica y democratización de datos corporativos para el rol '{user_role}'.\n"

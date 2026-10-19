@@ -3,6 +3,7 @@ import ReactECharts from 'echarts-for-react';
 import { QueryResult } from '../../../types';
 import { THEME_COLORS, ColorTheme, ChartType, prefersReducedMotion } from './charts/theme';
 import { buildDynamicChartOption, deriveProcessedRows } from '../../../components/dashboard/executiveDashboardUtils';
+import { useCopyFeedback } from '../../../hooks/useCopyFeedback';
 import {
   BarChart3,
   TrendingUp,
@@ -82,7 +83,7 @@ export const ChartSection: React.FC<ChartSectionProps> = ({
     return isKnownChartType(backendType) ? backendType : 'bar';
   });
   const [activeTimeFilter, setActiveTimeFilter] = useState<string>('all');
-  const [copiedChart, setCopiedChart] = useState(false);
+  const { copied: copiedChart, flash: flashCopiedChart } = useCopyFeedback();
   const [chartMenuOpen, setChartMenuOpen] = useState(false);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartMenuRef = useRef<HTMLDivElement>(null);
@@ -166,8 +167,7 @@ export const ChartSection: React.FC<ChartSectionProps> = ({
 
       if (blob && navigator.clipboard && window.ClipboardItem) {
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-        setCopiedChart(true);
-        setTimeout(() => setCopiedChart(false), 2000);
+        flashCopiedChart();
       }
     } catch (err) {
       console.error('No se pudo copiar el gráfico al portapapeles:', err);

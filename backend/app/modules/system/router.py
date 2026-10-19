@@ -9,6 +9,7 @@ from app.api.deps import get_db, get_current_user, require_assigned_role
 from app.core.database import discard_failed_transaction
 from app.modules.auth.models import User
 from app.modules.admin_catalog.models import CorporateConnection
+from app.modules.catalog.services.schema_inspector import quote_sql_identifier
 from app.core.config import settings
 from app.core.constants import (
     SYSTEM_STATUS_OPERATIONAL,
@@ -308,8 +309,8 @@ async def get_system_anomalies(
                     # Proyectar SOLO la metrica numerica. SELECT * tambien traia
                     # columnas sensibles y las metia en las descripciones de
                     # anomalias que se devuelven al cliente.
-                    quoted_table = f'"{chosen_table}"'
-                    quoted_metric = f'"{metric}"'
+                    quoted_table = quote_sql_identifier(chosen_table)
+                    quoted_metric = quote_sql_identifier(metric)
                     scan_sql = f"SELECT {quoted_metric} FROM {quoted_table} LIMIT 60"
                     rows = SQLExecutor.execute_raw_sql(target_exec, scan_sql, dialect=engine_dialect)
                     if rows and len(rows) >= 4:

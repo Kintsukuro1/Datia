@@ -102,8 +102,8 @@ jobs:
         run: |
           pytest -v
 
-  frontend-typecheck:
-    name: Frontend Typecheck (TypeScript)
+  frontend:
+    name: Frontend (tests + build)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -117,43 +117,23 @@ jobs:
 
       # `npm ci` y no `npm ci || npm install`: el fallback silencia un
       # package-lock.json desincronizado de package.json, que es justo lo que
-      # CI debería rechazar en vez de tapar.
+      # CI debería rechazar en vez de tapar. Un solo job con un solo `npm ci`:
+      # antes typecheck y tests repetian la instalacion en jobs gemelos.
       - name: Install frontend dependencies
         run: |
           npm ci --no-audit --prefer-offline
 
-      - name: Run TypeScript typecheck (tsc --noEmit)
-        run: |
-          npx tsc --noEmit
-
-      # `npm run build` ya ejecuta `tsc`, pero además genera el bundle: una app
-      # que no compila no debe pasar CI aunque los tipos cuadren.
-      - name: Build frontend (vite build)
-        run: |
-          npm run build
-
-  frontend-tests:
-    name: Frontend Tests (vitest)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      # Mismo `npm ci` estricto que el job de typecheck: un lock desincronizado
-      # se rechaza en vez de taparse con un install.
-      - name: Install frontend dependencies
-        run: |
-          npm ci --no-audit --prefer-offline
-
-      # Tests de logica pura (entorno node, sin renderizado): 13 archivos / 90
-      # tests medidos el 18/10/2026. Existen desde hace tiempo, pero ningun job
-      # los corria: una regresion de logica pasaba CI igual.
+      # Tests de logica pura (entorno node, sin renderizado). Existen desde
+      # hace tiempo, pero ningun job los corria: una regresion de logica pasaba
+      # CI igual.
       - name: Run vitest suite
         run: |
           npm test
+
+      # `npm run build` ejecuta `tsc` (tipos de todo el proyecto) y ademas
+      # genera el bundle: una app que no compila no debe pasar CI aunque los
+      # tipos cuadren. El paso explicito de `npx tsc --noEmit` se quito porque
+      # era la misma pasada de tipos dos veces.
+      - name: Build frontend (tsc + vite build)
+        run: |
+          npm run build

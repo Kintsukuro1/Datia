@@ -4,9 +4,8 @@ from main import app
 from app.core.database import SessionLocal, Base, engine
 from app.db.init_db import init_db
 from app.modules.telemetry_audit.models import AuditLog
-from app.modules.auth.models import User, UserSession
-from app.core.security import create_access_token
-import uuid
+
+from conftest import make_auth_headers
 
 class TestAuditLog(unittest.TestCase):
 
@@ -20,19 +19,8 @@ class TestAuditLog(unittest.TestCase):
         self.client = TestClient(app)
         self.db = SessionLocal()
 
-        # Ensure admin user exists
-        self.admin_user = self.db.query(User).filter(User.username == "admin").first()
-        self.admin_jti = str(uuid.uuid4())
-        self.admin_token = create_access_token(subject=self.admin_user.id, jti=self.admin_jti)
-        
-        # Create active session for admin
-        session = UserSession(
-            user_id=self.admin_user.id,
-            jti=self.admin_jti,
-            is_revoked=False
-        )
-        self.db.add(session)
-        self.db.commit()
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
 
     def tearDown(self):
         self.db.close()
@@ -41,7 +29,7 @@ class TestAuditLog(unittest.TestCase):
         """Approved query against demo endpoint records an AuditLog with validation_status APROBADO."""
         initial_count = self.db.query(AuditLog).count()
 
-        headers = {"Authorization": f"Bearer {self.admin_token}"}
+        headers = self.headers
         resp = self.client.post(
             "/api/v1/chat/query",
             json={"question": "hola buenos dias", "connection_id": 1},
@@ -59,14 +47,7 @@ class TestAuditLog(unittest.TestCase):
 
     def test_rejected_rbac_query_persists_audit_log(self):
         """Rejected query (e.g. forbidden SQL) records an AuditLog with RECHAZADO status via /chat/query."""
-        user = self.db.query(User).filter(User.username == "felipe_economista").first()
-        jti = str(uuid.uuid4())
-        user_token = create_access_token(subject=user.id, jti=jti)
-        session = UserSession(user_id=user.id, jti=jti, is_revoked=False)
-        self.db.add(session)
-        self.db.commit()
-
-        headers = {"Authorization": f"Bearer {user_token}"}
+        headers = make_auth_headers(self.db, "felipe_economista")
         resp = self.client.post(
             "/api/v1/chat/query",
             json={"question": "DROP TABLE fact_ventas", "connection_id": 1},
@@ -80,7 +61,7 @@ class TestAuditLog(unittest.TestCase):
 
     def test_audit_list_and_export_endpoints(self):
         """Admin can list and export audit logs via /api/v1/audit and /api/v1/audit/export."""
-        headers = {"Authorization": f"Bearer {self.admin_token}"}
+        headers = self.headers
 
         # 1. List audit logs
         list_resp = self.client.get("/api/v1/audit?page=1&page_size=10", headers=headers)

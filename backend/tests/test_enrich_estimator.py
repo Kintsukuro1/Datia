@@ -13,14 +13,12 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
-from conftest import pg_source_conn_attrs
+from conftest import make_auth_headers, pg_source_conn_attrs
 
 from main import app
 from app.core.database import SessionLocal
-from app.core.security import create_access_token
 from app.db.init_db import init_db
 from app.modules.admin_catalog.models import CorporateConnection
-from app.modules.auth.models import User, UserSession
 from app.modules.catalog.services import enrich_estimator
 from app.modules.catalog.services.enrich_estimator import EnrichEstimator
 from app.modules.catalog.services.schema_inspector import SchemaInspector
@@ -181,12 +179,8 @@ class TestEnrichEstimateEndpoint(unittest.TestCase):
         self.client = TestClient(app)
         self.db = SessionLocal()
 
-        admin = self.db.query(User).filter(User.username == "admin").first()
-        jti = str(uuid.uuid4())
-        token = create_access_token(subject=admin.id, jti=jti)
-        self.db.add(UserSession(user_id=admin.id, jti=jti, is_revoked=False))
-        self.db.commit()
-        self.headers = {"Authorization": f"Bearer {token}"}
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
 
         self.conn = CorporateConnection(
             name=f"est_ep_{uuid.uuid4().hex[:8]}",

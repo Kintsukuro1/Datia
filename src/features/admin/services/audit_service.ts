@@ -1,5 +1,6 @@
 import { apiClient } from '../../../shared/api/api_client';
 import { AuditLogsPage, AuditFilterParams } from '../../../types';
+import { downloadBlob } from '../../../shared/download';
 
 export const auditService = {
   async getAuditLogs(params?: AuditFilterParams): Promise<AuditLogsPage> {
@@ -14,14 +15,7 @@ export const auditService = {
     });
 
     const blob = new Blob([res.data], { type: 'text/csv;charset=utf-8;' });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
     const nowStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    link.setAttribute('download', `datia_audit_logs_${nowStr}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(url);
+    downloadBlob(blob, `datia_audit_logs_${nowStr}.csv`);
   },
 };

@@ -4,7 +4,7 @@ import { UserItem } from './AdminUsersTab';
 import { authService } from '../../features/auth/services/auth_service';
 import { PasswordResetResult } from '../../types';
 import { useModalA11y } from '../../hooks/useModalA11y';
-import { copyToClipboard } from '../../shared/clipboard';
+import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 
 interface UserPasswordResetModalProps {
   isOpen: boolean;
@@ -20,7 +20,7 @@ export const UserPasswordResetModal: React.FC<UserPasswordResetModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PasswordResetResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { copied, copy, reset: resetCopy } = useCopyFeedback(2500);
 
   // Dialog semantics, Escape, focus containment and focus restore.
   const modalRef = useModalA11y<HTMLDivElement>(isOpen, onClose);
@@ -42,18 +42,14 @@ export const UserPasswordResetModal: React.FC<UserPasswordResetModalProps> = ({
 
   const handleCopy = () => {
     if (result?.temporary_password) {
-      void copyToClipboard(result.temporary_password).then((ok: boolean) => {
-        if (!ok) return;
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2500);
-      });
+      void copy(result.temporary_password);
     }
   };
 
   const handleModalClose = () => {
     setResult(null);
     setError(null);
-    setCopied(false);
+    resetCopy();
     onClose();
   };
 

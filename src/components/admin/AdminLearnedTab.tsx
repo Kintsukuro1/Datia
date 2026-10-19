@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { BrainCircuit, RefreshCw, Trash2, AlertTriangle, X, Star } from 'lucide-react';
+import { BrainCircuit, RefreshCw, Trash2, X, Star } from 'lucide-react';
+import { ErrorBanner } from '../shared/ErrorBanner';
 import { GoldenQuery } from '../../features/admin/services/learning_memory_service';
 import { useAdminLearned } from '../../features/admin/hooks/useAdminLearned';
 import { useModalA11y } from '../../hooks/useModalA11y';
@@ -96,19 +97,9 @@ export const AdminLearnedTab: React.FC = () => {
         </div>
       )}
 
-      {error && (
-        <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-400 text-xs flex items-start gap-2 animate-fadeIn">
-          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{error}</span>
-        </div>
-      )}
+      {error && <ErrorBanner message={error} />}
 
-      {actionError && (
-        <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-400 text-xs flex items-start gap-2 animate-fadeIn">
-          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{actionError}</span>
-        </div>
-      )}
+      {actionError && <ErrorBanner message={actionError} />}
 
       {isLoading && (
         <p className="text-xs text-slate-500 dark:text-gray-400">Cargando memoria de aprendizaje del servidor...</p>

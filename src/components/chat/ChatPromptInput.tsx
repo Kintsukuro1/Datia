@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Database, ShieldCheck, Cpu, Wand2, X, Check } from 'lucide-react';
+import { Send, Database, Cpu, Wand2, X } from 'lucide-react';
 
 interface ChatPromptInputProps {
   promptInput: string;

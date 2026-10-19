@@ -9,9 +9,10 @@ from fastapi.testclient import TestClient
 from main import app
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
-from app.modules.auth.models import User, Role, UserSession
+from app.modules.auth.models import Role
 from app.modules.admin_catalog.models import CorporateConnection, DatabaseType, SemanticCatalog
-from app.core.security import create_access_token
+
+from conftest import make_auth_headers
 
 class TestCatalogAndConnectors(unittest.TestCase):
 
@@ -25,19 +26,8 @@ class TestCatalogAndConnectors(unittest.TestCase):
         self.client = TestClient(app)
         self.db = SessionLocal()
 
-        self.admin_user = self.db.query(User).filter(User.username == "admin").first()
-        self.admin_jti = str(uuid.uuid4())
-        self.admin_token = create_access_token(subject=self.admin_user.id, jti=self.admin_jti)
-
-        session = UserSession(
-            user_id=self.admin_user.id,
-            jti=self.admin_jti,
-            is_revoked=False
-        )
-        self.db.add(session)
-        self.db.commit()
-
-        self.headers = {"Authorization": f"Bearer {self.admin_token}"}
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
 
     def tearDown(self):
         self.db.close()

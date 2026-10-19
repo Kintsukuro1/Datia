@@ -1,7 +1,6 @@
 """
-Centralized System Constants for Roles, Domains, LLMs, and UI Charts.
+Centralized System Constants for Roles, Permissions and UI Charts.
 """
-from app.core.config import settings
 
 # Corporate Enterprise Roles
 ROLE_ADMINISTRADOR = "Administrador de Plataforma"
@@ -35,13 +34,16 @@ SYSTEM_STATUS_CRITICAL = "CRITICO"
 # endpoint: tres copias que solo coincidian por memoria.
 SLOW_QUERY_THRESHOLD_MS = 4000
 
-# Standard Domain Names
-DOMAIN_FINANZAS = "Economía & Finanzas"
-DOMAIN_TI = "Tecnología & TI"
-DOMAIN_OPERACIONES = "Operaciones & Comercial"
-
-# Default Local LLM Model
-DEFAULT_LLM_MODEL = settings.OLLAMA_MODEL
+# Tablas de metadata de la propia plataforma que la introspeccion de negocio
+# debe ignorar. Estaba duplicado en SchemaInspector.IGNORED_TABLES y en
+# DynamicSchemaPruningService._introspect_tables: dos copias que solo
+# coincidian por memoria.
+IGNORED_METADATA_TABLES = {
+    "roles", "domains", "corporate_connections",
+    "users", "role_domain_links", "role_table_permissions",
+    "role_column_permissions", "semantic_catalog", "audit_logs",
+    "user_sessions", "alembic_version",
+}
 
 
 # Intent Classification Keywords Taxonomy

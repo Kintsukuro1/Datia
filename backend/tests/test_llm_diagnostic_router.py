@@ -4,7 +4,6 @@ por `base_url` sin validar, URL compuesta con /v1 duplicado y el mensaje de
 error del LLM que no decia por que fallo.
 """
 import asyncio
-import uuid
 import unittest
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
@@ -12,14 +11,14 @@ from fastapi.testclient import TestClient
 from main import app
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
-from app.modules.auth.models import User, UserSession
 from app.modules.chat_engine.llm_diagnostic_router import (
     LLM_ALLOWED_HOSTS,
     _resolve_llm_base_url,
 )
 from app.modules.chat_engine.llm_service import LLMService
-from app.core.security import create_access_token
 from app.core.prompts import PromptManager
+
+from conftest import make_auth_headers
 
 
 def _no_httpx(*args, **kwargs):
@@ -38,12 +37,8 @@ class TestLLMDiagnosticRouter(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.db = SessionLocal()
-        self.user = self.db.query(User).filter(User.username == "admin").first()
-        self.jti = str(uuid.uuid4())
-        self.token = create_access_token(subject=self.user.id, jti=self.jti)
-        self.db.add(UserSession(user_id=self.user.id, jti=self.jti, is_revoked=False))
-        self.db.commit()
-        self.headers = {"Authorization": f"Bearer {self.token}"}
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
         self.base_payload = {
             "provider": "llama_cpp",
             "base_url": "http://127.0.0.1:8080",

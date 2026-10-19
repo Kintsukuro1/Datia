@@ -20,17 +20,16 @@ from fastapi.testclient import TestClient
 from conftest import (
     create_temp_pg_database,
     drop_temp_pg_database,
+    make_auth_headers,
     pg_source_conn_attrs,
     pg_source_engine,
 )
 
 from main import app
 from app.core.database import SessionLocal
-from app.core.security import create_access_token
 from app.db.init_db import init_db
 from app.modules.admin_catalog.models import CorporateConnection, DatabaseType, SemanticCatalog
 from app.modules.admin_catalog.schemas import AutoEnrichRequest
-from app.modules.auth.models import User, UserSession
 from app.modules.catalog.services import enrich_estimator
 from app.modules.catalog.services.catalog_enricher import CatalogEnricher
 from app.modules.chat_engine.llm_service import LLMService
@@ -259,12 +258,8 @@ class TestAutoEnrichHttpContract(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.db = SessionLocal()
-        admin = self.db.query(User).filter(User.username == "admin").first()
-        jti = str(uuid.uuid4())
-        token = create_access_token(subject=admin.id, jti=jti)
-        self.db.add(UserSession(user_id=admin.id, jti=jti, is_revoked=False))
-        self.db.commit()
-        self.headers = {"Authorization": f"Bearer {token}"}
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
 
     def tearDown(self):
         self.db.close()

@@ -2,6 +2,7 @@ import time
 import re
 from typing import List, Dict, Set, Any, Optional, Tuple
 from sqlalchemy.orm import Session
+from app.core.constants import IGNORED_METADATA_TABLES
 from app.core.database import discard_failed_transaction
 from app.modules.admin_catalog.models import RoleTablePermission, RoleColumnPermission, ColumnPermissionType, SemanticCatalog, CorporateConnection
 from app.modules.auth.models import Role
@@ -129,12 +130,7 @@ class DynamicSchemaPruningService:
 
     @classmethod
     def _introspect_tables(cls, target: Any) -> Set[str]:
-        ignored_metadata = {
-            "roles", "domains", "corporate_connections",
-            "users", "role_domain_links", "role_table_permissions",
-            "role_column_permissions", "semantic_catalog", "audit_logs",
-            "user_sessions", "alembic_version"
-        }
+        ignored_metadata = IGNORED_METADATA_TABLES
 
         try:
             from sqlalchemy import inspect as sa_inspect

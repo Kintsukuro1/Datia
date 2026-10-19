@@ -248,6 +248,7 @@ def demo_accounts_in_known_state():
 
 import secrets as _secrets
 import time as _time
+import uuid as _uuid
 
 
 def _pg_admin_url() -> str:
@@ -315,3 +316,23 @@ def pg_source_conn_attrs(db_name: str) -> dict:
         "username": settings.POSTGRES_USER,
         "encrypted_password": encrypt_credential(settings.POSTGRES_PASSWORD),
     }
+
+
+def make_auth_headers(db, username: str) -> dict:
+    """Headers de `Authorization` para una cuenta con sesion viva.
+
+    El preambulo (token + `UserSession` no revocada) estaba copiado en decenas
+    de tests: crear el token sin la sesion da un 401 que no explica nada. Aca
+    vive una sola vez; los tests que revocan o inspeccionan la sesion siguen
+    armando su propio `jti` a mano.
+    """
+    from app.core.security import create_access_token
+    from app.modules.auth.models import User, UserSession
+
+    user = db.query(User).filter(User.username == username).first()
+    assert user is not None, f"no existe la cuenta {username!r}"
+    jti = str(_uuid.uuid4())
+    token = create_access_token(subject=user.id, jti=jti)
+    db.add(UserSession(user_id=user.id, jti=jti, is_revoked=False))
+    db.commit()
+    return {"Authorization": f"Bearer {token}"}

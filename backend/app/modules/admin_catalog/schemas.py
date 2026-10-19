@@ -167,6 +167,10 @@ class NullsAuditResponse(BaseModel):
 
 class ApplyNullPolicyRequest(BaseModel):
     policy: str # "delete_rows" | "mode" | "nearest" | "open"
+    # Confirmacion server-side de una operacion destructiva (DELETE/UPDATE en la
+    # base corporativa). El clic en la UI no llega al backend: sin este flag,
+    # un cliente directo con token de admin mutaba la base en un solo request.
+    confirm: bool = False
 
 # --- Cobertura de gobernanza (GET /permissions/coverage) ---
 # Derivada, no guardada: se recalcula en cada GET desde la misma fuente que usa

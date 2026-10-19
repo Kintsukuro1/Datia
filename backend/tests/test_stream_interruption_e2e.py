@@ -171,18 +171,11 @@ class TestInterruptedStreamEndToEnd(unittest.TestCase):
 
     def headers(self):
         """JWT de un usuario demo, para que el stream no muera en el 401."""
-        import uuid
-        from app.modules.auth.models import User, UserSession
-        from app.core.security import create_access_token
+        from conftest import make_auth_headers
 
         db = SessionLocal()
         try:
-            user = db.query(User).filter(User.username == "felipe_economista").first()
-            jti = str(uuid.uuid4())
-            token = create_access_token(subject=user.id, jti=jti)
-            db.add(UserSession(user_id=user.id, jti=jti, is_revoked=False))
-            db.commit()
-            return {"Authorization": f"Bearer {token}"}
+            return make_auth_headers(db, "felipe_economista")
         finally:
             db.close()
 

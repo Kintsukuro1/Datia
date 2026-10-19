@@ -5,25 +5,22 @@ clasificación de rolesTI/Financieros por subcadena en vez de por token.
 """
 import io
 import re
-import uuid
 import unittest
 from unittest.mock import patch, MagicMock
 
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from conftest import pg_source_engine
+from conftest import make_auth_headers, pg_source_engine
 
 from main import app
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
-from app.modules.auth.models import User, UserSession
 from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
 from app.modules.admin_catalog.schemas import CorporateConnectionCreate
 from app.modules.catalog.services.connector_service import ConnectorDomainService
 from app.modules.catalog.services.catalog_service import CatalogDomainService
-from app.core.security import create_access_token
 
 
 def _role_matches_ti(role_name: str) -> bool:
@@ -48,12 +45,8 @@ class TestConnectorCreateDatabaseFailure(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.db = SessionLocal()
-        self.user = self.db.query(User).filter(User.username == "admin").first()
-        self.jti = str(uuid.uuid4())
-        self.token = create_access_token(subject=self.user.id, jti=self.jti)
-        self.db.add(UserSession(user_id=self.user.id, jti=self.jti, is_revoked=False))
-        self.db.commit()
-        self.headers = {"Authorization": f"Bearer {self.token}"}
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
 
     def tearDown(self):
         for name in ("probe_createdb_falla",):
@@ -169,12 +162,8 @@ class TestUploadPathCollision(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.db = SessionLocal()
-        self.user = self.db.query(User).filter(User.username == "admin").first()
-        self.jti = str(uuid.uuid4())
-        self.token = create_access_token(subject=self.user.id, jti=self.jti)
-        self.db.add(UserSession(user_id=self.user.id, jti=self.jti, is_revoked=False))
-        self.db.commit()
-        self.headers = {"Authorization": f"Bearer {self.token}"}
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
         self.names = []
 
     def tearDown(self):

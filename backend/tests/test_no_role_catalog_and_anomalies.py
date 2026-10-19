@@ -52,10 +52,11 @@ from fastapi.testclient import TestClient
 from main import app
 from app.core.constants import ROLE_USUARIO
 from app.core.database import SessionLocal
-from app.core.security import create_access_token
 from app.db.init_db import init_db
 from app.modules.auth.models import User, UserSession, Role
 from app.modules.telemetry_audit.models import AuditLog
+
+from conftest import make_auth_headers
 
 MENSAJE_SIN_ROL = "no tiene un rol asignado"
 
@@ -106,10 +107,8 @@ class TestEndpointsSinRolAsignado(unittest.TestCase):
         return user
 
     def _headers(self, user):
-        jti = str(uuid.uuid4())
-        self.db.add(UserSession(user_id=user.id, jti=jti, is_revoked=False))
-        self.db.commit()
-        return {"Authorization": f"Bearer {create_access_token(subject=user.id, jti=jti)}"}
+        """Sesion viva para la cuenta; el preambulo comun vive en conftest."""
+        return make_auth_headers(self.db, user.username)
 
     # --- 1. El corte, en los tres endpoints ------------------------------
 

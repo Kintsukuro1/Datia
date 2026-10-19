@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.constants import ADMIN_ROLES
 from app.core.database import discard_failed_transaction
+from app.modules.catalog.services.schema_inspector import quote_sql_identifier
 from app.modules.chat_engine.ast_validator import ASTValidator, ASTValidationError
 from app.modules.chat_engine.llm_service import LLMService
 
@@ -30,8 +31,9 @@ class SQLExecutor:
 
     @classmethod
     def execute_raw_sql(cls, target_db: Any, sql: str, dialect: str = "postgres") -> List[Dict[str, Any]]:
-        """
-        Safely executes a SELECT query on PostgreSQL using try...finally to ensure connection closure.
+        """Ejecuta un SELECT contra la conexion corporativa, en solo-lectura.
+
+        `connector_engine` garantiza el cierre del pool al salir del bloque.
         """
         # If target_db is a CorporateConnection model object
         if hasattr(target_db, "db_type"):
@@ -48,25 +50,9 @@ class SQLExecutor:
                 res = conn.execute(text(sql))
                 return [cls._clean_row(dict(r._mapping)) for r in res.fetchall()]
 
-        # If target_db is a PostgreSQL connection string
-        if isinstance(target_db, str) and (target_db.startswith("postgresql://") or target_db.startswith("postgresql+psycopg://")):
-            from sqlalchemy import create_engine, text
-            eng = create_engine(target_db)
-            try:
-                with eng.connect() as conn:
-                    try:
-                        conn.execute(text("SET TRANSACTION READ ONLY;"))
-                        conn.execute(text(f"SET statement_timeout = {settings.QUERY_TIMEOUT_SECONDS * 1000};"))
-                    except Exception:
-                        pass
-                    res = conn.execute(text(sql))
-                    return [cls._clean_row(dict(r._mapping)) for r in res.fetchall()]
-            finally:
-                eng.dispose()
-
         raise ValueError(
             f"Destino de consulta no soportado: {type(target_db).__name__}. "
-            "Se espera una conexión corporativa o una URL de PostgreSQL."
+            "Se espera una conexión corporativa."
         )
 
     @classmethod
@@ -76,10 +62,6 @@ class SQLExecutor:
         user_role: str = "Economista",
         allowed_tables: Optional[Set[str]] = None
     ) -> str:
-        if isinstance(user_role, set) and allowed_tables is None:
-            allowed_tables = user_role
-            user_role = "Economista"
-
         if not allowed_tables:
             return "SELECT 1;"
 
@@ -88,7 +70,7 @@ class SQLExecutor:
 
         matching_table = next((t for t in sorted_tables if t.lower() in q_lower), None)
         target_table = matching_table if matching_table else sorted_tables[0]
-        return f"SELECT * FROM {target_table} LIMIT 20;"
+        return f"SELECT * FROM {quote_sql_identifier(target_table)} LIMIT 20;"
 
     @classmethod
     async def execute_with_self_healing(
@@ -218,7 +200,7 @@ Genera la consulta SQL corregida y funcional para {engine_label}:"""
 
             # Fallback of emergency
             first_table = sorted(list(allowed_tables))[0] if allowed_tables else "dual"
-            raw_fb_sql = f"SELECT * FROM {first_table} LIMIT 20"
+            raw_fb_sql = f"SELECT * FROM {quote_sql_identifier(first_table)} LIMIT 20"
             try:
                 _, secured_fb_sql, fb_meta = ASTValidator.validate_and_secure_sql(
                     raw_fb_sql,

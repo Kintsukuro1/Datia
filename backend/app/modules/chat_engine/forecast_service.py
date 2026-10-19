@@ -151,6 +151,25 @@ def build_retention_sql(table: str, date_col: str, value_col: str, entity_col: s
     )
 
 
+def _columnas_revisadas(cols: List[Dict[str, Any]]) -> str:
+    """Lista de columnas para los motivos de "no se puede": sin esto hay que adivinar."""
+    return ", ".join(str(c.get("name")) for c in cols)
+
+
+def _motivo_sin_eje_temporal(table: str, cols: List[Dict[str, Any]]) -> str:
+    return (
+        f"La tabla '{table}' no tiene columna de fecha o periodo; no hay eje temporal sobre "
+        f"el que proyectar. Columnas revisadas: {_columnas_revisadas(cols)}"
+    )
+
+
+def _motivo_sin_metrica(table: str, cols: List[Dict[str, Any]]) -> str:
+    return (
+        f"La tabla '{table}' no tiene columna numerica de monto; no hay nada que predecir. "
+        f"Columnas revisadas: {_columnas_revisadas(cols)}"
+    )
+
+
 def _run_guarded_sql(
     db: Session,
     connection: CorporateConnection,
@@ -314,15 +333,9 @@ def run_forecast(
     resolved = resolve_columns(cols)
 
     if not resolved["date_col"]:
-        raise ForecastUnavailable(
-            f"La tabla '{table}' no tiene columna de fecha o periodo; no hay eje temporal sobre "
-            f"el que proyectar. Columnas revisadas: {', '.join(str(c.get('name')) for c in cols)}"
-        )
+        raise ForecastUnavailable(_motivo_sin_eje_temporal(table, cols))
     if not resolved["value_col"]:
-        raise ForecastUnavailable(
-            f"La tabla '{table}' no tiene columna numerica de monto; no hay nada que predecir. "
-            f"Columnas revisadas: {', '.join(str(c.get('name')) for c in cols)}"
-        )
+        raise ForecastUnavailable(_motivo_sin_metrica(table, cols))
 
     sql = build_series_sql(table, resolved["date_col"], resolved["value_col"], dialect)
     rows, secured = _run_guarded_sql(

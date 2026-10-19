@@ -127,6 +127,9 @@ docker compose up -d
 
 El frontend queda en `http://localhost/` y Nginx hace de proxy inverso hacia el backend en `http://backend:8000`.
 
+> Si algo falla al levantar el stack (puertos, secretos, volúmenes), los
+> problemas frecuentes y su diagnóstico están en [`PARTE-DOCKER.md`](PARTE-DOCKER.md).
+
 ---
 
 ## 🔑 Credenciales de Acceso Demo

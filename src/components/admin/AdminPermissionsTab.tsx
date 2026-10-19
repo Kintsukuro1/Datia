@@ -12,6 +12,7 @@ import {
   EyeOff,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { ErrorBanner } from '../shared/ErrorBanner';
 import {
   useAdminPermissions,
   useGovernanceCoverage,
@@ -292,12 +293,7 @@ export const AdminPermissionsTab: React.FC = () => {
         <p className="text-xs text-slate-500 dark:text-gray-400">Calculando cobertura de permisos...</p>
       )}
 
-      {coverageError && (
-        <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-400 text-xs flex items-start gap-2 animate-fadeIn">
-          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{coverageError}</span>
-        </div>
-      )}
+      {coverageError && <ErrorBanner message={coverageError} />}
 
       {/* Aviso de default-deny pendiente: el caso accionable */}
       {needsReview && (
@@ -316,26 +312,11 @@ export const AdminPermissionsTab: React.FC = () => {
         </div>
       )}
 
-      {rolesError && (
-        <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-400 text-xs flex items-start gap-2 animate-fadeIn">
-          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{rolesError}</span>
-        </div>
-      )}
+      {rolesError && <ErrorBanner message={rolesError} />}
 
-      {permissionsError && (
-        <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-400 text-xs flex items-start gap-2 animate-fadeIn">
-          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{permissionsError}</span>
-        </div>
-      )}
+      {permissionsError && <ErrorBanner message={permissionsError} />}
 
-      {saveError && (
-        <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-400 text-xs flex items-start gap-2 animate-fadeIn">
-          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{saveError}</span>
-        </div>
-      )}
+      {saveError && <ErrorBanner message={saveError} />}
 
       {saveSuccessMsg && (
         <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 text-emerald-800 dark:text-emerald-400 text-xs flex items-center space-x-2 animate-fadeIn">

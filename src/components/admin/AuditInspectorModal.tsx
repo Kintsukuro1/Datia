@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { ShieldCheck, CheckCircle2, XCircle, AlertTriangle, X, Copy, Check } from 'lucide-react';
 import { AuditLog } from '../../types';
 import { useModalA11y } from '../../hooks/useModalA11y';
-import { copyToClipboard } from '../../shared/clipboard';
+import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 
 interface AuditInspectorModalProps {
   log: AuditLog | null;
@@ -44,7 +44,7 @@ export const AuditStatusBadge: React.FC<{ status: string }> = ({ status }) => {
 };
 
 export const AuditInspectorModal: React.FC<AuditInspectorModalProps> = ({ log, onClose }) => {
-  const [sqlCopied, setSqlCopied] = useState(false);
+  const { copied: sqlCopied, copy: copySql } = useCopyFeedback();
 
   // Dialog semantics, Escape, focus containment and focus restore.
   const modalRef = useModalA11y<HTMLDivElement>(Boolean(log), onClose);
@@ -52,11 +52,7 @@ export const AuditInspectorModal: React.FC<AuditInspectorModalProps> = ({ log, o
   if (!log) return null;
 
   const handleCopySql = (sql: string) => {
-    void copyToClipboard(sql).then((ok: boolean) => {
-      if (!ok) return;
-      setSqlCopied(true);
-      setTimeout(() => setSqlCopied(false), 2000);
-    });
+    void copySql(sql);
   };
 
   return (

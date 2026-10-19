@@ -12,17 +12,22 @@ class GovernanceGuard:
     """
 
     @classmethod
-    def get_allowed_tables_for_role(
+    def _schema_field_for_role(
         cls,
+        field: str,
         user_role: str,
         is_admin: bool,
-        db: Optional[Session] = None,
-        role_id: Optional[int] = None,
-        connection_id: Optional[int] = None
+        db: Optional[Session],
+        role_id: Optional[int],
+        connection_id: Optional[int],
     ) -> Set[str]:
-        if is_admin or user_role in ADMIN_ROLES:
-            is_admin = True
+        """Campo del esquema autorizado para el rol, con politica fail-closed.
 
+        Un solo cuerpo para `allowed_tables`, `blocked_columns` y
+        `masked_columns`: los tres resuelven la misma sesion local y comparten
+        la misma politica de error (cualquier falla devuelve `set()` vacio,
+        nunca permisos).
+        """
         local_db = None
         if db is None:
             try:
@@ -43,7 +48,7 @@ class GovernanceGuard:
                     connection_id=connection_id,
                     is_admin=is_admin
                 )
-                return schema_info.get("allowed_tables", set())
+                return schema_info.get(field, set())
             except Exception:
                 # La sesion es del CALLER, no nuestra. Tragarnos el error sin
                 # deshacer la transaccion abortada la deja muerta, y el siguiente
@@ -59,6 +64,23 @@ class GovernanceGuard:
         return set()
 
     @classmethod
+    def get_allowed_tables_for_role(
+        cls,
+        user_role: str,
+        is_admin: bool,
+        db: Optional[Session] = None,
+        role_id: Optional[int] = None,
+        connection_id: Optional[int] = None
+    ) -> Set[str]:
+        if is_admin or user_role in ADMIN_ROLES:
+            is_admin = True
+        # Referencia explicita y no `cls.` a proposito: engine.py expone estos
+        # metodos como fachada (`QueryEngine.get_allowed_tables_for_role = ...`)
+        # y ahi `cls` llega re-bound a QueryEngine, que no tiene el helper.
+        # El codigo original tampoco usaba `cls`; esto preserva esa semantica.
+        return GovernanceGuard._schema_field_for_role("allowed_tables", user_role, is_admin, db, role_id, connection_id)
+
+    @classmethod
     def get_blocked_columns_for_role(
         cls,
         user_role: str,
@@ -69,41 +91,7 @@ class GovernanceGuard:
     ) -> Set[str]:
         if is_admin or user_role in ADMIN_ROLES:
             return set()
-
-        local_db = None
-        if db is None:
-            try:
-                from app.core.database import SessionLocal
-                local_db = SessionLocal()
-                active_db = local_db
-            except Exception:
-                active_db = None
-        else:
-            active_db = db
-
-        if active_db is not None:
-            try:
-                schema_info = DynamicSchemaPruningService.get_authorized_schema_prompt(
-                    db=active_db,
-                    role_id=role_id,
-                    user_role=user_role,
-                    connection_id=connection_id,
-                    is_admin=is_admin
-                )
-                return schema_info.get("blocked_columns", set())
-            except Exception:
-                # La sesion es del CALLER, no nuestra. Tragarnos el error sin
-                # deshacer la transaccion abortada la deja muerta, y el siguiente
-                # query de esa request falla con `InFailedSqlTransaction` — un error
-                # sin relacion con lo que fallo. Fail-closed se mantiene: el
-                # permiso denied sigue siendo `set()`, solo se la devuelve usable.
-                discard_failed_transaction(active_db)
-                return set()
-            finally:
-                if local_db is not None:
-                    local_db.close()
-
-        return set()
+        return GovernanceGuard._schema_field_for_role("blocked_columns", user_role, is_admin, db, role_id, connection_id)
 
     @classmethod
     def get_masked_columns_for_role(
@@ -122,41 +110,7 @@ class GovernanceGuard:
         """
         if is_admin or user_role in ADMIN_ROLES:
             return set()
-
-        local_db = None
-        if db is None:
-            try:
-                from app.core.database import SessionLocal
-                local_db = SessionLocal()
-                active_db = local_db
-            except Exception:
-                active_db = None
-        else:
-            active_db = db
-
-        if active_db is not None:
-            try:
-                schema_info = DynamicSchemaPruningService.get_authorized_schema_prompt(
-                    db=active_db,
-                    role_id=role_id,
-                    user_role=user_role,
-                    connection_id=connection_id,
-                    is_admin=is_admin
-                )
-                return schema_info.get("masked_columns", set())
-            except Exception:
-                # La sesion es del CALLER, no nuestra. Tragarnos el error sin
-                # deshacer la transaccion abortada la deja muerta, y el siguiente
-                # query de esa request falla con `InFailedSqlTransaction` — un error
-                # sin relacion con lo que fallo. Fail-closed se mantiene: el
-                # permiso denied sigue siendo `set()`, solo se la devuelve usable.
-                discard_failed_transaction(active_db)
-                return set()
-            finally:
-                if local_db is not None:
-                    local_db.close()
-
-        return set()
+        return GovernanceGuard._schema_field_for_role("masked_columns", user_role, is_admin, db, role_id, connection_id)
 
     @classmethod
     def check_domain_governance(cls, question: str, user_role: str, allowed_tables: Set[str]) -> Optional[str]:

@@ -300,15 +300,6 @@ export const queryService = {
     }
   },
 
-  async clearAllThreads(): Promise<boolean> {
-    try {
-      await apiClient.delete('/chat/threads');
-      return true;
-    } catch {
-      return false;
-    }
-  },
-
   async sendFeedback(payload: {
     audit_log_id?: number;
     question: string;

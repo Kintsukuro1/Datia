@@ -23,10 +23,6 @@ class Token(BaseModel):
     token_type: str = "bearer"
     user: "UserOut"
 
-class TokenData(BaseModel):
-    user_id: Optional[int] = None
-    jti: Optional[str] = None
-
 class UserLogin(BaseModel):
     username: str
     password: str
@@ -35,23 +31,6 @@ class UserSelfRegister(BaseModel):
     username: str
     email: Optional[EmailStr] = None
     password: str
-
-class UserCreateByAdmin(BaseModel):
-    username: str
-    email: Optional[EmailStr] = None
-    password: str
-    is_admin: bool = False
-    role_id: Optional[int] = None
-
-# Backward compatibility alias
-UserCreate = UserCreateByAdmin
-
-class UserUpdate(BaseModel):
-    email: Optional[EmailStr] = None
-    password: Optional[str] = None
-    is_admin: Optional[bool] = None
-    role_id: Optional[int] = None
-    is_active: Optional[bool] = None
 
 class UserRoleUpdate(BaseModel):
     """

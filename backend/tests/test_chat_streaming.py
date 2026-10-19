@@ -25,7 +25,6 @@ stream:
 import asyncio
 import json
 import unittest
-import uuid
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -33,10 +32,10 @@ from fastapi.testclient import TestClient
 from main import app
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
-from app.modules.auth.models import User, UserSession
-from app.core.security import create_access_token
 from app.modules.chat_engine.narrative_stream import NarrativeStreamExtractor
 from app.modules.chat_engine.llm_service import StreamingThinkFilter
+
+from conftest import make_auth_headers
 
 
 def parse_sse(text: str):
@@ -72,12 +71,8 @@ class TestNarrativeStreaming(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.db = SessionLocal()
-        user = self.db.query(User).filter(User.username == "felipe_economista").first()
-        self.jti = str(uuid.uuid4())
-        token = create_access_token(subject=user.id, jti=self.jti)
-        self.db.add(UserSession(user_id=user.id, jti=self.jti, is_revoked=False))
-        self.db.commit()
-        self.headers = {"Authorization": f"Bearer {token}"}
+        # Cuenta demo con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "felipe_economista")
 
     def tearDown(self):
         self.db.close()

@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { TraceabilityAudit } from '../../types';
 import { CheckCircle2, ShieldCheck, Clock, Database, Copy, Check, Info, Code2, Layers } from 'lucide-react';
 import { useModalA11y } from '../../hooks/useModalA11y';
-import { copyToClipboard } from '../../shared/clipboard';
+import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 
 interface TraceabilityModalProps {
   traceability: TraceabilityAudit | null;
@@ -11,7 +11,7 @@ interface TraceabilityModalProps {
 }
 
 export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceability, isOpen, onClose }) => {
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useCopyFeedback();
 
   // Dialog semantics, Escape, focus containment and focus restore.
   const modalRef = useModalA11y<HTMLDivElement>(isOpen, onClose);
@@ -23,11 +23,7 @@ export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceabili
     const payload = db
       ? `-- Base de datos: ${db}\n-- Conectar con: psql -d ${db}\n\n${traceability.sql_executed}`
       : traceability.sql_executed;
-    void copyToClipboard(payload).then((ok: boolean) => {
-      if (!ok) return;
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    void copy(payload);
   };
 
   return (

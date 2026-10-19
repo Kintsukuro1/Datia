@@ -4,7 +4,7 @@ import time
 import asyncio
 from typing import Any, List, Optional, Dict, Tuple
 from fastapi import HTTPException, status
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.modules.admin_catalog.models import SemanticCatalog, CorporateConnection
@@ -198,42 +198,6 @@ class CatalogEnricher:
             "description": desc,
             "business_formula": formula
         }
-
-    @classmethod
-    def _find_existing_item(
-        cls,
-        db: Session,
-        connection_id: int,
-        schema_name: Optional[str],
-        table_name: str,
-        column_name: str
-    ):
-        """
-        Busca la entrada de catálogo de UNA columna.
-
-        La clave real de una columna es (conexión, esquema, tabla, columna). Buscar
-        solo por tabla+columna hacía que dos columnas homónimas de `schema1` y
-        `schema2` se pisaran entre sí. Y la comparación era case-sensitive contra
-        un motor que normaliza a minúscula lo que no va entre comillas (Postgres) o
-        preserva el case declarado (MySQL), así que el mismo objeto físico aparecía
-        como dos filas.
-
-        Un `schema_name` vacío en la fila existente significa "esquema desconocido"
-        (filas sembradas antes de que existiera la columna): se acepta el match en
-        vez de duplicar la columna.
-        """
-        query = db.query(SemanticCatalog).filter(
-            SemanticCatalog.connection_id == connection_id,
-            func.lower(SemanticCatalog.table_name) == table_name.lower(),
-            func.lower(SemanticCatalog.column_name) == column_name.lower(),
-        )
-        if schema_name:
-            query = query.filter(or_(
-                SemanticCatalog.schema_name.is_(None),
-                SemanticCatalog.schema_name == "",
-                func.lower(SemanticCatalog.schema_name) == schema_name.lower(),
-            ))
-        return query.first()
 
     @classmethod
     def _load_existing_index(cls, db: Session, connection_id: int):

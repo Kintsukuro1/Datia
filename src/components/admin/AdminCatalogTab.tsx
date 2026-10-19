@@ -1,19 +1,13 @@
 import React from 'react';
 import { Sparkles, Check, Plus, BookOpen, Database, RefreshCw, HardDrive, AlertCircle } from 'lucide-react';
+import { ErrorBanner } from '../shared/ErrorBanner';
 import { CatalogEditModal } from './CatalogEditModal';
 import { CatalogAddModal } from './CatalogAddModal';
 import { SemanticCatalogSection } from './catalog/SemanticCatalogSection';
 import { DataDictionarySection } from './catalog/DataDictionarySection';
 import { useAdminCatalog } from '../../features/admin/hooks/useAdminCatalog';
 
-interface AdminCatalogTabProps {
-  catalog?: any[];
-  aiEnriching?: boolean;
-  aiSuccess?: boolean;
-  onRunAiCatalog?: () => void;
-}
-
-export const AdminCatalogTab: React.FC<AdminCatalogTabProps> = () => {
+export const AdminCatalogTab: React.FC = () => {
   const {
     subTab,
     setSubTab,
@@ -179,10 +173,7 @@ export const AdminCatalogTab: React.FC<AdminCatalogTabProps> = () => {
       )}
 
       {(enrichErrorMsg || catalogErrorMsg || catalogViewErrorMsg || dictionaryViewErrorMsg) && (
-        <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-400 text-xs flex items-center space-x-2 animate-fadeIn">
-          <AlertCircle className="w-4 h-4 shrink-0" />
-          <span>{enrichErrorMsg || catalogErrorMsg || catalogViewErrorMsg || dictionaryViewErrorMsg}</span>
-        </div>
+        <ErrorBanner icon={AlertCircle} message={enrichErrorMsg || catalogErrorMsg || catalogViewErrorMsg || dictionaryViewErrorMsg} />
       )}
 
       {/* Subtab 1: Semantic Catalog */}

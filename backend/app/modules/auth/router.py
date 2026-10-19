@@ -5,7 +5,7 @@ import uuid
 from typing import List, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
-from app.api.deps import get_db, get_current_user, get_current_admin, display_role_name
+from app.api.deps import get_db, get_current_user, get_current_admin, display_role_name, is_admin_user
 from app.core.security import verify_password, get_password_hash, create_access_token, decode_token_payload
 from app.modules.auth.models import User, Role, UserSession
 from app.core.constants import (
@@ -23,18 +23,6 @@ def _require_strong_password(raw: str) -> str:
         return validate_password_strength(raw)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-def _has_admin_rights(user: User) -> bool:
-    """
-    "¿Este usuario administra?" con la MISMA regla que `get_current_admin`:
-    el flag `is_admin` o el rol del catalogo que este en ADMIN_ROLES.
-
-    No se puede usar solo `is_admin`: un usuario con rol "Administrador" pero
-    `is_admin=False` entra igual a /auth/users, asi que contarlo como no-admin
-    dejaria pasar el guard de "ultimo administrador" y el sistema se quedaria
-    sin nadie que pueda administrarlo.
-    """
-    return bool(user.is_admin) or (user.role is not None and user.role.name in ADMIN_ROLES)
 
 def _jti_from_request(request: Request) -> Optional[str]:
     """
@@ -372,7 +360,7 @@ def admin_update_user(
     # --- Salvaguardas de administración -----------------------------------
     # Se calculan sobre el estado RESULTANTE (rol nuevo + is_admin nuevo), no
     # solo sobre `is_admin`: un admin con rol de catálogo también administra.
-    had_admin_rights = _has_admin_rights(user)
+    had_admin_rights = is_admin_user(user)
 
     keeps_admin_rights = bool(payload.is_admin) if payload.is_admin is not None else user.is_admin
     if new_role is not None:
@@ -389,7 +377,7 @@ def admin_update_user(
     if losing_admin_rights:
         remaining_admins = [
             u for u in db.query(User).filter(User.id != user.id).all()
-            if u.is_active and _has_admin_rights(u)
+            if u.is_active and is_admin_user(u)
         ]
         if not remaining_admins:
             raise HTTPException(

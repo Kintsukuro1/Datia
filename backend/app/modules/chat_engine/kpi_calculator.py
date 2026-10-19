@@ -135,35 +135,6 @@ def aggregate_column(rows: List[Dict[str, Any]], col: str, agg: str) -> Optional
     return min(values)
 
 
-def normalize_llm_number(text: str) -> str:
-    """Convierte a float() un numero escrito por el LLM, sinoidal su separador.
-
-    El LLM mezcla convenciones: "1,234" (miles en ingles), "1.234" (miles en
-    espanol), "0,5" (decimal en espanol), "0.5" (decimal en ingles). El codigo
-    hacia replace(',', '.') sobre TODO, asi que "1,234" -> "1.234" -> se
-    publicaba como "1.2%": una corrupcion de 1000x en el informe ejecutivo.
-
-    HOY NO LA USA NINGUN CAMINO DEL PIPELINE. El LLM ya no escribe los valores de
-    los KPIs: elige la columna y la agregacion (`column` + `agg`), y el numero lo
-    calcula `aggregate_column` y lo formatea `format_metric_value`. Con el valor
-    calculado aca no hay separador que interpretar, asi que el bug que reparaba
-    esta funcion ya no es representable.
-
-    Se conserva como especificacion del criterio para cuando algo vuelva a parsear
-    un numero escrito en texto libre.
-
-    REGLA: un separador seguido de EXACTAMENTE 3 digitos y con mas de un digito
-    antes es de miles (1,234 -> 1234). Con 1 o 2 digitos despues es decimal
-    (0,5 -> 0.5). "1,234" es ambiguo entre locales, pero leido como miles el
-    error es 1000x y leido como decimal casi nunca ocurre en un KPI.
-    """
-    stripped = str(text).strip()
-    if re.fullmatch(r'-?\d{1,3}(?:[.,]\d{3})+(?:\.\d+)?', stripped):
-        # Todos los grupos de 3 son separadores de miles.
-        return re.sub(r'(?<=\d)[.,](?=\d{3}(?!\d))', '', stripped)
-    return stripped.replace(',', '.')
-
-
 class KPICalculator:
     """
     Computes business metrics, KPICards, and deep ExecutiveReports
@@ -450,10 +421,10 @@ class KPICalculator:
         ----------------
         Antes el modelo escribia el numero y el backend lo publicaba tal cual. Con
         un 7B cuantizado eso produjo dos fallos que costaron codigo de
-        reparacion: `normalize_llm_number` existe porque "1,234" se publicaba como
-        "1.2%" (error de 1000x), y el bloque de porcentajes de este mismo metodo
-        tenia que reformatear a mano los valores. Ese damage ya no es
-        representable: el numero no pasa por el modelo.
+        reparacion: "1,234" se publicaba como "1.2%" (error de 1000x, y hubo una
+        funcion normalizadora solo para eso) y el bloque de porcentajes de este
+        mismo metodo tenia que reformatear a mano los valores. Ese damage ya no
+        es representable: el numero no pasa por el modelo.
 
         Un KPI sin `column` reconocible o sin `agg` valido se DESCARTA. No cae al
         `value` que el modelo pueda haber mandado: ese es justamente el numero

@@ -163,6 +163,24 @@ def ensure_schema_migrations(eng):
             except Exception as e:
                 logger.warning(f"Migración: query_learning_memories.is_golden no se añadió: {e}")
 
+        if "role_table_permissions" in table_names:
+            try:
+                perm_cols = _cols("role_table_permissions")
+                if "granted_by_admin" not in perm_cols:
+                    # Procedencia del permiso de tabla. Mismo mecanismo que
+                    # `is_shared`: se agrega la columna con el default que falla
+                    # cerrado. Las filas existentes quedan en False (o sea "nadie
+                    # lo concedio a proposito"), que es justamente lo que la
+                    # migracion de default-deny de `init_db` revoca en los
+                    # datasets subidos. La matriz de la demo no pasa por ahi:
+                    # vive en las conexiones de plataforma (is_uploaded == False)
+                    # y el seeder declarativo la (re)marca como concedida fila
+                    # por fila.
+                    with eng.begin() as conn:
+                        _safe_alter(conn, ["ALTER TABLE role_table_permissions ADD COLUMN granted_by_admin BOOLEAN DEFAULT FALSE NOT NULL"])
+            except Exception as e:
+                logger.warning(f"Migración: role_table_permissions.granted_by_admin no se añadió: {e}")
+
         if "chat_conversations" in table_names:
             try:
                 conv_cols = _cols("chat_conversations")

@@ -3,7 +3,7 @@ import { QueryResult } from '../../types';
 import { AssistantHeader } from '../../features/dashboard/components/assistant/AssistantHeader';
 import { AssistantMarkdownBody } from '../../features/dashboard/components/assistant/AssistantMarkdownBody';
 import { ShieldCheck, Brain, ChevronDown, AlertTriangle, HelpCircle, Sparkles, Trash2, BarChart3, MapPin } from 'lucide-react';
-import { copyToClipboard } from '../../shared/clipboard';
+import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 
 interface ExecutiveAssistantViewProps {
   result: QueryResult;
@@ -18,17 +18,13 @@ export const ExecutiveAssistantView: React.FC<ExecutiveAssistantViewProps> = ({
   onSwitchToStudio,
   onFollowUp,
 }) => {
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useCopyFeedback();
   const [showThinking, setShowThinking] = useState(false);
 
   const rawContent = result.conversational_response || result.summary_text || '';
 
   const handleCopy = () => {
-    void copyToClipboard(rawContent).then((ok: boolean) => {
-      if (!ok) return;
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    void copy(rawContent);
   };
 
   const canSwitchToStudio = Boolean(

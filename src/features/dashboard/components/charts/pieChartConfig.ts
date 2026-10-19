@@ -1,4 +1,4 @@
-import { BASE_TOOLTIP, CHART_FONT_FAMILY, buildTooltipHtml, truncateAxisLabel, THEME_COLORS, computeChartStats, formatMetricNumber } from './theme';
+import { BASE_TOOLTIP, makeTooltipFormatter, truncateAxisLabel, THEME_COLORS, computeChartStats, buildBaseDark } from './theme';
 
 export function buildPieChartOption(params: {
   processedRows: Record<string, any>[];
@@ -21,22 +21,9 @@ export function buildPieChartOption(params: {
 
   const stats = computeChartStats(processedRows, catCol, numCol);
 
-  const formatTooltipHtml = (name: string, val: number) => {
-    const pctStr = stats.total > 0 ? `${((val / stats.total) * 100).toFixed(1)}%` : '';
-    return buildTooltipHtml(
-      name,
-      formatMetricNumber(val, isCurrency),
-      pctStr,
-      numCol?.replace(/_/g, ' ') ?? '',
-      currentTheme.primary
-    );
-  };
+  const formatTooltipHtml = makeTooltipFormatter(stats, numCol, isCurrency, currentTheme.primary);
 
-  const baseDark = {
-    backgroundColor: 'transparent',
-    textStyle: { color: '#94A3B8', fontFamily: CHART_FONT_FAMILY },
-    grid: { left: '3%', right: '4%', bottom: '10%', top: '12%', containLabel: true },
-  };
+  const baseDark = buildBaseDark();
 
   return {
     ...baseDark,

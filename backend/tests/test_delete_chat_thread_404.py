@@ -12,8 +12,9 @@ from fastapi.testclient import TestClient
 from main import app
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
-from app.modules.auth.models import User, UserSession
-from app.core.security import create_access_token
+from app.modules.auth.models import User
+
+from conftest import make_auth_headers
 
 
 class TestDeleteChatThreadNotFound(unittest.TestCase):
@@ -30,12 +31,8 @@ class TestDeleteChatThreadNotFound(unittest.TestCase):
         self.users = {}
         for username in ("admin", "juan_ti"):
             u = self.db.query(User).filter(User.username == username).first()
-            jti = str(uuid.uuid4())
-            self.db.add(UserSession(user_id=u.id, jti=jti, is_revoked=False))
-            self.db.commit()
-            self.users[username] = (
-                u.id, {"Authorization": f"Bearer {create_access_token(subject=u.id, jti=jti)}"}
-            )
+            # Sesion viva via helper: el id se conserva para los asserts.
+            self.users[username] = (u.id, make_auth_headers(self.db, username))
         self.thread_id = f"test-delete-404-{uuid.uuid4().hex[:8]}"
 
     def tearDown(self):

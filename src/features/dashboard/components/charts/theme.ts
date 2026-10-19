@@ -145,6 +145,91 @@ export function buildTooltipHtml(
 }
 
 /**
+ * Formatter de tooltip para series de una medida. Estaba copiado palabra por
+ * palabra en los cuatro builders (bar, extra, line y pie): la unica variacion
+ * era el color y el nombre de la columna, que ahora van por parametro.
+ */
+export function makeTooltipFormatter(
+  stats: { total: number },
+  numCol: string | undefined,
+  isCurrency: boolean,
+  accentColor: string
+): (name: string, val: number) => string {
+  return (name: string, val: number) => {
+    const pctStr = stats.total > 0 ? `${((val / stats.total) * 100).toFixed(1)}%` : '';
+    return buildTooltipHtml(
+      name,
+      formatMetricNumber(val, isCurrency),
+      pctStr,
+      numCol?.replace(/_/g, ' ') ?? '',
+      accentColor
+    );
+  };
+}
+
+/**
+ * Scaffold comun de las opciones de grafica. `baseDark`, el slider de
+ * `dataZoom` y la linea de promedio estaban copiados byte a byte en bar y
+ * line (pie solo usa la base): un cambio de color o de margen en una copia
+ * dejaba a la otra desincronizada sin que nada lo notara.
+ */
+export function buildBaseDark(showDataZoom = false) {
+  return {
+    backgroundColor: 'transparent',
+    textStyle: { color: '#94A3B8', fontFamily: CHART_FONT_FAMILY },
+    grid: { left: '3%', right: '4%', bottom: showDataZoom ? '18%' : '10%', top: '12%', containLabel: true },
+  };
+}
+
+export function buildDataZoomComponent(
+  currentTheme: (typeof THEME_COLORS)['amber'],
+  showDataZoom: boolean,
+  rowsCount: number
+) {
+  return showDataZoom || rowsCount > 12
+    ? [
+        {
+          type: 'slider',
+          show: true,
+          xAxisIndex: [0],
+          bottom: '2%',
+          height: 20,
+          borderColor: '#334155',
+          fillerColor: currentTheme.glow,
+          textStyle: { color: '#94A3B8', fontSize: 10 },
+          handleStyle: { color: currentTheme.primary, borderColor: '#fff' },
+        },
+      ]
+    : undefined;
+}
+
+export function buildAverageMarkLine(
+  showAverageLine: boolean,
+  stats: { count: number },
+  currentTheme: (typeof THEME_COLORS)['amber'],
+  isCurrency: boolean
+) {
+  return showAverageLine && stats.count > 1
+    ? {
+        data: [
+          {
+            type: 'average',
+            name: 'Promedio',
+            lineStyle: { color: currentTheme.secondary, type: 'dashed', width: 2 },
+            label: {
+              show: true,
+              formatter: (p: any) => `Prom: ${formatMetricNumber(p.value, isCurrency)}`,
+              color: currentTheme.secondary,
+              fontSize: 10,
+              position: 'insideEndTop',
+            },
+          },
+        ],
+      }
+    : undefined;
+}
+
+/**
  * Recorta una etiqueta de eje. `str.length > 20` con `substring(0, 18)` estaba
  * en bar, extra y line; pie usa otros numeros (`18`/`16`) y por eso su recorte
  * no coincidia con el de los otros tres.

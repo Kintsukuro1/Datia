@@ -331,12 +331,12 @@ class TestEndpointsSurviveTheirOwnSwallowedFailure(unittest.TestCase):
 
 
 class TestQueryEngineSwallowedFailures(unittest.TestCase):
-    """Los dos `except` de `QueryEngine.execute_query` que se tragan su error.
+    """El `except` de `QueryEngine.execute_query` que se traga su error.
 
-    Este es el ultimo sitio del mismo defecto: `engine.py` resolvia la conexion
-    con `except Exception: pass`, y tragaba tambien un `db.commit()` fallido de
-    la remediacion de nulos. Los dos dejaron la sesion de la request envenenada,
-    asi que la consulta siguiente moria con un error sin relacion con nada.
+    `engine.py` resolvia la conexion con `except Exception: pass` y dejaba la
+    sesion de la request envenenada, asi que la consulta siguiente moria con un
+    error sin relacion con nada. El `commit` de la remediacion fisica ya no
+    existe en el chat (plan 002), pero la resolucion de conexion sigue igual.
     """
 
     def setUp(self):
@@ -419,29 +419,22 @@ class TestQueryEngineSwallowedFailures(unittest.TestCase):
         self.assertEqual(self.db.execute(text("SELECT 1")).scalar(), 1)
 
     @requires_postgres
-    def test_failed_remediation_commit_leaves_the_session_usable(self):
-        """El `db.commit()` de la remediacion falla y se traga: sesion usable.
+    def test_chat_remediation_does_not_call_the_physical_writer(self):
+        """La remediacion del chat es en memoria y no invoca al escritor fisico.
 
-        Ojo con el estado: un commit que revienta en el flush NO deja la sesion
-        como una query fallida. Medido contra PostgreSQL, `db.commit()` abortado
-        por constraint deja `PendingRollbackError` ("rolled back due to a
-        previous exception during flush"), mientras que una sentencia fallida
-        deja `InFailedSqlTransaction`. Los dos se limpian con el mismo rollback,
-        asi que el helper serves para los dos casos.
+        Antes de plan 002 este flujo llamaba a `apply_null_policy`, cuyo commit
+        podia dejar la sesion en `PendingRollbackError`. Ahora el chat solo
+        transforma las filas de la respuesta; el test fija esa invariante y que
+        la sesion siga usable para lo que venga despues.
         """
-        # El `SELECT 1` final es la asercion que no puede fallar bajo SQLite
-        # (medido: verde con el arreglo revertido). Sin PostgreSQL sigue muerdiendo
-        # el `assertNotIn` de mas abajo --un commit tragado no puede anunciarse como
-        # remediacion aplicada--; el `SELECT 1` es lo que prueba el arreglo.
         original = NullManagerService.apply_null_policy
+        calls = []
 
-        def _falla_el_commit(conn_record, remediation_action, db):
-            # Se hace el trabajo y se envenena la sesion en el commit, que es el
-            # caso que el `except` de `engine.py` se tragaba.
-            db.execute(text("SELECT * FROM tabla_inexistente_para_probar_rollback"))
-            raise DBAPIError("COMMIT", {}, Exception("no se pudo confirmar"))
+        def _no_debe_llamarse(*args, **kwargs):
+            calls.append(True)
+            raise AssertionError("el chat no puede llamar al escritor fisico")
 
-        NullManagerService.apply_null_policy = staticmethod(_falla_el_commit)
+        NullManagerService.apply_null_policy = staticmethod(_no_debe_llamarse)
         try:
             # `remediation_action` no es un parametro: `execute_query` lo deduce
             # del texto de la pregunta (NullHandler.detect_remediation_intent).
@@ -455,13 +448,8 @@ class TestQueryEngineSwallowedFailures(unittest.TestCase):
         finally:
             NullManagerService.apply_null_policy = original
 
+        self.assertEqual(calls, [], "el chat llamo a apply_null_policy: la base es mutable")
         self.assertIsNotNone(response)
-        # Y no se Announces remediacion aplicada sobre una base sin remediar.
-        self.assertNotIn(
-            "Tratamiento de nulos",
-            response.conversational_response or "",
-            "un commit fallido no puede anunciarse como remediacion aplicada",
-        )
         self.assertEqual(self.db.execute(text("SELECT 1")).scalar(), 1)
 
 

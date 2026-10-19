@@ -18,10 +18,11 @@ from fastapi.testclient import TestClient
 from main import app  # noqa: F401
 
 from app.core.database import SessionLocal
-from app.core.security import sanitize_spreadsheet_value, create_access_token
+from app.core.security import sanitize_spreadsheet_value
 from app.db.init_db import init_db
-from app.modules.auth.models import User, UserSession
 from app.modules.telemetry_audit.models import AuditLog
+
+from conftest import make_auth_headers
 
 
 class TestSpreadsheetFormulaInjection(unittest.TestCase):
@@ -77,15 +78,8 @@ class TestAuditExportCsvInjection(unittest.TestCase):
         self.client = TestClient(app)
         self.db = SessionLocal()
 
-        self.admin_user = self.db.query(User).filter(User.username == "admin").first()
-        self.admin_jti = str(uuid.uuid4())
-        self.admin_token = create_access_token(subject=self.admin_user.id, jti=self.admin_jti)
-        self.db.add(UserSession(
-            user_id=self.admin_user.id,
-            jti=self.admin_jti,
-            is_revoked=False
-        ))
-        self.db.commit()
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
 
         # Marcador unico: es el ancla para encontrar la fila en el CSV.
         self.marker = f"csvcheck_{uuid.uuid4().hex[:8]}"
@@ -108,7 +102,7 @@ class TestAuditExportCsvInjection(unittest.TestCase):
         self.db.close()
 
     def test_export_neutralizes_formula_cells(self):
-        headers = {"Authorization": f"Bearer {self.admin_token}"}
+        headers = self.headers
         resp = self.client.get("/api/v1/audit/export", headers=headers)
         self.assertEqual(resp.status_code, 200)
 

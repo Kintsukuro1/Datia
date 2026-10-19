@@ -1,19 +1,18 @@
 import unittest
-import uuid
 from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 
 from main import app
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
-from app.modules.auth.models import User, UserSession
 from app.modules.admin_catalog.models import CorporateConnection
-from app.core.security import create_access_token
 from app.core.constants import (
     SYSTEM_STATUS_OPERATIONAL,
     SYSTEM_STATUS_CRITICAL,
     SYSTEM_STATUS_DEGRADED
 )
+
+from conftest import make_auth_headers
 
 class TestSystemHealth(unittest.TestCase):
     @classmethod
@@ -26,19 +25,8 @@ class TestSystemHealth(unittest.TestCase):
         self.client = TestClient(app)
         self.db = SessionLocal()
 
-        self.user = self.db.query(User).filter(User.username == "admin").first()
-        self.jti = str(uuid.uuid4())
-        self.token = create_access_token(subject=self.user.id, jti=self.jti)
-
-        session = UserSession(
-            user_id=self.user.id,
-            jti=self.jti,
-            is_revoked=False
-        )
-        self.db.add(session)
-        self.db.commit()
-
-        self.headers = {"Authorization": f"Bearer {self.token}"}
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
 
     def tearDown(self):
         self.db.close()

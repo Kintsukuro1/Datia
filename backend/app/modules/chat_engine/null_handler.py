@@ -1,5 +1,7 @@
 from typing import List, Dict, Any, Optional, Set, Tuple
 
+from app.modules.catalog.services.null_manager import es_celda_nula
+
 class NullHandler:
     """
     Handles null detection, interactive user remediation options,
@@ -26,7 +28,7 @@ class NullHandler:
         for r in rows:
             row_has_null = False
             for c_name, val in r.items():
-                if val is None or str(val).strip().lower() in ("none", "null"):
+                if es_celda_nula(val):
                     null_cols_in_rows.add(c_name)
                     row_has_null = True
             if row_has_null:
@@ -104,4 +106,7 @@ class NullHandler:
             "nearest": "Adaptación al valor más cercano"
         }
         lbl = action_labels.get(action, action)
-        return f"✅ **Tratamiento de nulos ({lbl}) aplicado para responder a:** *\"{question}\"*\n\n"
+        return (
+            f"✅ **Tratamiento de nulos ({lbl}) aplicado en memoria para responder a:** *\"{question}\"*\n\n"
+            "La base de datos no se modificó: la remediación solo afecta a esta respuesta.\n\n"
+        )

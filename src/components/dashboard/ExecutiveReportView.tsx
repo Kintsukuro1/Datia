@@ -7,12 +7,10 @@ import {
 } from 'lucide-react';
 import { ReportExportToolbar } from './report/ReportExportToolbar';
 import { ReportFindingsView, ReportSectionHeading } from './report/ReportFindingsView';
-import { copyToClipboard } from '../../shared/clipboard';
+import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 
 interface ExecutiveReportViewProps {
   result: QueryResult;
-  copiedReport?: boolean;
-  onCopyReport?: () => void;
   onOpenTraceability?: () => void;
 }
 
@@ -26,23 +24,15 @@ const RISK_BADGE_CLASSES: Record<string, string> = {
 
 export const ExecutiveReportView: React.FC<ExecutiveReportViewProps> = ({
   result,
-  copiedReport: externalCopied,
-  onCopyReport: externalCopyHandler,
   onOpenTraceability,
 }) => {
   const [exportError, setExportError] = useState<string | null>(null);
-  const [internalCopied, setInternalCopied] = useState(false);
+  const { copied: copiedReport, copy: copyReport } = useCopyFeedback();
 
-  const copiedReport = externalCopied ?? internalCopied;
-
-  const onCopyReport = externalCopyHandler || (() => {
+  const onCopyReport = () => {
     const textToCopy = result.executive_report?.overview || result.summary_text || '';
-    void copyToClipboard(textToCopy).then((ok: boolean) => {
-      if (!ok) return;
-      setInternalCopied(true);
-      setTimeout(() => setInternalCopied(false), 2000);
-    });
-  });
+    void copyReport(textToCopy);
+  };
 
   const trace = result.traceability;
   const rowsReturned = trace?.rows_returned ?? result.data_rows?.length ?? 0;

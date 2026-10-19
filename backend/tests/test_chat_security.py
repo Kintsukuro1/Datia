@@ -7,9 +7,10 @@ from main import app
 from app.core.database import SessionLocal
 from app.core.constants import ROLE_USUARIO
 from app.db.init_db import init_db
-from app.modules.auth.models import User, UserSession
-from app.core.security import create_access_token
+from app.modules.auth.models import User
 from app.core.config import settings
+
+from conftest import make_auth_headers
 
 class TestChatSecurity(unittest.TestCase):
     @classmethod
@@ -22,19 +23,8 @@ class TestChatSecurity(unittest.TestCase):
         self.client = TestClient(app)
         self.db = SessionLocal()
 
-        self.economista_user = self.db.query(User).filter(User.username == "felipe_economista").first()
-        self.jti = str(uuid.uuid4())
-        self.token = create_access_token(subject=self.economista_user.id, jti=self.jti)
-
-        session = UserSession(
-            user_id=self.economista_user.id,
-            jti=self.jti,
-            is_revoked=False
-        )
-        self.db.add(session)
-        self.db.commit()
-
-        self.headers = {"Authorization": f"Bearer {self.token}"}
+        # Cuenta demo con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "felipe_economista")
 
     def tearDown(self):
         self.db.close()

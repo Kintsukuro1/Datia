@@ -6,7 +6,6 @@ import {
   Settings,
   ShieldAlert,
   LogOut,
-  Sparkles,
   LayoutDashboard,
   TrendingUp,
   Menu,

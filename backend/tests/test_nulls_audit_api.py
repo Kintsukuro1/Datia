@@ -17,16 +17,16 @@ from sqlalchemy import text
 from conftest import (
     create_temp_pg_database,
     drop_temp_pg_database,
+    make_auth_headers,
     pg_source_conn_attrs,
     pg_source_engine,
 )
 
 from main import app
 from app.core.database import SessionLocal
-from app.core.security import create_access_token
 from app.db.init_db import init_db
 from app.modules.admin_catalog.models import CorporateConnection
-from app.modules.auth.models import User, UserSession
+from app.modules.telemetry_audit.models import AuditLog
 
 
 class TestNullsAuditApi(unittest.TestCase):
@@ -54,6 +54,7 @@ class TestNullsAuditApi(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.db = SessionLocal()
+        self._audit_ids = []
 
         conn = CorporateConnection(
             name=f"nulls-api-{uuid.uuid4().hex[:8]}",
@@ -64,16 +65,23 @@ class TestNullsAuditApi(unittest.TestCase):
         self.db.commit()
         self.conn_id = conn.id
 
-        self.admin_user = self.db.query(User).filter(User.username == "admin").first()
-        self.admin_jti = str(uuid.uuid4())
-        self.admin_token = create_access_token(subject=self.admin_user.id, jti=self.admin_jti)
-        self.db.add(UserSession(user_id=self.admin_user.id, jti=self.admin_jti, is_revoked=False))
-        self.db.commit()
+        # Admin con sesion viva: el preambulo comun vive en conftest.
+        self.headers = make_auth_headers(self.db, "admin")
 
     def tearDown(self):
         self.db.query(CorporateConnection).filter(CorporateConnection.id == self.conn_id).delete()
+        for audit_id in self._audit_ids:
+            self.db.query(AuditLog).filter(AuditLog.id == audit_id).delete()
         self.db.commit()
         self.db.close()
+
+    def _count_rows(self) -> int:
+        eng = pg_source_engine(self.pg_db)
+        try:
+            with eng.begin() as c:
+                return int(c.execute(text("SELECT COUNT(*) FROM permisos")).scalar())
+        finally:
+            eng.dispose()
 
     def test_restricted_column_is_reported_as_unverifiable(self):
         from sqlalchemy.engine import Connection as SAConnection
@@ -86,7 +94,7 @@ class TestNullsAuditApi(unittest.TestCase):
                 raise RuntimeError("permission denied for column secreto")
             return real_execute(self, statement, *args, **kwargs)
 
-        headers = {"Authorization": f"Bearer {self.admin_token}"}
+        headers = self.headers
         with patch.object(SAConnection, "execute", flaky_execute):
             resp = self.client.get(
                 f"/api/v1/catalog/connections/{self.conn_id}/nulls-audit",
@@ -114,7 +122,7 @@ class TestNullsAuditApi(unittest.TestCase):
         self.db.add(broken)
         self.db.commit()
         try:
-            headers = {"Authorization": f"Bearer {self.admin_token}"}
+            headers = self.headers
             resp = self.client.get(
                 f"/api/v1/catalog/connections/{broken.id}/nulls-audit",
                 headers=headers,
@@ -127,6 +135,47 @@ class TestNullsAuditApi(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 502, resp.text)
         self.assertIn(missing_db, resp.json()["detail"])
+
+    def test_policy_without_confirmation_is_rejected_and_writes_nothing(self):
+        """Sin `confirm` server-side no se toca la base: el clic en la UI no viaja."""
+        before = self._count_rows()
+
+        resp = self.client.post(
+            f"/api/v1/catalog/connections/{self.conn_id}/nulls-policy",
+            json={"policy": "delete_rows"},
+            headers=self.headers,
+        )
+
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertIn("confirm", resp.json()["detail"].lower())
+        self.assertEqual(self._count_rows(), before, "la base cambio sin confirmacion")
+
+    def test_confirmed_policy_is_applied_and_audited(self):
+        """Con confirmacion se aplica (fisico) y la mutacion queda en audit_logs."""
+        before = self._count_rows()
+
+        resp = self.client.post(
+            f"/api/v1/catalog/connections/{self.conn_id}/nulls-policy",
+            json={"policy": "delete_rows", "confirm": True},
+            headers=self.headers,
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["status"], "success")
+        self.assertEqual(resp.json()["rows_affected"], 1)
+        self.assertEqual(self._count_rows(), before - 1)
+
+        log = (
+            self.db.query(AuditLog)
+            .filter(AuditLog.validation_status == "NULL_POLICY_APLICADA")
+            .order_by(AuditLog.id.desc())
+            .first()
+        )
+        self.assertIsNotNone(log, "la remediacion fisica no quedo auditada")
+        self._audit_ids.append(log.id)
+        self.assertEqual(log.username, "admin")
+        self.assertEqual(log.rows_returned, 1)
+        self.assertIn("delete_rows", log.question_prompt)
 
 
 if __name__ == "__main__":

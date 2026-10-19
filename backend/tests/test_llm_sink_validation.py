@@ -33,22 +33,16 @@ from app.modules.system.health_service import HealthService
 
 def _auth_client():
     """Cliente autenticado como admin, para probar las puertas HTTP de verdad."""
-    import uuid
     from main import app
     from app.core.database import SessionLocal
     from app.db.init_db import init_db
-    from app.modules.auth.models import User, UserSession
-    from app.core.security import create_access_token
+    from conftest import make_auth_headers
 
     db = SessionLocal()
     init_db(db)
-    user = db.query(User).filter(User.username == "admin").first()
-    jti = str(uuid.uuid4())
-    token = create_access_token(subject=user.id, jti=jti)
-    db.add(UserSession(user_id=user.id, jti=jti, is_revoked=False))
-    db.commit()
+    headers = make_auth_headers(db, "admin")
     db.close()
-    return TestClient(app), {"Authorization": f"Bearer {token}"}
+    return TestClient(app), headers
 
 
 def _no_request(*args, **kwargs):

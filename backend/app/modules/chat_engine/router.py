@@ -84,6 +84,62 @@ def _validated_request_llm_base_url(query_in: QueryRequest) -> Optional[str]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
 
 
+def _audit_response(
+    db: Session,
+    response: QueryResponse,
+    *,
+    user_id: int,
+    username: str,
+    user_role: str,
+    question_prompt: str,
+    target_database: str,
+) -> None:
+    """Persiste la auditoria de una respuesta y le estampa su id.
+
+    Un solo camino para `/query` y `/query/stream`: un stream no puede dejar de
+    registrar lo que el usuario leyo, es el mismo dato corporativo y la misma
+    evidencia de compliance que la consulta normal.
+
+    Sin trazabilidad NO se inventa un estado: se persiste `None`. Este antes era
+    un `else "APROBADO"` que escribia una validacion que nadie hacia, y como
+    `validation_status` era NOT NULL (ver telemetry_audit/models.py) era la
+    unica opcion del modelo. Los exporters ya saben pintar "Sin registro de
+    validacion" cuando el campo viene vacio.
+    """
+    sql_gen = response.traceability.sql_executed if response.traceability else None
+    v_status = response.traceability.validation_status if response.traceability else None
+    exec_time = response.traceability.execution_time_ms if response.traceability else 0
+    rows_ret = response.traceability.rows_returned if response.traceability else len(response.data_rows)
+    err_msg = response.summary_text if (
+        (v_status or "").startswith("RECHAZADO") or response.response_type == "error"
+    ) else None
+
+    try:
+        snapshot_json = response.model_dump_json()
+    except Exception:
+        snapshot_json = None
+
+    audit_id = _persist_audit_log(
+        db=db,
+        user_id=user_id,
+        username=username,
+        user_role=user_role,
+        question_prompt=question_prompt,
+        sql_generated=sql_gen,
+        validation_status=v_status,
+        target_database=target_database,
+        execution_time_ms=exec_time,
+        rows_returned=rows_ret,
+        error_message=err_msg,
+        result_snapshot=snapshot_json
+    )
+
+    if audit_id:
+        if response.traceability:
+            response.traceability.audit_log_id = audit_id
+        response.audit_log_id = audit_id
+
+
 @router.post("/query", response_model=QueryResponse)
 async def process_chat_query(
     query_in: QueryRequest,
@@ -118,45 +174,15 @@ async def process_chat_query(
             )
 
 
-        sql_gen = response.traceability.sql_executed if response.traceability else None
-        # Sin trazabilidad NO se inventa un estado: se persiste `None`. Este `else
-        # "APROBADO"` era la raiz del problema en cadena — escribia una validacion
-        # que nadie hacia, y como `validation_status` era NOT NULL (ver
-        # telemetry_audit/models.py) era la unica opcion del modelo. Los exporters
-        # ya saben pintar "Sin registro de validacion" cuando el campo viene vacio,
-        # pero con este `else` ese camino era inalcanzable: el valor falso nunca
-        # llegaba a la BD, llegaba como "APROBADO" legal.
-        v_status = response.traceability.validation_status if response.traceability else None
-        exec_time = response.traceability.execution_time_ms if response.traceability else 0
-        rows_ret = response.traceability.rows_returned if response.traceability else len(response.data_rows)
-        err_msg = response.summary_text if (
-            (v_status or "").startswith("RECHAZADO") or response.response_type == "error"
-        ) else None
-
-        try:
-            snapshot_json = response.model_dump_json()
-        except Exception:
-            snapshot_json = None
-
-        audit_id = _persist_audit_log(
+        _audit_response(
             db=db,
+            response=response,
             user_id=current_user.id,
             username=current_user.username,
             user_role=user_role_name,
             question_prompt=query_in.question,
-            sql_generated=sql_gen,
-            validation_status=v_status,
-            target_database=target_db_name,
-            execution_time_ms=exec_time,
-            rows_returned=rows_ret,
-            error_message=err_msg,
-            result_snapshot=snapshot_json
+            target_database=target_db_name
         )
-
-        if audit_id:
-            if response.traceability:
-                response.traceability.audit_log_id = audit_id
-            response.audit_log_id = audit_id
 
         return response
     except Exception as e:
@@ -266,36 +292,15 @@ async def process_chat_query_stream(
                 # `POST /chat/query`. Un stream no puede dejar de registrar lo que
                 # el usuario leyo: es el mismo dato corporativo,WER la misma
                 # evidencia de compliance.
-                sql_gen = response.traceability.sql_executed if response.traceability else None
-                v_status = response.traceability.validation_status if response.traceability else None
-                exec_time = response.traceability.execution_time_ms if response.traceability else 0
-                rows_ret = response.traceability.rows_returned if response.traceability else len(response.data_rows)
-                err_msg = response.summary_text if (
-                    (v_status or "").startswith("RECHAZADO") or response.response_type == "error"
-                ) else None
-                try:
-                    snapshot_json = response.model_dump_json()
-                except Exception:
-                    snapshot_json = None
-
-                audit_id = _persist_audit_log(
+                _audit_response(
                     db=stream_db,
+                    response=response,
                     user_id=user_id,
                     username=username,
                     user_role=user_role_name,
                     question_prompt=query_in.question,
-                    sql_generated=sql_gen,
-                    validation_status=v_status,
-                    target_database=target_db_name,
-                    execution_time_ms=exec_time,
-                    rows_returned=rows_ret,
-                    error_message=err_msg,
-                    result_snapshot=snapshot_json
+                    target_database=target_db_name
                 )
-                if audit_id:
-                    if response.traceability:
-                        response.traceability.audit_log_id = audit_id
-                    response.audit_log_id = audit_id
 
                 await queue.put(("result", response))
             except Exception as exc:

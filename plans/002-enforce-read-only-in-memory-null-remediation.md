@@ -5,12 +5,15 @@
 **Complejidad:** M (Manejo de estado en memoria y desacoplamiento de mutación física)  
 **Riesgo:** MEDIO (debe mantener intacta la experiencia conversacional)  
 
-> **Estado: ⛔ NO IMPLEMENTADO — sigue siendo el plan pendiente.** El código actual
-> conserva la mutación física: `engine.py:230` sigue llamando
-> `apply_null_policy(...)`, que ejecuta `DELETE`/`UPDATE` sobre la base
-> corporativa y hace `commit` (`null_manager.py:218-333`). La vía en memoria
-> (`apply_in_memory_remediation`) existe y se usa en `engine.py:448`, pero
-> convive con la escritura física. El hallazgo de la auditoría sigue vigente.
+> **Estado: ✅ IMPLEMENTADO (19/10/2026).** El chat ya no llama
+> `apply_null_policy(...)`: la remediación se aplica solo en memoria sobre las
+> filas de la respuesta (`engine.py`, sección 7). `apply_null_policy` queda
+> reservado al endpoint administrativo `/catalog/connections/{id}/nulls-policy`
+> (`admin_catalog/router.py`), que exige `get_current_admin`. Las políticas
+> destructivas exigen además `confirm=true` server-side (el clic de la UI no
+> viaja al backend) y toda aplicación queda registrada en `audit_logs`. La
+> prueba de inmutabilidad física está en
+> `backend/tests/test_null_policy_and_visualizations.py::test_prompt2_remediation_answers_original_question`.
 
 ---
 

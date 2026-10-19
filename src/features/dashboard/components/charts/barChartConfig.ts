@@ -1,4 +1,4 @@
-import { BASE_TOOLTIP, CHART_FONT_FAMILY, axisRotateAngle, buildTooltipHtml, truncateAxisLabel, THEME_COLORS, computeChartStats, formatMetricNumber } from './theme';
+import { BASE_TOOLTIP, axisRotateAngle, makeTooltipFormatter, truncateAxisLabel, THEME_COLORS, computeChartStats, formatMetricNumber, buildBaseDark, buildDataZoomComponent, buildAverageMarkLine } from './theme';
 
 export function buildBarChartOption(params: {
   processedRows: Record<string, any>[];
@@ -29,57 +29,13 @@ export function buildBarChartOption(params: {
 
   const formatAxisLabel = (val: string) => truncateAxisLabel(val);
 
-  const formatTooltipHtml = (name: string, val: number) => {
-    const pctStr = stats.total > 0 ? `${((val / stats.total) * 100).toFixed(1)}%` : '';
-    return buildTooltipHtml(
-      name,
-      formatMetricNumber(val, isCurrency),
-      pctStr,
-      numCol?.replace(/_/g, ' ') ?? '',
-      currentTheme.primary
-    );
-  };
+  const formatTooltipHtml = makeTooltipFormatter(stats, numCol, isCurrency, currentTheme.primary);
 
-  const baseDark = {
-    backgroundColor: 'transparent',
-    textStyle: { color: '#94A3B8', fontFamily: CHART_FONT_FAMILY },
-    grid: { left: '3%', right: '4%', bottom: showDataZoom ? '18%' : '10%', top: '12%', containLabel: true },
-  };
+  const baseDark = buildBaseDark(showDataZoom);
 
-  const dataZoomComponent = showDataZoom || processedRows.length > 12
-    ? [
-        {
-          type: 'slider',
-          show: true,
-          xAxisIndex: [0],
-          bottom: '2%',
-          height: 20,
-          borderColor: '#334155',
-          fillerColor: currentTheme.glow,
-          textStyle: { color: '#94A3B8', fontSize: 10 },
-          handleStyle: { color: currentTheme.primary, borderColor: '#fff' },
-        },
-      ]
-    : undefined;
+  const dataZoomComponent = buildDataZoomComponent(currentTheme, showDataZoom, processedRows.length);
 
-  const markLineConfig = showAverageLine && stats.count > 1
-    ? {
-        data: [
-          {
-            type: 'average',
-            name: 'Promedio',
-            lineStyle: { color: currentTheme.secondary, type: 'dashed', width: 2 },
-            label: {
-              show: true,
-              formatter: (p: any) => `Prom: ${formatMetricNumber(p.value, isCurrency)}`,
-              color: currentTheme.secondary,
-              fontSize: 10,
-              position: 'insideEndTop',
-            },
-          },
-        ],
-      }
-    : undefined;
+  const markLineConfig = buildAverageMarkLine(showAverageLine, stats, currentTheme, isCurrency);
 
   if (activeChartType === 'horizontal_bar') {
     return {

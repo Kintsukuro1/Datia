@@ -1,4 +1,3 @@
-import logging
 import io
 from typing import List, Optional, Any, Dict, Set
 from fastapi import APIRouter, Depends, status, Query, UploadFile, File, Form
@@ -7,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import (
     get_db, get_current_user, get_current_admin, require_assigned_role,
+    _persist_audit_log, display_role_name,
 )
 from app.modules.auth.models import User
 from app.modules.admin_catalog.schemas import (
@@ -35,7 +35,6 @@ from app.modules.chat_engine.llm_diagnostic_router import _resolve_llm_base_url
 from fastapi import HTTPException
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
 
 # =========================================================================
 # SEMANTIC CATALOG ENDPOINTS (/catalog)
@@ -202,14 +201,39 @@ def apply_connection_null_policy(
     db: Session = Depends(get_db),
     current_admin: User = Depends(get_current_admin)
 ) -> Any:
-    """Applies the selected null remediation policy (Admin only)."""
+    """Applies the selected null remediation policy (Admin only).
+
+    Las politicas destructivas exigen `confirm=true` server-side: el clic en la
+    UI no viaja al backend. Toda aplicacion queda en `audit_logs` porque la
+    mutacion es fisica e irreversible.
+    """
     conn = db.query(CorporateConnection).filter(CorporateConnection.id == connection_id).first()
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada.")
     try:
-        return NullManagerService.apply_null_policy(conn, req.policy, db)
+        result = NullManagerService.apply_null_policy(conn, req.policy, db, confirm=req.confirm)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    _persist_audit_log(
+        db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=display_role_name(current_admin),
+        question_prompt=(
+            f"Política de nulos '{req.policy}' sobre la conexión '{conn.name}': "
+            f"{result.get('message', '')}"
+        ),
+        sql_generated=None,
+        validation_status=(
+            "NULL_POLICY_APLICADA"
+            if result.get("status") == "success"
+            else "NULL_POLICY_SIN_CAMBIOS"
+        ),
+        target_database=conn.database_name or conn.name,
+        rows_returned=result.get("rows_affected") or 0
+    )
+    return result
 
 # =========================================================================
 # CORPORATE CONNECTORS ENDPOINTS (/connectors)

@@ -133,7 +133,7 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
 
     def test_apply_policy_delete_rows(self):
         """Verifica que la política 'delete_rows' elimine las filas con NULL preservando las demás."""
-        result = NullManagerService.apply_null_policy(self._make_conn(), "delete_rows", MagicMock())
+        result = NullManagerService.apply_null_policy(self._make_conn(), "delete_rows", MagicMock(), confirm=True)
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["policy"], "delete_rows")
@@ -144,7 +144,7 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
 
     def test_apply_policy_mode(self):
         """Verifica que la política 'mode' impute los NULLs con la moda estadística."""
-        result = NullManagerService.apply_null_policy(self._make_conn(), "mode", MagicMock())
+        result = NullManagerService.apply_null_policy(self._make_conn(), "mode", MagicMock(), confirm=True)
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["policy"], "mode")
@@ -159,7 +159,7 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
 
     def test_apply_policy_nearest(self):
         """Verifica que la política 'nearest' impute los NULLs con el valor anterior/siguiente."""
-        result = NullManagerService.apply_null_policy(self._make_conn(), "nearest", MagicMock())
+        result = NullManagerService.apply_null_policy(self._make_conn(), "nearest", MagicMock(), confirm=True)
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["policy"], "nearest")
@@ -262,6 +262,21 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
         # 3. Confirmation banner is present
         self.assertIn("Tratamiento de nulos", response.conversational_response)
         self.assertIn("Eliminación de registros con nulos", response.conversational_response)
+
+        # 4. La base fisica quedo intacta: la remediacion fue SOLO en memoria.
+        # Antes de plan 002 este flujo ejecutaba DELETE sobre test_sales y estas
+        # dos aserciones fallaban (quedaban 3 filas y 0 nulos).
+        self.assertEqual(
+            self._query("SELECT COUNT(*) FROM test_sales")[0][0], 5,
+            "el chat modifico la base corporativa en vez de remediar en memoria",
+        )
+        self.assertEqual(
+            self._query(
+                "SELECT COUNT(*) FROM test_sales WHERE category IS NULL OR amount IS NULL"
+            )[0][0],
+            2,
+            "los nulos fisicos desaparecieron: se ejecuto una remediacion persistente",
+        )
 
     def test_query_without_matching_rows_does_not_crash(self):
         """Un filtro que no matchea filas no crashea y no afirma que encontro datos.

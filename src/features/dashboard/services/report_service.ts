@@ -1,5 +1,6 @@
 import { apiClient } from '../../../shared/api/api_client';
 import { QueryResult } from '../../../types';
+import { downloadBlob } from '../../../shared/download';
 
 export interface ExportReportOptions {
   chartBase64?: string;
@@ -104,18 +105,8 @@ async captureChartAsBase64(scope?: ParentNode | null): Promise<string | undefine
     });
 
     const blob = new Blob([res.data], { type: 'application/pdf' });
-    const url = window.URL.createObjectURL(blob);
-    try {
-      const link = document.createElement('a');
-      link.href = url;
-      const nowStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      link.setAttribute('download', `informe_ejecutivo_datia_${nowStr}.pdf`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } finally {
-      window.URL.revokeObjectURL(url);
-    }
+    const nowStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    downloadBlob(blob, `informe_ejecutivo_datia_${nowStr}.pdf`);
   },
 
   async exportExecutiveReportExcel(
@@ -141,17 +132,7 @@ async captureChartAsBase64(scope?: ParentNode | null): Promise<string | undefine
     const blob = new Blob([res.data], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     });
-    const url = window.URL.createObjectURL(blob);
-    try {
-      const link = document.createElement('a');
-      link.href = url;
-      const nowStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      link.setAttribute('download', `datos_datia_${nowStr}.xlsx`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } finally {
-      window.URL.revokeObjectURL(url);
-    }
+    const nowStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    downloadBlob(blob, `datos_datia_${nowStr}.xlsx`);
   },
 };

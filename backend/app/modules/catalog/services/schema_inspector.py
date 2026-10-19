@@ -2,7 +2,19 @@ from typing import List, Optional, Any, Dict
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.constants import IGNORED_METADATA_TABLES
 from app.modules.admin_catalog.models import CorporateConnection
+
+
+def quote_sql_identifier(name: str) -> str:
+    """Cita un identificador para SQL textual y escapa comillas dobles.
+
+    Los nombres vienen de la base del cliente, no de una lista controlada: un
+    identificador como `a"b` rompia el SQL o permitia inyectar sentencias en los
+    caminos que arman consultas con f-strings. PostgreSQL y SQLite comparten la
+    regla de duplicar la comilla dentro de comillas dobles.
+    """
+    return '"' + str(name).replace('"', '""') + '"'
 
 
 class SchemaIntrospectionError(RuntimeError):
@@ -22,12 +34,7 @@ class SchemaInspector:
     and connection resolution.
     """
 
-    IGNORED_TABLES = {
-        "roles", "domains", "corporate_connections",
-        "users", "role_domain_links", "role_table_permissions",
-        "role_column_permissions", "semantic_catalog", "audit_logs",
-        "user_sessions", "alembic_version"
-    }
+    IGNORED_TABLES = IGNORED_METADATA_TABLES
 
     @classmethod
     def resolve_connection(cls, db: Session, connection_id: Optional[int]) -> CorporateConnection:
@@ -109,8 +116,10 @@ class SchemaInspector:
                 with eng.connect() as connection:
                     for tbl in active_tables:
                         try:
-                            schema_prefix = f'"{target_schema}".' if target_schema else ""
-                            cnt_res = connection.execute(text(f'SELECT COUNT(*) FROM {schema_prefix}"{tbl}"')).scalar()
+                            schema_prefix = f'{quote_sql_identifier(target_schema)}.' if target_schema else ""
+                            cnt_res = connection.execute(
+                                text(f'SELECT COUNT(*) FROM {schema_prefix}{quote_sql_identifier(tbl)}')
+                            ).scalar()
                             row_count = int(cnt_res or 0)
                         except Exception:
                             row_count = 0
@@ -129,8 +138,12 @@ class SchemaInspector:
 
                             sample_vals = []
                             try:
+                                quoted_col = quote_sql_identifier(col_name)
                                 samples_res = connection.execute(
-                                    text(f'SELECT DISTINCT "{col_name}" FROM {schema_prefix}"{tbl}" WHERE "{col_name}" IS NOT NULL LIMIT 3')
+                                    text(
+                                        f'SELECT DISTINCT {quoted_col} FROM {schema_prefix}{quote_sql_identifier(tbl)} '
+                                        f'WHERE {quoted_col} IS NOT NULL LIMIT 3'
+                                    )
                                 ).fetchall()
                                 sample_vals = [str(r[0]) for r in samples_res if r[0] is not None]
                             except Exception:

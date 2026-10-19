@@ -15,7 +15,6 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "backend:test": "cd backend && pytest",
-    "check:charts": "esbuild scripts/check-extra-charts.mjs --bundle --platform=node --format=esm --outfile=node_modules/.cache/check-extra-charts.mjs && node node_modules/.cache/check-extra-charts.mjs",
     "doctor": "npx react-doctor@latest"
   },
   "dependencies": {

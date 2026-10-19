@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Copy, Check } from 'lucide-react';
-import { copyToClipboard } from '../../../../shared/clipboard';
+import { useCopyFeedback } from '../../../../hooks/useCopyFeedback';
 
 export interface TableData {
   headers: string[];
@@ -250,16 +250,12 @@ interface MarkdownTableComponentProps {
 }
 
 const MarkdownTableComponent: React.FC<MarkdownTableComponentProps> = ({ tableData, id }) => {
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useCopyFeedback();
 
   const handleCopy = () => {
     const headerLine = tableData.headers.join('\t');
     const rowLines = tableData.rows.map((r) => r.join('\t')).join('\n');
-    void copyToClipboard(`${headerLine}\n${rowLines}`).then((ok: boolean) => {
-      if (!ok) return;
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    void copy(`${headerLine}\n${rowLines}`);
   };
 
   const isNullLike = (val: string) => {

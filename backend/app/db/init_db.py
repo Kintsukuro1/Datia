@@ -199,61 +199,9 @@ def init_db(db: Session):
     from app.core.config import settings
 
     Base.metadata.create_all(bind=engine)
+    # Las columnas incrementales (ALTER inline) viven en un solo lugar:
+    # `ensure_schema_migrations` (app/core/database.py), que ya corrio arriba.
     ensure_schema_migrations(engine)
-
-    try:
-        from sqlalchemy import inspect, text
-        inspector = inspect(engine)
-        table_names = set(inspector.get_table_names())
-
-        if "users" in table_names:
-            user_cols = {c["name"] for c in inspector.get_columns("users")}
-            with engine.begin() as conn:
-                if "failed_login_attempts" not in user_cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0 NOT NULL"))
-                if "locked_until" not in user_cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN locked_until TIMESTAMP NULL"))
-                if "must_change_password" not in user_cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT FALSE NOT NULL"))
-
-        if "corporate_connections" in table_names:
-            conn_cols = {c["name"] for c in inspector.get_columns("corporate_connections")}
-            with engine.begin() as conn:
-                if "is_uploaded" not in conn_cols:
-                    conn.execute(text("ALTER TABLE corporate_connections ADD COLUMN is_uploaded BOOLEAN DEFAULT FALSE NOT NULL"))
-                if "null_policy" not in conn_cols:
-                    conn.execute(text("ALTER TABLE corporate_connections ADD COLUMN null_policy VARCHAR(50) DEFAULT 'open'"))
-
-        if "audit_logs" in table_names:
-            audit_cols = {c["name"] for c in inspector.get_columns("audit_logs")}
-            with engine.begin() as conn:
-                if "result_snapshot" not in audit_cols:
-                    conn.execute(text("ALTER TABLE audit_logs ADD COLUMN result_snapshot TEXT NULL"))
-
-        if "query_learning_memories" in table_names:
-            mem_cols = {c["name"] for c in inspector.get_columns("query_learning_memories")}
-            with engine.begin() as conn:
-                if "is_golden" not in mem_cols:
-                    conn.execute(text("ALTER TABLE query_learning_memories ADD COLUMN is_golden BOOLEAN DEFAULT FALSE NOT NULL"))
-
-        # Procedencia del permiso de tabla. Mismo mecanismo que `is_shared`: se
-        # agrega la columna con el default que falla cerrado. Las filas existentes
-        # quedan en False (o sea "nadie lo concedio a proposito"), que es
-        # justamente lo que la migracion de default-deny de mas abajo revoca.
-        if "role_table_permissions" in table_names:
-            perm_cols = {c["name"] for c in inspector.get_columns("role_table_permissions")}
-            with engine.begin() as conn:
-                if "granted_by_admin" not in perm_cols:
-                    conn.execute(text("ALTER TABLE role_table_permissions ADD COLUMN granted_by_admin BOOLEAN DEFAULT FALSE NOT NULL"))
-                    # No se marca nada como concedido: el default FALSE deja a todas
-                    # las filas existentes sin procedencia demostrable, que es
-                    # exactamente lo que la migracion de default-deny de mas abajo
-                    # revoca en los datasets subidos. La matriz de la demo no pasa
-                    # por aca: vive en las conexiones de plataforma (is_uploaded
-                    # == False), que la migracion no toca, y el seeder declarativo
-                    # la (re)marca como concedida fila por fila.
-    except Exception:
-        pass
 
     default_domains = [
         {"name": "Economía & Finanzas", "description": "Ingresos, costos, presupuestos, facturación y márgenes de negocio"},

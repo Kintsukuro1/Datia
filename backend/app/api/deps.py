@@ -168,12 +168,21 @@ def get_current_user_optional(
 
     return user
 
+def is_admin_user(user: User) -> bool:
+    """"¿Este usuario administra?" con la MISMA regla que `get_current_admin`.
+
+    No alcanza con el flag `is_admin`: un usuario con rol del catalogo que este
+    en ADMIN_ROLES entra igual a las pantallas de administracion, asi que
+    contarlo como no-admin dejaria pasar el guard de "ultimo administrador" y
+    el sistema se quedaria sin nadie que pueda administrarlo.
+    """
+    return bool(user.is_admin) or (user.role is not None and user.role.name in ADMIN_ROLES)
+
 def get_current_admin(
     current_user: User = Depends(get_current_user)
 ) -> User:
     """Ensures current user has Administrator privileges."""
-    user_role_name = current_user.role.name if current_user.role else ""
-    if not (current_user.is_admin or user_role_name in ADMIN_ROLES):
+    if not is_admin_user(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Acceso denegado. Se requieren privilegios de Administrador."
