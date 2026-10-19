@@ -257,7 +257,7 @@ describe('getThread: 404 es null, cualquier otro fallo se propaga', () => {
   });
 });
 
-describe('isPredictionQuestion: el filtro que enruta a /chat/predict', () => {
+describe('isPredictionQuestion: el filtro que ofrece abrir Proyecciones', () => {
   it('reconoce las formas explicitas de pedir el futuro', () => {
     expect(isPredictionQuestion('predice el mes que viene')).toBe(true);
     expect(isPredictionQuestion('cuanto facturo')).toBe(true);

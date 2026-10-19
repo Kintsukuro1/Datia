@@ -1,19 +1,21 @@
 import { apiClient, parseSseEvent } from '../../../shared/api/api_client';
-import { QueryResult, PredictionResult } from '../../../types';
+import { QueryResult } from '../../../types';
 
 /**
- * Una pregunta es de PREDICCION si pide el futuro de forma explicita.
+ * Una pregunta es de PROYECCION si pide el futuro de forma explicita.
  *
- * Deliberadamente estrecho. Se enruta a `/chat/predict` — que es determinista y
- * no inventa nada — solo ante palabras que no admiten otra lectura. Ampliarlo a
- * "retencion" o "clientes" arrastraria preguntas de personal o de TI a un
- * calculo de churn comercial: el backend tiene aislamiento de dominio por rol y
- * esta regla no debe abrir un hueco al lado de el.
+ * Deliberadamente estrecho. Detecta la intencion solo ante palabras que no
+ * admiten otra lectura: el consumidor (el chat) NO manda la pregunta a ningun
+ * modelo — ofrece abrir la seccion Proyecciones con la pregunta ya cargada,
+ * donde corre el motor determinista. Ampliarlo a "retencion" o "clientes"
+ * arrastraria preguntas de personal o de TI a un calculo de churn comercial: el
+ * backend tiene aislamiento de dominio por rol y esta regla no debe abrir un
+ * hueco al lado de el.
  *
- * Cuando NO hay ruta honesta, la pregunta sigue al camino normal del LLM, que
- * con la regla anti-proyeccion de `prompts.py` explica que la prediccion vive
- * en el panel de Pronósticos. Perder una frase es degradado; entregar el dato
- * equivocado es el daño que esto previene.
+ * Cuando el filtro no matchea, la pregunta sigue al camino normal del LLM, que
+ * con la regla anti-proyeccion de `prompts.py` explica que las proyecciones se
+ * calculan en la seccion Proyecciones. Perder una frase es degradado; entregar
+ * el dato equivocado es el daño que esto previene.
  *
  * `cuanto venderé` no entra a proposito: el grupo terminaria en `é` y el `\b`
  * final de JS es ASCII, asi que no habria frontera y la alternativa no casaria.
@@ -27,33 +29,6 @@ export function isPredictionQuestion(text: string): boolean {
 }
 
 export const queryService = {
-  /**
-   * Predicciones: forecast del proximo periodo, retencion por entidad y — solo
-   * si se pide — el reporte de calidad de datos.
-   *
-   * `include_data_quality` viene apagado porque son COUNTs sobre la fact table:
-   * sumarlos a una consulta que solo queria el forecast es latencia que el
-   * usuario no pidio.
-   */
-  async getPrediction(
-    question: string,
-    connectionId?: number,
-    options: { includeDataQuality?: boolean; includeRetention?: boolean } = {},
-    signal?: AbortSignal
-  ): Promise<PredictionResult> {
-    const payload: any = { question, include_data_quality: !!options.includeDataQuality };
-    if (connectionId) {
-      payload.connection_id = connectionId;
-    }
-    if (options.includeRetention === false) {
-      payload.include_retention = false;
-    }
-    // Sin catch: un fallo de API tiene que distinguirse de "no hay prediccion
-    // posible". Devolver un objeto vacio haria que el panel pintara un cero.
-    const res = await apiClient.post('/chat/predict', payload, signal ? { signal } : undefined);
-    return res.data;
-  },
-
   async getSuggestions(connectionId?: number): Promise<string[]> {
     const params: Record<string, any> = {};
     if (connectionId) {

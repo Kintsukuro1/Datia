@@ -14,6 +14,7 @@ import { ChatEngineProvider } from '../../features/chat/hooks/useChatEngine';
 const ChatDashboardPage = lazy(() => import('../../pages/ChatDashboardPage').then((m) => ({ default: m.ChatDashboardPage })));
 const SettingsPage = lazy(() => import('../../pages/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const AdminPage = lazy(() => import('../../pages/AdminPage').then((m) => ({ default: m.AdminPage })));
+const ProjectionsPage = lazy(() => import('../../pages/ProjectionsPage').then((m) => ({ default: m.ProjectionsPage })));
 
 const RouteFallback: React.FC = () => (
   <div className="flex items-center justify-center h-full min-h-[50vh] text-[var(--app-text)]">
@@ -156,6 +157,16 @@ export const AppRouter: React.FC = () => {
             <ProtectedLayout>
               <Suspense fallback={<RouteFallback />}>
                 <AdminPage />
+              </Suspense>
+            </ProtectedLayout>
+          }
+        />
+        <Route
+          path="/projections"
+          element={
+            <ProtectedLayout>
+              <Suspense fallback={<RouteFallback />}>
+                <ProjectionsPage />
               </Suspense>
             </ProtectedLayout>
           }

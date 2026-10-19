@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import ReactECharts from 'echarts-for-react';
+import { useNavigate } from 'react-router-dom';
 import { useChatEngine } from '../features/chat/hooks/useChatEngine';
 import { SidebarChatHistory } from '../components/chat/SidebarChatHistory';
 import { ChatMessageItem } from '../components/chat/ChatMessageItem';
@@ -22,15 +23,17 @@ import {
   Sparkles,
   BarChart3,
   RefreshCw,
+  TrendingUp,
 } from 'lucide-react';
 import { queryService } from '../features/chat/services/query_service';
-import { PredictionPanel } from '../features/dashboard/components/PredictionPanel';
+import { ProjectionSuggestionCard } from '../features/chat/components/ProjectionSuggestionCard';
 import { useNotifications } from '../context/NotificationContext';
 import { prefersReducedMotion } from '../features/dashboard/components/charts/theme';
 import { useModalA11y } from '../hooks/useModalA11y';
 
 export const ChatDashboardPage: React.FC = () => {
   const { notify } = useNotifications();
+  const navigate = useNavigate();
   const {
     user,
     userRole,
@@ -56,11 +59,8 @@ export const ChatDashboardPage: React.FC = () => {
     pendingError,
     pendingErrorKind,
     attemptThreadId,
-    prediction,
-    predictionError,
-    loadingAudit,
-    requestDataQualityAudit,
-    clearPrediction,
+    projectionSuggestion,
+    dismissProjectionSuggestion,
     chatBottomRef,
     searchInputRef,
     promptTextareaRef,
@@ -75,10 +75,9 @@ export const ChatDashboardPage: React.FC = () => {
   } = useChatEngine();
 
   // La tarjeta del intento (procesando / sin respuesta / cancelada) pertenece a
-  // SU conversacion: se muestra solo ahi, o en cualquier parte cuando el intento
-  // no vive en un hilo (prediccion). Antes seguia al usuario a cualquier hilo y
-  // a la bienvenida, y una consulta siguiendo en segundo plano no podia mostrar
-  // su bienvenida.
+  // SU conversacion: se muestra solo ahi. Antes seguia al usuario a cualquier
+  // hilo y a la bienvenida, y una consulta siguiendo en segundo plano no podia
+  // mostrar su bienvenida.
   const attemptCard = Boolean(
     pendingPrompt && (attemptThreadId === null || attemptThreadId === activeThreadId)
   );
@@ -398,6 +397,17 @@ export const ChatDashboardPage: React.FC = () => {
               <span>Tablero ({widgetsError ? '?' : widgetsLoaded ? widgets.length : '…'})</span>
             </button>
 
+            {/* Proyecciones ML: entrada a la seccion completa (la pregunta se
+                escribe alla; el chat no calcula proyecciones). */}
+            <button
+              type="button"
+              onClick={() => navigate('/projections')}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-app-muted hover:text-app-text bg-app-card hover:bg-app-hover border border-app-border transition shadow-xs"
+              title="Proyecciones con machine learning sobre tus datos"
+            >
+              <TrendingUp size={13} className="text-violet-500 dark:text-violet-400" />
+              <span>Proyecciones</span>
+            </button>
 
             <button
               type="button"
@@ -427,7 +437,7 @@ export const ChatDashboardPage: React.FC = () => {
 
         {/* Scrollable Conversation Stream */}
         <div className={`flex-1 overflow-y-auto px-4 py-6 md:px-8 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 ${isPresentationMode ? 'max-w-6xl mx-auto w-full' : ''}`}>
-          {(!activeThread || activeThread.results.length === 0) && !attemptCard && !prediction ? (
+          {(!activeThread || activeThread.results.length === 0) && !attemptCard && !projectionSuggestion ? (
             <ChatEmptyState
               promptSuggestions={promptSuggestions}
               onSelectSuggestion={(sugg) => {
@@ -437,28 +447,6 @@ export const ChatDashboardPage: React.FC = () => {
             />
           ) : (
             <div className={`${isPresentationMode ? 'max-w-5xl' : 'max-w-4xl'} mx-auto space-y-8`}>
-              {/* Predicciones. Vive FUERA de la lista de mensajes a proposito: no
-                  es un `QueryResult` y meterlo en el hilo haria que el panel de
-                  trazabilidad y los exportadores leyeran campos inexistentes. */}
-              {predictionError && (
-                <div
-                  role="alert"
-                  className="rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-900 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200"
-                >
-                  <p className="font-semibold">No se pudo calcular la predicción</p>
-                  <p className="mt-1">{predictionError}</p>
-                </div>
-              )}
-
-              {prediction && (
-                <PredictionPanel
-                  prediction={prediction}
-                  onClose={() => clearPrediction(null)}
-                  onAuditQuality={requestDataQualityAudit}
-                  loadingAudit={loadingAudit}
-                />
-              )}
-
               {activeThread?.results.map((res, index) => (
                 <ChatMessageItem
                   key={res.id || index}
@@ -472,6 +460,18 @@ export const ChatDashboardPage: React.FC = () => {
                   onFollowUp={sendFollowUp}
                 />
               ))}
+
+              {/* Oferta de proyeccion: al final del hilo, donde el usuario acaba
+                  de preguntar (no fuera de vista en un hilo largo). Vive FUERA
+                  de la lista de mensajes a proposito: no es un `QueryResult` y
+                  meterla en el hilo haria que la trazabilidad y los
+                  exportadores leyeran campos inexistentes. */}
+              {projectionSuggestion && (
+                <ProjectionSuggestionCard
+                  question={projectionSuggestion}
+                  onDismiss={dismissProjectionSuggestion}
+                />
+              )}
 
               {/* Pending Query: Optimistic User Message Bubble + AI Thinking Bubble */}
               {attemptCard && (

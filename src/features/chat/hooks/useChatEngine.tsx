@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo, createContext, useContext } from 'react';
 import { useAuth } from '../../auth/context/AuthContext';
 import { useNotifications } from '../../../context/NotificationContext';
-import { QueryResult, PredictionResult } from '../../../types';
+import { QueryResult } from '../../../types';
 import { createStreamBuffer } from '../../../shared/stream_buffer';
 import { ChatThread } from '../../../components/chat/SidebarChatHistory';
 import { queryService, isPredictionQuestion } from '../services/query_service';
@@ -106,10 +106,6 @@ function useChatEngineInternal() {
     attemptThreadIdRef.current = id;
     setAttemptThreadId(id);
   }, []);
-  // Una prediccion no vive en ningun hilo (por diseno): "+ Nueva consulta" la
-  // corta como antes. Este flag la distingue de una consulta, que sigue viva y
-  // deja su respuesta en su conversacion.
-  const predictionAttemptRef = useRef(false);
   // Cuando arranco el intento: el mensaje de Cancelar dice a los cuantos
   // segundos se corto.
   const attemptStartedAtRef = useRef<number | null>(null);
@@ -216,12 +212,11 @@ function useChatEngineInternal() {
   // mismo que "Sin respuesta"). Se guarda el origen; no se adivina del texto.
   const [pendingErrorKind, setPendingErrorKind] = useState<'cancel' | 'fail' | null>(null);
 
-  // Predicciones: estado aparte del hilo, porque NO son un `QueryResult`.
-  // `null` = todavia no se pidio ninguna; un error va en su propio campo para no
-  // confundirse con "no hay prediccion posible" ni con un panel vacio.
-  const [prediction, setPrediction] = useState<PredictionResult | null>(null);
-  const [predictionError, setPredictionError] = useState<string | null>(null);
-  const [loadingAudit, setLoadingAudit] = useState(false);
+  // Proyeccion pedida desde el chat: la pregunta queda aca (fuera del hilo,
+  // como la vieja tarjeta de prediccion) para ofrecer abrirla en /projections
+  // con el input pre-cargado. `null` = no hay oferta en pantalla. No hay
+  // request detras: nada se esta calculando mientras esto se ve.
+  const [projectionSuggestion, setProjectionSuggestion] = useState<string | null>(null);
 
   // Segundos que lleva la consulta en curso. Es lo unico que el frontend puede
   // afirmar con certeza sin SSE: que sigue corriendo y cuanto lleva. Antes se
@@ -390,10 +385,12 @@ function useChatEngineInternal() {
     }
   }, [threads, storageKey, notify]);
 
-  // Auto-scroll on new message
+  // Auto-scroll on new message. La oferta de proyeccion entra aca: es lo
+  // unico que cambia en pantalla cuando esa pregunta se envia (no hay
+  // `pendingPrompt` ni streaming detras).
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [threads, isGenerating, activeThreadId, pendingPrompt]);
+  }, [threads, isGenerating, activeThreadId, pendingPrompt, projectionSuggestion]);
 
   const activeThread = useMemo(
     () => threads.find((t) => t.id === activeThreadId),
@@ -457,21 +454,8 @@ function useChatEngineInternal() {
     const inFlight = abortControllerRef.current !== null && isGenerating;
     // Una consulta en curso NO se corta: sigue y su respuesta queda en SU
     // conversacion; el usuario ve la bienvenida y pregunta cuando termine (el
-    // input se lo dice). Una prediccion, que no vive en ningun hilo, si se
-    // corta: no hay conversacion donde dejarla.
-    const cutsPrediction = inFlight && predictionAttemptRef.current;
-
-    if (cutsPrediction) {
-      abortControllerRef.current?.abort();
-      abortControllerRef.current = null;
-      discardStreamingNarrative();
-      setAttemptThread(null);
-      setIsGenerating(false);
-      setPendingPrompt(null);
-      setPendingError(null);
-      setPendingErrorKind(null);
-      setPredictionError(null);
-    } else if (!inFlight) {
+    // input se lo dice).
+    if (!inFlight) {
       // Nada corriendo: lo parcial de un intento ya terminado no puede quedar
       // pegado al proximo. La tarjeta de un intento fallido (si la hay) se
       // conserva en su hilo, con su pregunta y su Reintentar.
@@ -482,6 +466,10 @@ function useChatEngineInternal() {
         'La consulta anterior sigue en curso: su respuesta va a quedar en esa conversación. Vas a poder preguntar algo nuevo cuando termine.'
       );
     }
+
+    // La oferta de proyeccion no vive en ningun hilo: "Nueva consulta" la
+    // descarta, igual que la vieja tarjeta de prediccion.
+    setProjectionSuggestion(null);
 
     setPromptInput('');
     setActiveTraceability(null);
@@ -552,62 +540,31 @@ function useChatEngineInternal() {
     const trimmed = text.trim();
     if (!trimmed || isGenerating) return;
 
+    // Ruta de PROYECCION: la pregunta no viaja a ningun endpoint.
+    //
+    // El motor del chat no puede proyectar: el LLM solo tiene filas historicas
+    // y cualquier cifra futura seria inventada. La proyeccion real corre en
+    // /projections (serie real, banda de error medida y backtests), asi que el
+    // chat deja la pregunta como oferta para abrirla ahi con el input ya
+    // cargado — sin request, sin reloj y sin fingir que algo se calcula.
+    //
+    // La oferta NO entra al hilo de chat: no es un `QueryResult` y forzarla
+    // dentro de la lista de mensajes haria que el panel de trazabilidad y los
+    // exportadores leyeran campos que no existen.
+    if (isPredictionQuestion(trimmed)) {
+      setProjectionSuggestion(trimmed);
+      setPromptInput('');
+      return;
+    }
+
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    // Ruta de PREDICCION: determinista, sin LLM.
-    //
-    // Si esto no existiera, "predice el mes que viene" caeria en el motor
-    // normal, que hace generar SQL a un modelo de 7B y despues redacta la
-    // respuesta. Ese camino no puede proyectar: terminaria inventando una cifra
-    // o diciendo que no sabe. `/chat/predict` calcula sobre la serie real y publica
-    // el error historico al lado del numero, asi que la pregunta se responde o
-    // se explica por que no se puede — nunca se disfraza.
-    //
-    // La prediccion NO entra al hilo de chat: no es un `QueryResult` y forzarla
-    // dentro de la lista de mensajes haria que el panel de trazabilidad y los
-    // exportadores leyeran campos que no existen.
-    if (isPredictionQuestion(trimmed)) {
-      setPendingPrompt(trimmed);
-      setPendingError(null);
-      setPendingErrorKind(null);
-      // Sin hilo: la prediccion vive fuera del historial, su tarjeta se ve
-      // donde este el usuario (y "+ Nueva consulta" la corta).
-      setAttemptThread(null);
-      predictionAttemptRef.current = true;
-      setPromptInput('');
-      setIsGenerating(true);
-      setPredictionError(null);
-      try {
-        const res = await queryService.getPrediction(
-          trimmed,
-          activeConnectionId || 1,
-          {},
-          controller.signal
-        );
-        setPrediction(res);
-      } catch (err: any) {
-        if (err?.name === 'AbortError') return;
-        setPredictionError(err?.message || 'No se pudo calcular la prediccion.');
-      } finally {
-        // Antes del guard: "+ Nueva consulta" pudo haber cortado ESTA
-        // prediccion, y el flag no puede quedar prendido para el proximo intento
-        // (que ya no seria una prediccion).
-        predictionAttemptRef.current = false;
-        // Mismo guard que el camino del LLM: si el usuario ya empezo otra
-        // consulta, este `finally` no le apagaba el estado ni le borraba la
-        // pregunta pendiente.
-        if (abortControllerRef.current !== controller) return;
-        setIsGenerating(false);
-        setPendingPrompt(null);
-      }
-      return;
-    }
-    // Cualquier otra pregunta, prediction o no, sigue por el camino del LLM.
-    setPrediction(null);
+    // Cualquier otra pregunta sigue por el camino del LLM.
+    setProjectionSuggestion(null);
 
     const currentThreadId = activeThreadId || `thread-${Date.now()}`;
     // El estado del motor guarda UN intento: si el anterior quedo fallido en
@@ -905,29 +862,8 @@ function useChatEngineInternal() {
     return res;
   }, [activeConnectionId, notify]);
 
-  /**
-   * Pide el reporte de calidad de datos sobre la prediccion ya mostrada.
-   *
-   * Va aparte porque son COUNTs sobre toda la tabla: sumarlos siempre seria
-   * latencia que casi nadie pidio. Se dispara bajo demanda y el panel ya tiene
-   * el forecast en pantalla mientras tanto.
-   */
-  const requestDataQualityAudit = useCallback(async () => {
-    if (!prediction || loadingAudit) return;
-    setLoadingAudit(true);
-    try {
-      const res = await queryService.getPrediction(
-        prediction.question || 'Auditoria de calidad de datos',
-        activeConnectionId || 1,
-        { includeDataQuality: true, includeRetention: false }
-      );
-      setPrediction((prev) => (prev ? { ...prev, data_quality: res.data_quality || [] } : prev));
-    } catch (err: any) {
-      notify('error', err?.message || 'No se pudo ejecutar la auditoria de calidad.');
-    } finally {
-      setLoadingAudit(false);
-    }
-  }, [prediction, loadingAudit, activeConnectionId, notify]);
+  // Descartar la oferta de proyeccion sin abrir la seccion (la X de la tarjeta).
+  const dismissProjectionSuggestion = useCallback(() => setProjectionSuggestion(null), []);
 
   // El objeto que devuelve el hook es una referencia nueva en cada render, y eso
   // invalida cualquier `React.memo` o comparacion por referencia aguas abajo
@@ -966,11 +902,8 @@ function useChatEngineInternal() {
     pendingError,
     pendingErrorKind,
     attemptThreadId,
-    prediction,
-    predictionError,
-    loadingAudit,
-    requestDataQualityAudit,
-    clearPrediction: setPrediction,
+    projectionSuggestion,
+    dismissProjectionSuggestion,
     chatBottomRef,
     searchInputRef,
     promptTextareaRef,
@@ -1007,11 +940,8 @@ function useChatEngineInternal() {
     pendingError,
     pendingErrorKind,
     attemptThreadId,
-    prediction,
-    predictionError,
-    loadingAudit,
-    requestDataQualityAudit,
-    setPrediction,
+    projectionSuggestion,
+    dismissProjectionSuggestion,
     handleSelectThread,
     handleNewThread,
     handleDeleteThread,
