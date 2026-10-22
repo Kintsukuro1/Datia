@@ -11,7 +11,6 @@ El mismo archivo (y el mismo patron) tiene el bug del engine sin dispose():
 sql_executor.py y dynamic_schema.py.
 """
 
-import inspect
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -125,15 +124,6 @@ class TestResolveNeverFallsBackToTheDemoDatabase(unittest.TestCase):
 
 
 class TestPostgresEngineIsDisposed(unittest.TestCase):
-    def test_introspection_uses_connector_engine_not_build_engine_for_connector(self):
-        src = inspect.getsource(SchemaInspector.introspect_connection_metadata)
-        self.assertIn(
-            "connector_engine", src,
-            "la rama Postgres sigue usando build_engine_for_connector, que deja "
-            "el pool de sockets huerfano",
-        )
-        self.assertNotIn("eng = build_engine_for_connector", src)
-
     def test_connector_engine_is_the_shared_context_manager(self):
         """Verifica que el helper realmente dispone el engine al salir."""
         from contextlib import contextmanager

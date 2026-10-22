@@ -1,11 +1,13 @@
 import json
 import os
 import re
+import secrets
 import shutil
 import time
 import uuid
 from typing import List, Optional, Any, Dict
 from fastapi import HTTPException, status, UploadFile
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -21,12 +23,18 @@ from app.modules.admin_catalog.tabular_importer import (
     convert_uploaded_file_to_postgres,
 )
 from app.modules.catalog.services.catalog_service import CatalogDomainService
+from app.modules.catalog.services.schema_inspector import quote_sql_identifier
 from app.modules.system.health_service import HealthService
 
 class ConnectorDomainService:
     """
     Domain service for Corporate Connection lifecycle, file uploads, and connectivity health checks.
     """
+
+    # Prefijo de los roles dedicados que se crean para cada dataset subido. Se usa
+    # en `delete_connector` para no tocar jamas un rol que este servicio no creo
+    # (p. ej. el usuario de provision en un conector subido antes de este cambio).
+    DATASET_ROLE_PREFIX = "datia_ds_"
 
     @classmethod
     def ensure_data_sources_dir(cls) -> str:
@@ -172,6 +180,92 @@ class ConnectorDomainService:
         return cls.connector_to_out(db, new_conn)
 
     @classmethod
+    def _admin_engine(cls, db_name: str):
+        """Engine administrativo a `db_name` (usuario de provision, AUTOCOMMIT).
+
+        Se usa para crear/borrar bases y roles, y para los GRANT sobre objetos
+        nuevos. La conexion de NEGOCIO del dataset nunca usa este usuario.
+        """
+        from sqlalchemy import create_engine
+
+        url = (
+            f"postgresql+psycopg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+            f"@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/{db_name}"
+        )
+        return create_engine(url, isolation_level="AUTOCOMMIT", pool_pre_ping=True)
+
+    @classmethod
+    def _provision_dataset_role(cls, db_name: str, role_name: str, role_password: str) -> None:
+        """Crea el rol de solo lectura del dataset y le concede SELECT.
+
+        El usuario de provision (superusuario en la imagen oficial) solo se usa
+        para crear e importar; la conexion guardada en `CorporateConnection` es
+        este rol, sin NINGUN privilegio de escritura ni acceso a funciones de
+        archivo (`pg_read_file` sigue siendo exclusivo de superusuario, no se
+        toca). El `REVOKE ... FROM PUBLIC` es lo que impide que PUBLIC herede
+        CONNECT o CREATE aunque el rol dedicado se equivoque.
+
+        Todo se ejecuta con engines AUTOCOMMIT y desechables: si algo falla a
+        mitad, el llamador limpia base y rol.
+        """
+        from sqlalchemy import text
+
+        ident = quote_sql_identifier
+        # El password no puede ir como bind parameter en un CREATE ROLE (utility
+        # statement), asi que se cita como literal. `token_urlsafe` no produce
+        # comillas, pero se escapa igual: el punto de entrada no confia en el.
+        pwd_literal = "'" + role_password.replace("'", "''") + "'"
+
+        m_engine = cls._admin_engine("postgres")
+        try:
+            with m_engine.connect() as m_conn:
+                m_conn.execute(text(
+                    f"CREATE ROLE {ident(role_name)} LOGIN NOSUPERUSER NOCREATEDB "
+                    f"NOCREATEROLE NOINHERIT PASSWORD {pwd_literal}"
+                ))
+                m_conn.execute(text(f"REVOKE ALL ON DATABASE {ident(db_name)} FROM PUBLIC"))
+                m_conn.execute(text(
+                    f"GRANT CONNECT ON DATABASE {ident(db_name)} TO {ident(role_name)}"
+                ))
+        finally:
+            m_engine.dispose()
+
+        db_engine = cls._admin_engine(db_name)
+        try:
+            with db_engine.connect() as conn:
+                conn.execute(text("REVOKE ALL ON SCHEMA public FROM PUBLIC"))
+                conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {ident(role_name)}"))
+                # Solo tablas: ni secuencias ni funciones. El camino de lectura no
+                # necesita `nextval`, y no se concede EXECUTE a proposito.
+                conn.execute(text(
+                    f"GRANT SELECT ON ALL TABLES IN SCHEMA public TO {ident(role_name)}"
+                ))
+                # Tablas que se importen despues (mismo owner de provision) tambien
+                # quedan legibles sin repetir el GRANT a mano.
+                conn.execute(text(
+                    f"ALTER DEFAULT PRIVILEGES FOR ROLE {ident(settings.POSTGRES_USER)} "
+                    f"IN SCHEMA public GRANT SELECT ON TABLES TO {ident(role_name)}"
+                ))
+        finally:
+            db_engine.dispose()
+
+    @classmethod
+    def _drop_dataset_role(cls, role_name: Optional[str]) -> None:
+        """`DROP ROLE IF EXISTS` best-effort del rol dedicado (no del de provision)."""
+        from sqlalchemy import text
+
+        if not role_name or not role_name.startswith(cls.DATASET_ROLE_PREFIX):
+            return
+        m_engine = cls._admin_engine("postgres")
+        try:
+            with m_engine.connect() as m_conn:
+                m_conn.execute(text(
+                    f"DROP ROLE IF EXISTS {quote_sql_identifier(role_name)}"
+                ))
+        finally:
+            m_engine.dispose()
+
+    @classmethod
     async def upload_database_file(
         cls,
         db: Session,
@@ -279,14 +373,53 @@ class ConnectorDomainService:
                 try: os.remove(raw_target_path)
                 except Exception: pass
 
+        # El dataset deja de consultarse con el usuario de provision (superusuario
+        # en la imagen oficial de PostgreSQL): se crea un rol dedicado, aleatorio
+        # y de solo lectura, y la conexion guardada apunta a el. Si la provision
+        # falla se tira la base recien creada y se devuelve error: guardar una
+        # conexion con el superusuario es justo lo que este camino evita.
+        role_name = f"{cls.DATASET_ROLE_PREFIX}{uuid.uuid4().hex[:12]}"
+        role_password = secrets.token_urlsafe(32)
+        try:
+            cls._provision_dataset_role(pg_target_db_name, role_name, role_password)
+        except Exception as exc:
+            logger.error(
+                "No se pudo crear el rol de solo lectura del dataset '%s' (%s): %s",
+                final_name, pg_target_db_name, exc,
+            )
+            try:
+                cleanup_engine = cls._admin_engine("postgres")
+                try:
+                    with cleanup_engine.connect() as cleanup_conn:
+                        cleanup_conn.execute(text(
+                            f"DROP DATABASE IF EXISTS {quote_sql_identifier(pg_target_db_name)} "
+                            "WITH (FORCE)"
+                        ))
+                finally:
+                    cleanup_engine.dispose()
+                cls._drop_dataset_role(role_name)
+            except Exception as cleanup_exc:
+                logger.error(
+                    "Limpieza incompleta tras fallar el rol del dataset %s: %s",
+                    pg_target_db_name, cleanup_exc,
+                )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "No se pudo crear el usuario de solo lectura del dataset. "
+                    "Verifique que el usuario de provision tenga privilegios CREATEROLE "
+                    "y que la base se haya podido limpiar."
+                ),
+            ) from exc
+
         new_conn = CorporateConnection(
             name=final_name,
             db_type=DatabaseType.POSTGRESQL,
             host=settings.POSTGRES_SERVER,
             port=settings.POSTGRES_PORT,
             database_name=pg_target_db_name,
-            username=settings.POSTGRES_USER,
-            encrypted_password=encrypt_credential(settings.POSTGRES_PASSWORD),
+            username=role_name,
+            encrypted_password=encrypt_credential(role_password),
             is_active=True,
             is_uploaded=True,
             detected_tables=json.dumps(detected_tables)
@@ -431,7 +564,10 @@ class ConnectorDomainService:
                     m_engine = create_engine(maint_url, isolation_level="AUTOCOMMIT", pool_pre_ping=True)
                     try:
                         with m_engine.connect() as m_conn:
-                            m_conn.execute(text(f'DROP DATABASE IF EXISTS "{conn.database_name}" WITH (FORCE);'))
+                            m_conn.execute(text(
+                                f"DROP DATABASE IF EXISTS {quote_sql_identifier(conn.database_name)} "
+                                "WITH (FORCE)"
+                            ))
                     finally:
                         m_engine.dispose()
                 except Exception as exc:
@@ -448,6 +584,22 @@ class ConnectorDomainService:
                     ) from exc
             # Si es una base de plataforma se dejan las tablas: borrarlas seria
             # destructivo y el conector es solo una referencia administrative.
+            #
+            # El rol dedicado del dataset se tira DESPUES de la base: mientras la
+            # base exista el rol tiene privilegios sobre sus objetos y PostgreSQL
+            # rechaza el DROP ROLE. Solo se toca el prefijo que crea este servicio:
+            # un conector subido antes de este cambio guarda `username` = usuario
+            # de provision y borrarlo seria borrar el superusuario.
+            try:
+                cls._drop_dataset_role(conn.username)
+            except Exception as exc:
+                # La base ya no existe; dejar la fila del conector apuntando a una
+                # base borrada seria peor que dejar un rol sin privilegios. Se
+                # registra y se sigue.
+                logger.warning(
+                    "No se pudo eliminar el rol %s del dataset %s: %s",
+                    conn.username, conn.database_name, exc,
+                )
 
         # Todo lo que cuelga de la conexion se borra con ella: permisos huerfanos
         # con el mismo `connection_id` no deben sobrevivir a la conexion.

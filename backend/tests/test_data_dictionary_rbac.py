@@ -173,6 +173,55 @@ class TestDataDictionaryRespectsRbac(unittest.TestCase):
                     "al admin se le estan enmascarando valores que debería ver en claro",
                 )
 
+    def test_non_admin_only_sees_authorized_tables(self):
+        """La matriz RBAC filtra TABLAS, no solo valores de columnas.
+
+        Antes un Economista recibia el nombre, el row_count y las muestras de las
+        tablas de TI (y viceversa) con solo autenticarse. El diccionario tiene que
+        listar unicamente las tablas de `allowed_tables` del perfil.
+        """
+        from app.core.constants import ROLE_ANALISTA_FINANCIERO
+        from app.core.database import SessionLocal
+        from app.modules.auth.models import Role
+        from app.modules.chat_engine.governance_guard import GovernanceGuard
+
+        admin_token = self._token("admin", "admin123")
+        admin_resp = self.client.get(
+            "/api/v1/catalog/data-dictionary",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(admin_resp.status_code, 200, admin_resp.text[:200])
+        admin_data = admin_resp.json()
+        admin_tables = {t["table_name"].lower() for t in admin_data.get("tables", [])}
+        connection_id = admin_data.get("connection_id")
+
+        user_token = self._token("economista", "economista123")
+        user_resp = self.client.get(
+            "/api/v1/catalog/data-dictionary",
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+        self.assertEqual(user_resp.status_code, 200, user_resp.text[:200])
+        user_tables = {t["table_name"].lower() for t in user_resp.json().get("tables", [])}
+
+        db = SessionLocal()
+        try:
+            role = db.query(Role).filter(Role.name == ROLE_ANALISTA_FINANCIERO).first()
+            self.assertIsNotNone(role)
+            allowed = GovernanceGuard.get_allowed_tables_for_role(
+                role.name, False, db=db, role_id=role.id, connection_id=connection_id,
+            )
+        finally:
+            db.close()
+
+        self.assertTrue(user_tables, "el perfil con rol tiene que ver sus tablas autorizadas")
+        self.assertTrue(user_tables <= allowed, f"tablas fuera de la matriz: {user_tables - allowed}")
+        fuera = admin_tables - allowed
+        self.assertTrue(
+            fuera,
+            "la matriz demo no distingue tablas entre admin y Economista; el test no probaria el filtro",
+        )
+        self.assertTrue(user_tables.isdisjoint(fuera))
+
 
 class TestEscaneoDeColumnasSospechosas(unittest.TestCase):
     """El escaneo, aislado de la BD: es la parte que estaba dando verde en falso."""

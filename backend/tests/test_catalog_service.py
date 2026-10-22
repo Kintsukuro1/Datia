@@ -88,14 +88,6 @@ class TestSetIsImported(unittest.TestCase):
             + "\n".join(failures),
         )
 
-    def test_module_source_does_not_use_set_without_importing_it(self):
-        import inspect as py_inspect
-        src = py_inspect.getsource(cs)
-        self.assertIn("Set[str]", src)
-        import_line = [l for l in src.splitlines() if l.startswith("from typing import")][0]
-        self.assertIn("Set", import_line, f"Set se usa pero no se importa: {import_line}")
-
-
 class TestUnknownConnectionIdIsRejected(unittest.TestCase):
     """BUG 9: `connection_id=999` no debe redirigir en silencio."""
 

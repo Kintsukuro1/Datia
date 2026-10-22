@@ -151,6 +151,7 @@ class CatalogDomainService:
         connection_id: Optional[int] = None,
         blocked_columns: Optional[Set[str]] = None,
         masked_columns: Optional[Set[str]] = None,
+        allowed_tables: Optional[Set[str]] = None,
     ) -> DataDictionaryResponse:
         """Introspeccion del esquema de la conexion.
 
@@ -158,6 +159,11 @@ class CatalogDomainService:
         minuscula. Las BLOCKED no aportan valores de muestra y las MASKED aportan
         valores enmascarados. Sin ellos el diccionario devuelve el valor real de
         columnas que el perfil no deberia ver.
+
+        `allowed_tables` es la matriz RBAC del perfil: una tabla que no esta en el
+        conjunto no se lista. Antes se filtraban columnas pero no tablas, asi que
+        un perfil recibia los nombres, el row_count y las muestras de tablas de
+        otro dominio con solo autenticarse.
         """
         try:
             # `resolve_connection` tambien lanza `SchemaIntrospectionError` (sin
@@ -202,6 +208,9 @@ class CatalogDomainService:
             tbl = t_info["table_name"]
             schema_name = t_info["schema_name"]
             row_count = t_info["row_count"]
+            # Fail-closed: un conjunto vacio (rol sin permisos) no lista nada.
+            if allowed_tables is not None and tbl.lower() not in allowed_tables:
+                continue
             table_cat = _lookup(schema_name, tbl, "*")
             table_desc = table_cat.description if table_cat else None
 

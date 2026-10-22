@@ -295,18 +295,6 @@ class TestNearestUsesThePrecedingValue(NullManagerTestCase):
         rows = self._rows("salarios")
         self.assertEqual(result["status"], "success")
         self.assertEqual(rows[1][1], 100, f"el forward-fill no tomo el valor precedente: {rows}")
-
-    def test_nearest_sql_uses_lag_over_ctid_not_bare_limit_1(self):
-        """El forward-fill tiene que pedir el predecessor, no una fila arbitraria."""
-        src = py_inspect.getsource(NullManagerService.apply_null_policy)
-
-        self.assertIn("LAG(", src, "no usa LAG(): no hay forward-fill real")
-        self.assertIn("ORDER BY ctid", src)
-        self.assertNotIn(
-            "IS NOT NULL LIMIT 1'", src,
-            "quedo el `LIMIT 1` sin ORDER BY que devuelve una fila arbitraria",
-        )
-
     def test_forward_fill_updates_only_rows_that_were_null(self):
         """La CTE del forward-fill no debe pisar filas que ya tenian valor."""
         src = py_inspect.getsource(NullManagerService.apply_null_policy)

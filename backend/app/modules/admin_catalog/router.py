@@ -124,12 +124,17 @@ def get_data_dictionary(
         role_name, is_admin, db=db, role_id=current_user.role_id,
         connection_id=target_conn_id,
     )
+    allowed_tables = GovernanceGuard.get_allowed_tables_for_role(
+        role_name, is_admin, db=db, role_id=current_user.role_id,
+        connection_id=target_conn_id,
+    )
 
     return CatalogDomainService.get_data_dictionary(
         db,
-        connection_id=connection_id,
+        connection_id=target_conn_id,
         blocked_columns=blocked_columns,
         masked_columns=masked_columns,
+        allowed_tables=allowed_tables,
     )
 
 @router.post("/catalog/auto-enrich", response_model=AutoEnrichResponse)
@@ -456,17 +461,21 @@ def get_governance_coverage(
 @router.post("/connectors/test", response_model=ConnectionTestResult)
 def test_connection_connectivity(
     test_in: ConnectionTestRequest,
-    current_user: User = Depends(get_current_user)
+    current_admin: User = Depends(get_current_admin)
 ) -> Any:
-    """Tests real network TCP socket connectivity."""
+    """Tests real network TCP socket connectivity (Admin only).
+
+    Antes bastaba estar autenticado: cualquier perfil podía hacer que el backend
+    abriera un socket TCP a un host/puerto arbitrario (SSRF hacia la red local).
+    """
     return ConnectorDomainService.test_connection_connectivity(test_in)
 
 @router.post("/connectors/test-metadata-db", response_model=ConnectionTestResult)
 def test_metadata_db_connectivity(
     test_in: MetadataDBTestRequest,
-    current_user: User = Depends(get_current_user)
+    current_admin: User = Depends(get_current_admin)
 ) -> Any:
-    """Tests real connectivity to target PostgreSQL metadata database."""
+    """Tests real connectivity to target PostgreSQL metadata database (Admin only)."""
     result = HealthService.check_db_connectivity(
         host=test_in.server,
         port=test_in.port,

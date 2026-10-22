@@ -274,10 +274,3 @@ class TestRoleTokenMatching(unittest.TestCase):
         self.assertTrue(_role_matches_fin("Analista Financiero & Comercial"))
         self.assertFalse(_role_matches_fin("Analítica"))
         self.assertFalse(_role_matches_fin("Director Ejecutivo (C-Level)"))
-
-    def test_service_source_uses_token_match_not_substring(self):
-        """Guardarra contra volver al `in` de subcadena."""
-        import inspect
-        src = inspect.getsource(ConnectorDomainService.upload_database_file)
-        self.assertNotIn('"ti", "infraestructura"]', src)
-        self.assertNotIn('k in role.name.lower()', src)

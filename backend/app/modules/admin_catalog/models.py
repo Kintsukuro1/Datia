@@ -1,8 +1,8 @@
-import datetime
 import enum
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, UniqueConstraint, Index, Enum as SQLEnum, text
 from sqlalchemy.orm import relationship
 from app.core.database import Base
+from app.core.time import utcnow_naive
 
 class DatabaseType(str, enum.Enum):
     POSTGRESQL = "postgresql"
@@ -26,8 +26,8 @@ class CorporateConnection(Base):
     # GET /connectors devuelva la lista con la que el admin arma la matriz de
     # permisos: sin esto, al recargar la pagina la matriz quedaba vacia.
     detected_tables = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
 
 class SemanticCatalog(Base):
@@ -47,7 +47,7 @@ class SemanticCatalog(Base):
     business_formula = Column(Text, nullable=True)
     
     is_ai_generated = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     __table_args__ = (
         UniqueConstraint("connection_id", "schema_name", "table_name", "column_name", name="uix_catalog_element"),

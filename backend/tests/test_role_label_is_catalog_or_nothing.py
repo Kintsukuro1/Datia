@@ -253,21 +253,21 @@ class TestRoleLabelHonesta(unittest.TestCase):
         fila = {u["id"]: u for u in res.json()}[objetivo.id]
         self.assertIsNone(fila["role_name"])
 
-    def test_register_no_afirma_un_rol_que_la_cuenta_no_tiene(self):
-        """`/register` es el mismo patron en otra forma: si el catalogo no tiene
-        el rol por defecto, `role_id` queda NULL y la etiqueta no puede decir el
-        nombre de ese rol."""
+    def test_alta_admin_no_afirma_un_rol_que_la_cuenta_no_tiene(self):
+        """`POST /auth/users` es el mismo patron en otra forma: si el catalogo no
+        tiene el rol por defecto, `role_id` queda NULL y la etiqueta no puede decir
+        el nombre de ese rol. Con el catalogo sembrado, asigna el real."""
         sufijo = uuid.uuid4().hex[:8]
         res = self.client.post(
-            "/api/v1/auth/register",
+            "/api/v1/auth/users",
             json={
                 "username": f"{PREFIX}reg_{sufijo}",
                 "email": f"reg_{sufijo}@example.com",
-                "password": "Clave-de-prueba-1",
             },
+            headers=self._headers(self._admin()),
         )
         self.assertEqual(res.status_code, 201, res.text[:300])
-        cuerpo = res.json()
+        cuerpo = res.json()["user"]
         self.assertEqual(cuerpo["role_name"], ROLE_USUARIO)
         self.assertIsNotNone(cuerpo["role_id"], "si el rol por defecto existe, se asigna")
 
