@@ -9,7 +9,7 @@ export const auditService = {
   },
 
   async exportAuditLogsCsv(params?: AuditFilterParams): Promise<void> {
-    const res = await apiClient.get('/audit/export', {
+    const res = await apiClient.get<Blob>('/audit/export', {
       params,
       responseType: 'blob',
     });

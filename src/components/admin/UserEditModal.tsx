@@ -24,6 +24,11 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
 }) => {
   const [selectedRole, setSelectedRole] = useState('');
   const [isAdminCheck, setIsAdminCheck] = useState(false);
+  const [isActiveCheck, setIsActiveCheck] = useState(true);
+  // Estado con el que se abrió el modal. Solo se envía `is_active` si el admin
+  // movió el checkbox: mandarlo siempre convertiría un "guardar rol" en un
+  // "reactivar cuenta" para una cuenta dada de baja.
+  const [initialIsActive, setInitialIsActive] = useState(true);
   const [roles, setRoles] = useState<{ id: number; name: string; description: string }[]>([]);
   const [rolesError, setRolesError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -59,6 +64,11 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
     if (user) {
       setSelectedRole(user.role);
       setIsAdminCheck(user.is_admin);
+      // `undefined` = no hay dato de estado: se asume activa, que es el default
+      // del backend. El checkbox igual solo viaja si se toca.
+      const active = user.is_active !== false;
+      setIsActiveCheck(active);
+      setInitialIsActive(active);
       setSubmitError(null);
     }
   }, [user]);
@@ -77,10 +87,16 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
     setIsSubmitting(true);
     setSubmitError(null);
     try {
-      const saved = await authService.updateUserRole(user.id, {
+      // `is_active` solo viaja si el admin movió el checkbox: un guardado de
+      // rol no debe reactivar una cuenta dada de baja por accidente.
+      const payload: { role: string; is_admin: boolean; is_active?: boolean } = {
         role: selectedRole,
         is_admin: isAdminCheck,
-      });
+      };
+      if (isActiveCheck !== initialIsActive) {
+        payload.is_active = isActiveCheck;
+      }
+      const saved = await authService.updateUserRole(user.id, payload);
       onSaved({
         id: saved.id,
         name: saved.username,
@@ -88,6 +104,9 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
         email: saved.email || `${saved.username}@empresa.com`,
         role: resolveRoleLabel(saved),
         is_admin: saved.is_admin,
+        is_active: saved.is_active,
+        must_change_password: saved.must_change_password,
+        temp_password_expires_at: saved.temp_password_expires_at,
       });
       onClose();
     } catch (err: any) {
@@ -103,7 +122,7 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
     <div ref={modalRef} role="dialog" aria-modal="true" aria-label="Editar usuario" tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
       <div className="glass-panel w-full max-w-md rounded-2xl sm:rounded-3xl border border-white/10 shadow-2xl overflow-hidden flex flex-col max-h-[88vh] sm:max-h-[90vh]">
         {/* Header */}
-        <div className="shrink-0 px-5 sm:px-6 py-4 border-b border-dark-border flex items-center justify-between bg-dark-surface/95 backdrop-blur">
+        <div className="shrink-0 px-5 sm:px-6 py-4 border-b border-app-border flex items-center justify-between bg-app-surface/95 backdrop-blur">
           <h4 className="text-sm font-bold text-app-text truncate">
             Editar Perfil & Gobernanza - {user.name}
           </h4>
@@ -111,7 +130,7 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
             type="button"
             onClick={onClose}
             aria-label="Cerrar modal"
-            className="text-gray-400 hover:text-app-text p-1 rounded-lg hover:bg-dark-card transition-colors shrink-0"
+            className="text-gray-400 hover:text-app-text p-1 rounded-lg hover:bg-app-card transition-colors shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
@@ -147,7 +166,7 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
               value={selectedRole}
               onChange={(e) => setSelectedRole(e.target.value)}
               disabled={Boolean(rolesError) || isSubmitting}
-              className="w-full bg-dark-base border border-dark-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500 text-xs disabled:opacity-50"
+              className="w-full bg-app-bg border border-app-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500 text-xs disabled:opacity-50"
             >
               {roles.map((r) => (
                 <option key={r.id} value={r.name}>
@@ -168,20 +187,40 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
               aria-label={`Otorgar Privilegios de ${PLATFORM_ADMIN_ROLE_NAME}`}
               checked={isAdminCheck}
               onChange={(e) => setIsAdminCheck(e.target.checked)}
-              className="w-4 h-4 text-purple-600 rounded bg-dark-base border-dark-border focus:ring-purple-500"
+              className="w-4 h-4 text-purple-600 rounded bg-app-bg border-app-border focus:ring-purple-500"
             />
             <label htmlFor="edit-user-is-admin" className="text-gray-300 font-medium cursor-pointer">
               Otorgar Privilegios de {PLATFORM_ADMIN_ROLE_NAME}
             </label>
           </div>
+
+          <div className="flex items-start space-x-2 pt-1">
+            <input
+              type="checkbox"
+              id="edit-user-is-active"
+              aria-label="Cuenta activa"
+              checked={isActiveCheck}
+              onChange={(e) => setIsActiveCheck(e.target.checked)}
+              className="mt-0.5 w-4 h-4 text-emerald-600 rounded bg-app-bg border-app-border focus:ring-emerald-500"
+            />
+            <div>
+              <label htmlFor="edit-user-is-active" className="text-gray-300 font-medium cursor-pointer">
+                Cuenta activa
+              </label>
+              <p className="text-[11px] text-gray-500">
+                Desactivarla corta el login y todas sus sesiones abiertas. Reactivarla
+                no revive esas sesiones: el usuario debe volver a entrar.
+              </p>
+            </div>
+          </div>
         </form>
 
         {/* Fixed Sticky Footer Actions */}
-        <div className="shrink-0 px-5 sm:px-6 py-3.5 border-t border-dark-border bg-dark-surface/95 backdrop-blur flex justify-end space-x-2 z-10">
+        <div className="shrink-0 px-5 sm:px-6 py-3.5 border-t border-app-border bg-app-surface/95 backdrop-blur flex justify-end space-x-2 z-10">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 rounded-xl bg-dark-card text-gray-300 text-xs font-medium hover:bg-dark-border transition-colors"
+            className="px-4 py-2 rounded-xl bg-app-card text-gray-300 text-xs font-medium hover:bg-app-border transition-colors"
           >
             Cancelar
           </button>
@@ -199,7 +238,7 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
             ) : (
               <>
                 <Save className="w-3.5 h-3.5" />
-                <span>Guardar Rol</span>
+                <span>Guardar cambios</span>
               </>
             )}
           </button>

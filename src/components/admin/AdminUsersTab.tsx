@@ -1,11 +1,11 @@
 import React from 'react';
-import { Users, UserPlus, Search, ShieldCheck, Check, Monitor, KeyRound, Pencil, RefreshCw } from 'lucide-react';
+import { Users, UserPlus, Search, ShieldCheck, Check, Monitor, KeyRound, Pencil, RefreshCw, Power } from 'lucide-react';
 import { UserAddModal } from './UserAddModal';
 import { UserSessionsModal } from './UserSessionsModal';
 import { UserPasswordResetModal } from './UserPasswordResetModal';
 import { UserEditModal } from './UserEditModal';
 import { useAdminUsers } from '../../features/admin/hooks/useAdminUsers';
-import { getRoleBadgeStyle } from '../../constants';
+import { getRoleBadgeStyle, isPlatformAdmin } from '../../constants';
 
 export interface UserItem {
   id: number;
@@ -14,6 +14,10 @@ export interface UserItem {
   email: string;
   role: string;
   is_admin: boolean;
+  // `undefined` en caches viejos = cuenta activa (default del backend).
+  is_active?: boolean;
+  must_change_password?: boolean;
+  temp_password_expires_at?: string | null;
 }
 
 interface AdminUsersTabProps {
@@ -88,13 +92,14 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({ users, usersLoaded
               <th className="px-4 py-3">Correo</th>
               <th className="px-4 py-3">Rol RBAC Asignado</th>
               <th className="px-4 py-3">Privilegios Admin</th>
+              <th className="px-4 py-3">Estado</th>
               <th className="px-4 py-3 text-right">Acciones</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-dark-border text-slate-800 dark:text-gray-200 bg-white dark:bg-transparent">
             {!usersLoaded ? (
               <tr>
-                <td colSpan={5} className="py-12 text-center text-slate-600 dark:text-gray-400">
+                <td colSpan={6} className="py-12 text-center text-slate-600 dark:text-gray-400">
                   <div className="flex items-center justify-center space-x-2">
                     <RefreshCw className="w-4 h-4 animate-spin text-brand-600 dark:text-purple-400" />
                     <span>Cargando usuarios...</span>
@@ -103,7 +108,7 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({ users, usersLoaded
               </tr>
             ) : users.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-12 text-center text-slate-500 dark:text-gray-400 space-y-3">
+                <td colSpan={6} className="py-12 text-center text-slate-500 dark:text-gray-400 space-y-3">
                   <p>No hay usuarios registrados.</p>
                   {onRefreshUsers && (
                     <button
@@ -119,7 +124,7 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({ users, usersLoaded
               </tr>
             ) : filteredUsers.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-12 text-center text-slate-500 dark:text-gray-400">
+                <td colSpan={6} className="py-12 text-center text-slate-500 dark:text-gray-400">
                   Ningún usuario coincide con «{state.searchQuery}».
                 </td>
               </tr>
@@ -136,6 +141,15 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({ users, usersLoaded
                     {u.username && u.username !== u.name && (
                       <p className="text-[10px] text-slate-500 dark:text-gray-500">@{u.username}</p>
                     )}
+                    {(u.must_change_password || u.temp_password_expires_at) && (
+                      <span
+                        className="mt-1 inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400"
+                        title="La cuenta tiene una contraseña temporal pendiente de cambio"
+                      >
+                        <KeyRound className="w-2.5 h-2.5" />
+                        Clave temporal
+                      </span>
+                    )}
                   </div>
                   </div>
                 </td>
@@ -146,13 +160,26 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({ users, usersLoaded
                   </span>
                 </td>
                 <td className="px-4 py-3">
-                  {u.is_admin ? (
+                  {isPlatformAdmin({ is_admin: u.is_admin, role_name: u.role }) ? (
                     <span className="inline-flex items-center space-x-1 text-brand-700 bg-brand-50 border border-brand-200 dark:text-purple-400 dark:bg-purple-500/10 dark:border-purple-500/20 px-2 py-0.5 rounded text-[11px] font-semibold">
                       <ShieldCheck className="w-3.5 h-3.5" />
                       <span>Administrador</span>
                     </span>
                   ) : (
                     <span className="text-slate-500 dark:text-gray-500">Estándar</span>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  {u.is_active === false ? (
+                    <span className="inline-flex items-center gap-1 rounded border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-400">
+                      <Power className="w-3 h-3" />
+                      Inactiva
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-400">
+                      <Power className="w-3 h-3" />
+                      Activa
+                    </span>
                   )}
                 </td>
                 <td className="px-4 py-3 text-right">

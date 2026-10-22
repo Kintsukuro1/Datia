@@ -3,6 +3,7 @@ import { X, KeyRound, Copy, Check, AlertTriangle, RefreshCw } from 'lucide-react
 import { UserItem } from './AdminUsersTab';
 import { authService } from '../../features/auth/services/auth_service';
 import { PasswordResetResult } from '../../types';
+import { parseServerDate } from '../../features/auth/temp_password';
 import { useModalA11y } from '../../hooks/useModalA11y';
 import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 
@@ -56,7 +57,7 @@ export const UserPasswordResetModal: React.FC<UserPasswordResetModalProps> = ({
   return (
     <div ref={modalRef} role="dialog" aria-modal="true" aria-label="Restablecer contraseña" tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn">
       <div className="glass-panel w-full max-w-md rounded-2xl border border-white/10 p-6 space-y-4 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-dark-border pb-3">
+        <div className="flex items-center justify-between border-b border-app-border pb-3">
           <div className="flex items-center space-x-2">
             <KeyRound className="w-5 h-5 text-amber-400" />
             <div>
@@ -98,12 +99,12 @@ export const UserPasswordResetModal: React.FC<UserPasswordResetModalProps> = ({
               </span>
             </div>
 
-            <div className="pt-3 flex justify-end space-x-2 border-t border-dark-border">
+            <div className="pt-3 flex justify-end space-x-2 border-t border-app-border">
               <button
                 type="button"
                 onClick={handleModalClose}
                 disabled={loading}
-                className="px-4 py-2 rounded-xl bg-dark-card text-gray-300 text-xs font-medium hover:bg-dark-border transition-colors"
+                className="px-4 py-2 rounded-xl bg-app-card text-gray-300 text-xs font-medium hover:bg-app-border transition-colors"
               >
                 Cancelar
               </button>
@@ -133,7 +134,7 @@ export const UserPasswordResetModal: React.FC<UserPasswordResetModalProps> = ({
               Contraseña restablecida exitosamente. Entrégale esta clave provisional al usuario:
             </div>
 
-            <div className="p-4 rounded-xl bg-dark-base border border-dark-border flex items-center justify-between space-x-3">
+            <div className="p-4 rounded-xl bg-app-bg border border-app-border flex items-center justify-between space-x-3">
               <div className="space-y-1">
                 <span className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
                   Contraseña Temporal
@@ -146,7 +147,7 @@ export const UserPasswordResetModal: React.FC<UserPasswordResetModalProps> = ({
                 type="button"
                 onClick={handleCopy}
                 aria-label="Copiar contraseña temporal al portapapeles"
-                className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-dark-card hover:bg-dark-border text-app-text text-xs font-medium transition-colors border border-dark-border"
+                className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-app-card hover:bg-app-border text-app-text text-xs font-medium transition-colors border border-app-border"
               >
                 {copied ? (
                   <>
@@ -166,7 +167,14 @@ export const UserPasswordResetModal: React.FC<UserPasswordResetModalProps> = ({
               Esta clave solo se mostrará una vez. Al cerrar esta ventana no se podrá volver a consultar.
             </p>
 
-            <div className="pt-3 flex justify-end border-t border-dark-border">
+            {result.temp_password_expires_at && Number.isFinite(parseServerDate(result.temp_password_expires_at)) && (
+              <p className="text-[11px] text-amber-400/90">
+                Cambio obligatorio en el próximo inicio de sesión. La clave vence el{' '}
+                {new Date(parseServerDate(result.temp_password_expires_at)).toLocaleString()}.
+              </p>
+            )}
+
+            <div className="pt-3 flex justify-end border-t border-app-border">
               <button
                 type="button"
                 onClick={handleModalClose}

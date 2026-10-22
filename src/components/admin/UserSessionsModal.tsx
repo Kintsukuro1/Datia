@@ -81,7 +81,7 @@ export const UserSessionsModal: React.FC<UserSessionsModalProps> = ({
   return (
     <div ref={modalRef} role="dialog" aria-modal="true" aria-label="Sesiones activas del usuario" tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn">
       <div className="glass-panel w-full max-w-xl rounded-2xl border border-white/10 p-6 space-y-4 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-dark-border pb-3">
+        <div className="flex items-center justify-between border-b border-app-border pb-3">
           <div className="flex items-center space-x-2">
             <Monitor className="w-5 h-5 text-indigo-400" />
             <div>
@@ -129,7 +129,7 @@ export const UserSessionsModal: React.FC<UserSessionsModalProps> = ({
                 onClick={() => loadSessions(user.id)}
                 disabled={loading || actionLoading}
                 aria-label="Refrescar lista de sesiones"
-                className="p-1.5 rounded-lg bg-dark-card hover:bg-dark-border text-gray-400 hover:text-app-text transition-colors"
+                className="p-1.5 rounded-lg bg-app-card hover:bg-app-border text-gray-400 hover:text-app-text transition-colors"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               </button>
@@ -153,7 +153,7 @@ export const UserSessionsModal: React.FC<UserSessionsModalProps> = ({
               <span>Cargando sesiones...</span>
             </div>
           ) : sessions.length === 0 ? (
-            <div className="py-8 text-center text-xs text-gray-400 bg-dark-base/40 rounded-xl border border-dark-border">
+            <div className="py-8 text-center text-xs text-gray-400 bg-app-bg/40 rounded-xl border border-app-border">
               No hay sesiones activas registradas para este usuario.
             </div>
           ) : (
@@ -161,7 +161,7 @@ export const UserSessionsModal: React.FC<UserSessionsModalProps> = ({
               {sessions.map((s) => (
                 <div
                   key={s.id}
-                  className="p-3 rounded-xl bg-dark-base border border-dark-border flex items-center justify-between space-x-3 text-xs"
+                  className="p-3 rounded-xl bg-app-bg border border-app-border flex items-center justify-between space-x-3 text-xs"
                 >
                   <div className="space-y-1 min-w-0">
                     <div className="flex items-center space-x-2">
@@ -188,7 +188,7 @@ export const UserSessionsModal: React.FC<UserSessionsModalProps> = ({
                     onClick={() => handleRevokeSingle(s.id)}
                     disabled={actionLoading}
                     aria-label={`Revocar sesión ID ${s.id}`}
-                    className="px-2.5 py-1.5 rounded-lg bg-dark-card hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 border border-dark-border hover:border-rose-500/30 text-[11px] font-medium transition-colors shrink-0"
+                    className="px-2.5 py-1.5 rounded-lg bg-app-card hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 border border-app-border hover:border-rose-500/30 text-[11px] font-medium transition-colors shrink-0"
                   >
                     Revocar
                   </button>
@@ -198,11 +198,11 @@ export const UserSessionsModal: React.FC<UserSessionsModalProps> = ({
           )}
         </div>
 
-        <div className="pt-3 flex justify-end border-t border-dark-border">
+        <div className="pt-3 flex justify-end border-t border-app-border">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 rounded-xl bg-dark-card text-gray-300 text-xs font-medium hover:bg-dark-border transition-colors"
+            className="px-4 py-2 rounded-xl bg-app-card text-gray-300 text-xs font-medium hover:bg-app-border transition-colors"
           >
             Cerrar
           </button>

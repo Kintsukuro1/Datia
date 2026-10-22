@@ -19,7 +19,7 @@ export interface AdminRole {
 }
 
 /** Clave del borrador: un par (rol, tabla). */
-export const permissionKey = (roleId: number, tableName: string): string => `${roleId}:${tableName}`;
+const permissionKey = (roleId: number, tableName: string): string => `${roleId}:${tableName}`;
 
 /**
  * Cobertura de gobernanza de la conexion seleccionada: que tablas ve al menos un
