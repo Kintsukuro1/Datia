@@ -1,0 +1,9 @@
+# Configuracion de ruff, solo desarrollo (advisory, no gatea CI).
+line-length = 100
+exclude = [".venv", "venv", ".hypothesis", "__pycache__"]
+
+[lint]
+select = ["E", "F", "W", "C90", "B"]
+
+[lint.mccabe]
+max-complexity = 15
