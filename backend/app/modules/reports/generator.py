@@ -1,5 +1,4 @@
 import json
-import datetime
 from typing import Tuple
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -7,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.modules.auth.models import User
 from app.modules.telemetry_audit.models import AuditLog
 from app.api.deps import display_role_name
+from app.core.time import utcnow_naive
 from app.modules.admin_catalog.schemas import (
     ReportExportData, ReportExportRequest, ProjectionExportData, TraceabilityAuditData,
 )
@@ -183,7 +183,7 @@ class ReportGeneratorService:
         data_obj, original_rows, log_entry = cls._prepare_export(db, current_user, req, include_chart_image=True)
         pdf_bytes = PDFExporter.generate_pdf(data_obj)
         cls._log_export(db, current_user, data_obj, original_rows, log_entry, "EXPORTADO_PDF")
-        filename = f"informe_ejecutivo_datia_{datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
+        filename = f"informe_ejecutivo_datia_{utcnow_naive().strftime('%Y%m%d_%H%M%S')}.pdf"
         return pdf_bytes, filename
 
     @classmethod
@@ -191,5 +191,5 @@ class ReportGeneratorService:
         data_obj, original_rows, log_entry = cls._prepare_export(db, current_user, req, include_chart_image=False)
         excel_bytes = ExcelExporter.generate_excel(data_obj)
         cls._log_export(db, current_user, data_obj, original_rows, log_entry, "EXPORTADO_EXCEL")
-        filename = f"datos_datia_{datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filename = f"datos_datia_{utcnow_naive().strftime('%Y%m%d_%H%M%S')}.xlsx"
         return excel_bytes, filename

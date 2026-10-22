@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_current_admin
 from app.core.security import sanitize_spreadsheet_value
+from app.core.time import utcnow_naive
 from app.modules.auth.models import User
 from app.modules.telemetry_audit.models import AuditLog
 from app.modules.telemetry_audit.schemas import AuditLogsPage, AuditLogOut
@@ -144,7 +145,7 @@ def export_audit_logs_csv(
     csv_data = output.getvalue()
     output.close()
 
-    filename = f"datia_audit_logs_{datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"datia_audit_logs_{utcnow_naive().strftime('%Y%m%d_%H%M%S')}.csv"
 
     return StreamingResponse(
         io.BytesIO(csv_data.encode('utf-8-sig')),

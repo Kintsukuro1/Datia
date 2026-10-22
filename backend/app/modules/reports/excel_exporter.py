@@ -1,11 +1,11 @@
 import io
-import datetime
 from typing import Union
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from app.core.security import sanitize_spreadsheet_value
+from app.core.time import utcnow_naive
 from app.modules.admin_catalog.schemas import ReportExportData, ReportExportRequest
 from app.modules.reports.data_compiler import ReportDataCompiler
 
@@ -49,7 +49,7 @@ class ExcelExporter:
 
         ws_summary["A5"] = "Fecha Generación:"
         ws_summary["A5"].font = font_bold
-        ws_summary["B5"] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        ws_summary["B5"] = utcnow_naive().strftime("%Y-%m-%d %H:%M UTC")
         ws_summary["B5"].font = font_normal
 
         ws_summary["A6"] = "Base de Datos:"

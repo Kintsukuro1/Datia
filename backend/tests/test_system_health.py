@@ -167,6 +167,29 @@ class TestSystemHealth(unittest.TestCase):
         self.assertIsInstance(data["message"], str)
         self.assertFalse(data["success"])
 
+    def test_connector_test_requires_admin(self):
+        """Un perfil normal no puede hacer que el backend abra sockets a un host
+        arbitrario (SSRF hacia la red local). Antes bastaba estar autenticado."""
+        user_headers = make_auth_headers(self.db, "felipe_economista")
+        payload = {
+            "db_type": "postgresql",
+            "host": "127.0.0.1",
+            "port": 5432,
+            "database_name": "corp_db",
+            "username": "readonly_user",
+        }
+        response = self.client.post(
+            "/api/v1/connectors/test", json=payload, headers=user_headers
+        )
+        self.assertEqual(response.status_code, 403, response.text[:300])
+
+        response = self.client.post(
+            "/api/v1/connectors/test-metadata-db",
+            json={"server": "127.0.0.1", "port": 5432, "db_name": "corp_db"},
+            headers=user_headers,
+        )
+        self.assertEqual(response.status_code, 403, response.text[:300])
+
     def test_system_anomalies_endpoint(self):
         response = self.client.get("/api/v1/system/anomalies", headers=self.headers)
         self.assertEqual(response.status_code, 200)

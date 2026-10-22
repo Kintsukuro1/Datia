@@ -11,6 +11,7 @@ from app.modules.auth.models import User
 from app.modules.admin_catalog.models import CorporateConnection
 from app.modules.catalog.services.schema_inspector import quote_sql_identifier
 from app.core.config import settings
+from app.core.time import utcnow_naive
 from app.core.constants import (
     SYSTEM_STATUS_OPERATIONAL,
     SYSTEM_STATUS_DEGRADED,
@@ -148,7 +149,7 @@ async def get_system_health(
 
     return SystemHealthResponse(
         status=global_status,
-        timestamp=datetime.datetime.utcnow(),
+        timestamp=utcnow_naive(),
         llm_engine=llm_comp,
         metadata_db=meta_comp,
         corporate_connectors=connectors_health,
@@ -231,7 +232,7 @@ async def get_system_anomalies(
             })
 
     # 2. Bloqueos de seguridad AST en últimas 24h (específicos de la conexión si aplica)
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+    cutoff = utcnow_naive() - datetime.timedelta(hours=24)
     audit_query = db.query(AuditLog).filter(AuditLog.timestamp >= cutoff)
     if target_conn and target_conn.database_name:
         audit_query = audit_query.filter(AuditLog.target_database == target_conn.database_name)
@@ -270,6 +271,9 @@ async def get_system_anomalies(
             from app.modules.chat_engine.sql_executor import SQLExecutor
             from app.modules.chat_engine.kpi_calculator import KPICalculator
             from app.modules.chat_engine.governance_guard import GovernanceGuard
+            from app.modules.chat_engine.ast_validator import ASTValidator, ASTValidationError
+            from app.core.security import mask_query_rows
+            from app.core.logging import logger
 
             engine_dialect = "postgres"
             target_exec = target_conn
@@ -298,9 +302,28 @@ async def get_system_anomalies(
 
             if chosen_table:
                 cols_info = DynamicSchemaPruningService.get_physical_table_columns(chosen_table, target_exec)
+
+                # La metrica no puede ser una columna sin permiso. Antes se
+                # elegia `num_cols[0]` a ciegas: si la primera numerica era
+                # MASKED el escaneo devolvia sus valores reales a un perfil que
+                # no podia verlos, y si era BLOCKED el SQL ni siquiera pasaba
+                # por el validador. `_schema_field_for_role` ya no devuelve
+                # `set()` ante un fallo, asi que esto tambien falla cerrado.
+                blocked_columns = GovernanceGuard.get_blocked_columns_for_role(
+                    role_name, is_admin, db=db, role_id=current_user.role_id,
+                    connection_id=target_conn.id,
+                )
+                masked_columns = GovernanceGuard.get_masked_columns_for_role(
+                    role_name, is_admin, db=db, role_id=current_user.role_id,
+                    connection_id=target_conn.id,
+                )
+                sin_permiso = {str(c).lower() for c in (blocked_columns or set())}
+                sin_permiso |= {str(c).lower() for c in (masked_columns or set())}
+
                 num_cols = [
                     c["name"] for c in cols_info
                     if any(it in c.get("type", "").lower() for it in ["int", "real", "float", "numeric", "decimal", "double"])
+                    and c["name"].lower() not in sin_permiso
                     and not c["name"].lower().endswith("_id") and c["name"].lower() != "id"
                 ]
 
@@ -312,8 +335,37 @@ async def get_system_anomalies(
                     quoted_table = quote_sql_identifier(chosen_table)
                     quoted_metric = quote_sql_identifier(metric)
                     scan_sql = f"SELECT {quoted_metric} FROM {quoted_table} LIMIT 60"
-                    rows = SQLExecutor.execute_raw_sql(target_exec, scan_sql, dialect=engine_dialect)
+
+                    # El escaneo tambien pasa por el validador AST: era el unico
+                    # camino del endpoint que ejecutaba SQL sin guardarrail. Si
+                    # el SQL generado no valida, el escaneo se omite y se deja
+                    # rastro en el log; no se cae a la ejecucion cruda.
+                    try:
+                        ok, secured_sql, _ = ASTValidator.validate_and_secure_sql(
+                            scan_sql,
+                            dialect=engine_dialect,
+                            allowed_tables={chosen_table},
+                            blocked_columns=blocked_columns,
+                            table_columns={chosen_table: [c["name"] for c in cols_info]},
+                            is_admin=is_admin,
+                        )
+                    except ASTValidationError as exc:
+                        # El detalle del rechazo puede nombrar columnas sensibles:
+                        # queda en el log del servidor, nunca en la respuesta.
+                        logger.warning(
+                            "Anomalias: escaneo omitido en %s (%s)", chosen_table, exc
+                        )
+                        ok, secured_sql = False, ""
+
+                    rows = (
+                        SQLExecutor.execute_raw_sql(target_exec, secured_sql, dialect=engine_dialect)
+                        if ok else []
+                    )
                     if rows and len(rows) >= 4:
+                        # Defensa en profundidad: la metrica ya no puede ser
+                        # MASKED, pero si una matriz futura la marcara, el valor
+                        # sale tapado ANTES de entrar al calculo de anomalias.
+                        mask_query_rows(rows, masked_columns, secured_sql, dialect=engine_dialect)
                         data_anomalies = KPICalculator.detect_statistical_anomalies(rows, list(rows[0].keys()))
                         if data_anomalies:
                             top_anom = data_anomalies[0]

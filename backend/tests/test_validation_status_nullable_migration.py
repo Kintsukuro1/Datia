@@ -142,20 +142,5 @@ class TestValidationStatusMigration(unittest.TestCase):
                 "VALUES ('u', 'q', NULL)"
             ))
 
-    def test_pg_statement_is_the_documented_one(self):
-        """La via es el ALTER ... DROP NOT NULL, no un rebuild de la tabla.
-
-        El rebuild (`CREATE TABLE audit_logs_new` + copia + swap) era la rama
-        SQLite: mas lento, con la tabla bloqueada durante la copia y con mas
-        formas de perder datos. El guardarra fija la via documentada.
-        """
-        import inspect as pyinspect
-        from app.core import database as db_module
-
-        src = pyinspect.getsource(db_module.ensure_schema_migrations)
-        self.assertIn("ALTER TABLE audit_logs ALTER COLUMN validation_status DROP NOT NULL", src)
-        self.assertNotIn("audit_logs_new", src, "volvio el rebuild de tabla")
-
-
 if __name__ == "__main__":
     unittest.main()

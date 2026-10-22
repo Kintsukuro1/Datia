@@ -1,6 +1,5 @@
 import io
 import base64
-import datetime
 from typing import Union
 from xml.sax.saxutils import escape
 from reportlab.lib.pagesizes import letter
@@ -10,6 +9,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 
 from app.modules.admin_catalog.schemas import ReportExportData, ReportExportRequest
 from app.modules.reports.data_compiler import ReportDataCompiler
+from app.core.time import utcnow_naive
 
 class PDFExporter:
     """
@@ -103,7 +103,7 @@ class PDFExporter:
             [
                 [
                     Paragraph("<b>DATIA</b> | Executive Analytics", title_style),
-                    Paragraph(f"<b>Fecha:</b> {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}<br/><b>BD:</b> {escape(ReportDataCompiler.compile_db_name(data))}", subtitle_style)
+                    Paragraph(f"<b>Fecha:</b> {utcnow_naive().strftime('%Y-%m-%d %H:%M UTC')}<br/><b>BD:</b> {escape(ReportDataCompiler.compile_db_name(data))}", subtitle_style)
                 ]
             ],
             colWidths=[360, 180]
