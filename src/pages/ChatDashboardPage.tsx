@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import ReactECharts from 'echarts-for-react';
+import ReactEChartsCore from 'echarts-for-react/lib/core';
+import echarts from '../shared/echarts';
 import { useNavigate } from 'react-router-dom';
 import { useChatEngine } from '../features/chat/hooks/useChatEngine';
 import { SidebarChatHistory } from '../components/chat/SidebarChatHistory';
@@ -475,7 +476,7 @@ export const ChatDashboardPage: React.FC = () => {
 
               {/* Pending Query: Optimistic User Message Bubble + AI Thinking Bubble */}
               {attemptCard && (
-                <div className="space-y-4 sm:space-y-6 pt-4 border-t border-dark-border/40 first:border-0 first:pt-0 animate-fadeIn">
+                <div className="space-y-4 sm:space-y-6 pt-4 border-t border-app-border/40 first:border-0 first:pt-0 animate-fadeIn">
                   {/* User Question Bubble */}
                   <div className="flex items-start space-x-2 sm:space-x-3 justify-end">
                     <div className="chat-user-bubble bg-brand-600/15 dark:bg-brand-600/20 border border-brand-500/30 rounded-2xl rounded-tr-sm p-3.5 sm:p-4 max-w-[85%] sm:max-w-2xl shadow-md">
@@ -722,7 +723,8 @@ export const ChatDashboardPage: React.FC = () => {
 
                           {hasChartSeries ? (
                             <div className="w-full h-44 rounded-xl overflow-hidden bg-app-bg/60 border border-app-border/60 p-1">
-                              <ReactECharts
+                              <ReactEChartsCore
+                                echarts={echarts}
                                 option={option}
                                 style={{ height: '100%', width: '100%' }}
                                 opts={{ renderer: 'canvas' }}

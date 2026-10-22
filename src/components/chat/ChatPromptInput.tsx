@@ -211,7 +211,7 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
             className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-xl border text-[11px] font-semibold transition-colors shadow-xs ${
               showBuilder
                 ? 'bg-brand-600 text-white border-brand-500'
-                : 'bg-dark-base hover:bg-brand-950/40 text-brand-300 border-brand-500/30 hover:border-brand-500/50'
+                : 'bg-app-bg hover:bg-brand-950/40 text-brand-300 border-brand-500/30 hover:border-brand-500/50'
             }`}
             title="Abrir Asistente Guiado de Consultas en 3 Pasos"
           >

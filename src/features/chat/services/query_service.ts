@@ -1,6 +1,38 @@
 import { apiClient, getApiErrorMessage, parseSseEvent } from '../../../shared/api/api_client';
 import { QueryResult } from '../../../types';
 
+type ThreadSummary = {
+  id: string;
+  title: string;
+  connection_id: number;
+  message_count: number;
+  updated_at: string;
+};
+
+type ThreadDetail = {
+  id: string;
+  title: string;
+  connection_id: number;
+  results: QueryResult[];
+  created_at: string;
+  updated_at: string;
+};
+
+type AnomaliesResponse = {
+  count: number;
+  anomalies: Array<{
+    id: string;
+    type: string;
+    severity: 'critical' | 'warning' | 'info';
+    title: string;
+    description: string;
+    action_label: string;
+    action_route?: string;
+    query_prompt?: string;
+  }>;
+  has_critical: boolean;
+};
+
 /**
  * Una pregunta es de PROYECCION si pide el futuro de forma explicita.
  *
@@ -40,7 +72,7 @@ export const queryService = {
     // sugerencias" y el consumidor no podia distinguir cargando / vacio /
     // error. Inventar preguntas aca anuncia capacidades que el servidor no
     // ofrece.
-    const res = await apiClient.get('/chat/suggestions', { params });
+    const res = await apiClient.get<{ suggestions: string[] }>('/chat/suggestions', { params });
     if (!Array.isArray(res.data?.suggestions)) {
       throw new Error('El servidor no devolvió la lista de sugerencias.');
     }
@@ -85,7 +117,7 @@ export const queryService = {
       // de "nuevo hilo" abortaban una promesa que no tenian nada que abortar: la
       // consulta sigue viva en el servidor y su respuesta tarde o temprano
       // aparecia en un hilo que ya no estaba en pantalla.
-      const res = await apiClient.post('/chat/query', payload, signal ? { signal } : undefined);
+      const res = await apiClient.post<QueryResult>('/chat/query', payload, signal ? { signal } : undefined);
       return res.data;
     } catch (err: any) {
       // Todo error se propaga. Antes solo se relanzaban 400/401/403 y >=500, y el
@@ -193,9 +225,11 @@ export const queryService = {
               }
             } else if (event.event === 'result') {
               sawResult = true;
-              finalResult = event.data as QueryResult;
+              finalResult = event.data as unknown as QueryResult;
             } else if (event.event === 'error') {
-              serverError = event.data?.message || 'El servidor no pudo completar la consulta.';
+              serverError = typeof event.data?.message === 'string' && event.data.message
+                ? event.data.message
+                : 'El servidor no pudo completar la consulta.';
             }
           }
           boundary = buffer.indexOf('\n\n');
@@ -231,20 +265,20 @@ export const queryService = {
     return finalResult;
   },
 
-  async getThreads(): Promise<Array<{ id: string; title: string; connection_id: number; message_count: number; updated_at: string }>> {
+  async getThreads(): Promise<ThreadSummary[]> {
     // Sin catch: devolver [] ante un 500 o un error de red es indistinguible de
     // "no tenes conversaciones" y el consumidor no podia distinguir cargando /
     // vacio / error. El que llama decide que mostrar.
-    const res = await apiClient.get('/chat/threads');
+    const res = await apiClient.get<ThreadSummary[]>('/chat/threads');
     if (!Array.isArray(res.data)) {
       throw new Error('El servidor no devolvio la lista de conversaciones.');
     }
     return res.data;
   },
 
-  async getThread(id: string): Promise<{ id: string; title: string; connection_id: number; results: QueryResult[]; created_at: string; updated_at: string } | null> {
+  async getThread(id: string): Promise<ThreadDetail | null> {
     try {
-      const res = await apiClient.get(`/chat/threads/${id}`);
+      const res = await apiClient.get<ThreadDetail>(`/chat/threads/${id}`);
       return res.data;
     } catch (err: any) {
       // 404 = el hilo no existe (respuesta valida). Cualquier otro status (401,
@@ -254,9 +288,9 @@ export const queryService = {
     }
   },
 
-  async getSharedThread(id: string): Promise<{ id: string; title: string; connection_id: number; results: QueryResult[]; created_at: string; updated_at: string } | null> {
+  async getSharedThread(id: string): Promise<ThreadDetail | null> {
     try {
-      const res = await apiClient.get(`/chat/threads/shared/${id}`);
+      const res = await apiClient.get<ThreadDetail>(`/chat/threads/shared/${id}`);
       return res.data;
     } catch (err: any) {
       // 404 = el hilo compartido no existe (respuesta valida). Cualquier otro
@@ -268,7 +302,7 @@ export const queryService = {
 
   async toggleGoldenQuery(payload: { question: string; sql: string; connection_id?: number; is_golden: boolean }): Promise<{ success: boolean; message: string; is_golden: boolean }> {
     try {
-      const res = await apiClient.post('/chat/golden-query', payload);
+      const res = await apiClient.post<{ success: boolean; message: string; is_golden: boolean }>('/chat/golden-query', payload);
       return res.data;
     } catch (err: any) {
       return { success: false, message: err.message || 'Error al actualizar consulta maestra', is_golden: false };
@@ -309,7 +343,7 @@ export const queryService = {
     comment?: string;
   }): Promise<{ success: boolean; message: string; learning_saved: boolean }> {
     try {
-      const res = await apiClient.post('/chat/feedback', payload);
+      const res = await apiClient.post<{ success: boolean; message: string; learning_saved: boolean }>('/chat/feedback', payload);
       return res.data;
     } catch (err: any) {
       return {
@@ -364,20 +398,7 @@ export const queryService = {
     }
   },
 
-  async getAnomalies(connectionId?: number): Promise<{
-    count: number;
-    anomalies: Array<{
-      id: string;
-      type: string;
-      severity: 'critical' | 'warning' | 'info';
-      title: string;
-      description: string;
-      action_label: string;
-      action_route?: string;
-      query_prompt?: string;
-    }>;
-    has_critical: boolean;
-  }> {
+  async getAnomalies(connectionId?: number): Promise<AnomaliesResponse> {
     const params: Record<string, any> = {};
     if (connectionId) {
       params.connection_id = connectionId;
@@ -386,7 +407,7 @@ export const queryService = {
     // el panel pintaba "0 anomalias" en verde, que es afirmar que no hay
     // anomalias cuando en realidad no se pudo preguntar. Si el 200 no trae el
     // conteo numerico tampoco hay nada que mostrar: se propaga.
-    const res = await apiClient.get('/system/anomalies', { params });
+    const res = await apiClient.get<AnomaliesResponse>('/system/anomalies', { params });
     if (typeof res.data?.count !== 'number') {
       throw new Error('El servidor no devolvio el conteo de anomalias.');
     }

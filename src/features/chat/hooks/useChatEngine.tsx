@@ -14,7 +14,7 @@ import { resolveRoleLabel } from '../../../constants';
 // A los 8 s el usuario ya se esta preguntando si se colgo, y ese es el momento
 // de decirle por que sigue esperando. Antes de 8 s no dice nada: menos de 8 s de
 // espera no se percibe como colgado.
-export const LONG_WAIT_NOTICE_SECONDS = 8;
+const LONG_WAIT_NOTICE_SECONDS = 8;
 
 // Corta la espera del cliente a los 90 s. El servidor puede seguir trabajando:
 // el AbortController corta la espera, no deshace el trabajo del backend.
@@ -71,7 +71,7 @@ const getDateGroup = (iso?: string | null): 'Hoy' | 'Ayer' | 'Anteriores' => {
   return 'Anteriores';
 };
 
-export interface FullThread {
+interface FullThread {
   id: string;
   title: string;
   timestamp: string;
@@ -566,7 +566,14 @@ function useChatEngineInternal() {
     // Cualquier otra pregunta sigue por el camino del LLM.
     setProjectionSuggestion(null);
 
-    const currentThreadId = activeThreadId || `thread-${Date.now()}`;
+    // ID impredecible, pero la seguridad NO depende de que sea secreto: el
+    // endpoint compartido revalida el SQL contra el rol del lector. El UUID evita
+    // que dos usuarios generen el mismo `thread-<ms>` y que un ID sea adivinable.
+    // `randomUUID` exige contexto seguro (HTTPS o localhost); el fallback cubre
+    // el despliegue por HTTP en LAN, donde el navegador no lo expone.
+    const currentThreadId = activeThreadId
+      || globalThis.crypto?.randomUUID?.()
+      || `thread-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     // El estado del motor guarda UN intento: si el anterior quedo fallido en
     // otra conversacion y el usuario arranca otro, esa pregunta ya no se puede
     // volver a mostrar, asi que su hilo vacio no se queda en el historial.
