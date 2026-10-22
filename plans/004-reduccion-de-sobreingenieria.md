@@ -5,7 +5,7 @@
 **Prioridad:** Media (es deuda; no hay hallazgo de seguridad nuevo acá)
 **Complejidad:** S por fase (5 fases independientes)
 **Riesgo:** Bajo en fases 1–3 · Medio en fase 4 (decisiones de producto) · Alto en fase 5 (estructural)
-**Estado:** ✅ Fases 1–4 y los diferidos `H1`/`F-05` ejecutados y verificados (19/10/2026). Abiertos: lote Docker/deps/scripts (exige build limpio), `DUP-09` y `H15`; Fase 5, por demanda.
+**Estado:** ✅ Fases 1–4 y los diferidos `H1`/`F-05` ejecutados y verificados (19/10/2026). Fase 5 iniciada por demanda el 21–22/10/2026 (wizard, `ast_validator` y la rama conversacional de `execute_query`). Abiertos: lote Docker/deps/scripts (exige build limpio), `DUP-09`, `H15` y el resto de la Fase 5.
 
 ---
 
@@ -200,6 +200,19 @@ Verificación del pase: pytest `689 passed, 102 subtests passed` (7:44), `tsc
 `KPI/LibrarySection` etc. **Regla YAGNI:** se parten cuando haya que tocarlos por
 otro motivo; no se abren frentes de refactor por estética. La tabla del anexo A
 sirve de mapa para cuando llegue ese momento.
+
+Pase por demanda del 21–22/10/2026: `DatabaseWizardModal` partido en
+`src/components/admin/database-wizard/` (7 componentes + configuración);
+`validate_and_secure_sql` salió del umbral C901 con helpers de 18–25;
+`execute_query` bajó de 59 a 48 con la rama conversacional extraída. Quedan sin
+tocar `useChatEngine`, `ChatDashboardPage`, `chat_engine/router.py` e
+`init_db.py`.
+
+Medición del 22/10 sobre `backend/app` con `ruff.toml`: funciones sobre C901 =
+**26 en el árbol de trabajo**, contra **24 de la línea base del plan 005**. El
+neto +2 viene entero de `ast_validator`: la función de 90 salió del umbral pero
+dejó 3 helpers de 18, 20 y 25. Bajó el peor caso (90 → 48), no el conteo. La
+meta sigue siendo el conteo, no solo el máximo.
 
 ---
 
