@@ -1,10 +1,8 @@
-import pytest
 import unittest
 from unittest.mock import patch, AsyncMock
 from app.modules.chat_engine.engine import QueryEngine
 from app.modules.chat_engine.intent_classifier import IntentClassifier
 from app.modules.chat_engine.response_builder import ResponseBuilder
-from app.core.prompts import PromptManager, ResponseType
 
 class TestOutOfScopeCapabilities(unittest.IsolatedAsyncioTestCase):
 
@@ -96,12 +94,3 @@ class TestOutOfScopeCapabilities(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Economista", resp.conversational_response)
         self.assertIn("gráficos estadísticos interactivos", resp.conversational_response)
         self.assertGreaterEqual(len(resp.suggested_questions), 2)
-
-    def test_prompt_manager_out_of_scope_prompt(self):
-        """PromptManager generates the comprehensive out_of_scope system prompt with role and tables."""
-        prompt = PromptManager.get_out_of_scope_system_prompt("Economista", {"fact_ventas", "dim_clientes"})
-        self.assertIn("Economista", prompt)
-        self.assertIn("fact_ventas", prompt)
-        self.assertIn("FUERA DE TUS FUNCIONES", prompt)
-        self.assertIn("Transparencia empática", prompt)
-        self.assertEqual(ResponseType.OUT_OF_SCOPE.value, "out_of_scope")

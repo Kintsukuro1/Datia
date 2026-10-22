@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.constants import DEFAULT_DEMO_ROLE, ROLE_USUARIO, ADMIN_ROLES
 from app.core.database import discard_failed_transaction
 from app.core.prompts import PromptManager
-from app.core.security import mask_rows
+from app.core.security import mask_query_rows
 from app.modules.chat_engine.schemas import QueryResponse, PresentationHints
 from app.modules.chat_engine.ast_validator import ASTValidator, ASTValidationError
 from app.modules.chat_engine.intent_classifier import IntentClassifier
@@ -168,30 +168,18 @@ class QueryEngine:
         return state, activate
 
     @classmethod
-    async def execute_query(
+    def _resolve_remediation_context(
         cls,
         question: str,
-        user_role: str = DEFAULT_DEMO_ROLE,
-        is_admin: bool = False,
-        db: Optional[Session] = None,
-        role_id: Optional[int] = None,
-        connection_id: int = 1,
-        conversation_history: Optional[List[Dict[str, Any]]] = None,
-        narrative_sink: Optional[Callable[[str], Any]] = None
-    ) -> QueryResponse:
+        conversation_history: Optional[List[Dict[str, Any]]],
+    ) -> Tuple[Optional[str], str, Optional[str]]:
         """
-        `narrative_sink` es opcional y solo lo usa `POST /chat/query/stream`.
+        Resuelve si el turno pide remediar nulos y sobre qué consulta original.
 
-        Opcional a proposito: cuando es `None` (o sea, en TODOS los caminos que
-        ya existian, incluido `POST /chat/query`) el motor se comporta exactamente
-        igual que antes. El sink se invoca DESPUES del enmascarado de
-        `mask_rows` y en el mismo punto donde hoy se construye la narrativa, asi
-        que lo que se emite al navegador sale del mismo `rows` enmascarado que
-        alimenta la respuesta completa: stremear no abre una via de datos sin
-        enmascarar.
+        Devuelve (acción, pregunta efectiva, SQL original). La pregunta efectiva
+        es la de la consulta referida, no el texto de la directiva; el SQL
+        original solo existe si el historial lo trae.
         """
-
-        # 1. Null remediation directive resolution
         remediation_action = NullHandler.detect_remediation_intent(question)
         original_question = None
         original_sql = None
@@ -211,7 +199,121 @@ class QueryEngine:
                             original_sql = turn.get("sql")
                         break
 
-        effective_question = original_question or question
+        return remediation_action, original_question or question, original_sql
+
+    @classmethod
+    async def _execute_conversational_branch(
+        cls,
+        effective_question: str,
+        user_role: str,
+        allowed_tables: Set[str],
+        blocked_columns: Optional[Set[str]],
+        masked_columns: Optional[Set[str]],
+        table_columns_map: Dict[str, List[str]],
+        exec_target: Any,
+        engine_dialect: str,
+        is_admin: bool,
+        start_time: float,
+        response_type: str,
+        remediation_action: Optional[str],
+    ) -> QueryResponse:
+        """
+        BRANCH A: respuesta conversacional con grounding y masking.
+
+        Ejecuta el grounding query, valida el SQL, enmascara las columnas
+        MASKED y construye la respuesta. Se extrajo de `execute_query` sin
+        cambiar el orden ni los fallbacks.
+        """
+        # BRANCH A: Conversational Assistant
+        if response_type == "conversational" and not remediation_action:
+            grounding_sql = SQLExecutor.get_grounding_query(effective_question, user_role, allowed_tables)
+            try:
+                _, secured_sql, meta = ASTValidator.validate_and_secure_sql(
+                    grounding_sql,
+                    dialect=engine_dialect,
+                    allowed_tables=allowed_tables,
+                    blocked_columns=blocked_columns,
+                    table_columns=table_columns_map,
+                    is_admin=is_admin
+                )
+                rows = SQLExecutor.execute_raw_sql(exec_target, secured_sql, dialect=engine_dialect)
+            except ASTValidationError:
+                secured_sql = "-- CONSULTA NO AUTORIZADA POR GOBERNANZA RBAC"
+                meta = {"tables_used": []}
+                rows = []
+            except Exception:
+                secured_sql = "-- CONSULTA NO EJECUTADA POR ERROR TÉCNICO"
+                meta = {"tables_used": []}
+                rows = []
+
+            # Enmascarado de columnas MASKED, identico al de la rama analitica mas
+            # abajo. Esta rama estaba fuera del:`mask_rows` solo se aplicaba en
+            # BRANCH B, y el grounding query es `SELECT * ... LIMIT 20`, o sea que
+            # se llevaba al LLM (y de ahi al snapshot de auditoria y a los exports
+            # PDF/Excel) el RUT/token/API key en claro aunque el usuario no tuviera
+            # permiso de lectura. `forecast_service.py` ya lo hacia y lo documentaba
+            # como "una prediccion no es una exencion del RBAC": el hueco era
+            # accidental.
+            # ponytail: el sitio definitivo seria `SQLExecutor.execute_raw_sql`, que
+            # es el punto unico por el que pasa TODA ejecucion (incluido
+            # `execute_with_self_healing`). Ahi no se puede sin cambiar su contrato:
+            # el executor es agnostico al RBAC y no recibe `masked_columns`.
+            if masked_columns and rows:
+                mask_query_rows(rows, masked_columns, secured_sql, dialect=engine_dialect)
+
+            exec_time_ms = int((time.time() - start_time) * 1000)
+            conversational = await IntentClassifier.generate_conversational_response(
+                effective_question, user_role, "conversational", rows, list(rows[0].keys()) if rows else [], is_llm_active=True
+            )
+
+            if not conversational:
+                return ResponseBuilder.build_llm_offline_response(effective_question, exec_time_ms)
+
+            suggested_questions, conversational = cls._extract_suggested_questions(
+                conversational, rows, list(rows[0].keys()) if rows else [], meta.get("tables_used", list(allowed_tables))
+            )
+
+            clarification_opts = IntentClassifier.detect_ambiguity_and_options(effective_question, allowed_tables)
+            anomalies_detected = KPICalculator.detect_statistical_anomalies(rows, list(rows[0].keys()) if rows else [])
+            sql_explanation = ASTValidator.generate_sql_explanation(secured_sql, dialect=engine_dialect)
+
+            return ResponseBuilder.build_conversational_response(
+                effective_question, user_role, secured_sql, rows, meta, conversational, exec_time_ms, allowed_tables,
+                suggested_questions=suggested_questions,
+                clarification_options=clarification_opts,
+                anomalies_detected=anomalies_detected,
+                sql_explanation=sql_explanation
+            )
+
+
+    @classmethod
+    async def execute_query(
+        cls,
+        question: str,
+        user_role: str = DEFAULT_DEMO_ROLE,
+        is_admin: bool = False,
+        db: Optional[Session] = None,
+        role_id: Optional[int] = None,
+        connection_id: int = 1,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        narrative_sink: Optional[Callable[[str], Any]] = None
+    ) -> QueryResponse:
+        """
+        `narrative_sink` es opcional y solo lo usa `POST /chat/query/stream`.
+
+        Opcional a proposito: cuando es `None` (o sea, en TODOS los caminos que
+        ya existian, incluido `POST /chat/query`) el motor se comporta exactamente
+        igual que antes. El sink se invoca DESPUES del enmascarado de
+        `mask_query_rows` y en el mismo punto donde hoy se construye la narrativa, asi
+        que lo que se emite al navegador sale del mismo `rows` enmascarado que
+        alimenta la respuesta completa: stremear no abre una via de datos sin
+        enmascarar.
+        """
+
+        # 1. Null remediation directive resolution
+        remediation_action, effective_question, original_sql = cls._resolve_remediation_context(
+            question, conversation_history
+        )
 
         # 2. RBAC check: la cuenta NO tiene ningun rol asignado.
         #
@@ -323,63 +425,19 @@ class QueryEngine:
 
         # BRANCH A: Conversational Assistant
         if response_type == "conversational" and not remediation_action:
-            grounding_sql = SQLExecutor.get_grounding_query(effective_question, user_role, allowed_tables)
-            try:
-                _, secured_sql, meta = ASTValidator.validate_and_secure_sql(
-                    grounding_sql,
-                    dialect=engine_dialect,
-                    allowed_tables=allowed_tables,
-                    blocked_columns=blocked_columns,
-                    table_columns=table_columns_map,
-                    is_admin=is_admin
-                )
-                rows = SQLExecutor.execute_raw_sql(exec_target, secured_sql, dialect=engine_dialect)
-            except ASTValidationError:
-                secured_sql = "-- CONSULTA NO AUTORIZADA POR GOBERNANZA RBAC"
-                meta = {"tables_used": []}
-                rows = []
-            except Exception:
-                secured_sql = "-- CONSULTA NO EJECUTADA POR ERROR TÉCNICO"
-                meta = {"tables_used": []}
-                rows = []
-
-            # Enmascarado de columnas MASKED, identico al de la rama analitica mas
-            # abajo. Esta rama estaba fuera del:`mask_rows` solo se aplicaba en
-            # BRANCH B, y el grounding query es `SELECT * ... LIMIT 20`, o sea que
-            # se llevaba al LLM (y de ahi al snapshot de auditoria y a los exports
-            # PDF/Excel) el RUT/token/API key en claro aunque el usuario no tuviera
-            # permiso de lectura. `forecast_service.py` ya lo hacia y lo documentaba
-            # como "una prediccion no es una exencion del RBAC": el hueco era
-            # accidental.
-            # ponytail: el sitio definitivo seria `SQLExecutor.execute_raw_sql`, que
-            # es el punto unico por el que pasa TODA ejecucion (incluido
-            # `execute_with_self_healing`). Ahi no se puede sin cambiar su contrato:
-            # el executor es agnostico al RBAC y no recibe `masked_columns`.
-            if masked_columns and rows:
-                mask_rows(rows, masked_columns)
-
-            exec_time_ms = int((time.time() - start_time) * 1000)
-            conversational = await IntentClassifier.generate_conversational_response(
-                effective_question, user_role, "conversational", rows, list(rows[0].keys()) if rows else [], is_llm_active=True
-            )
-
-            if not conversational:
-                return ResponseBuilder.build_llm_offline_response(effective_question, exec_time_ms)
-
-            suggested_questions, conversational = cls._extract_suggested_questions(
-                conversational, rows, list(rows[0].keys()) if rows else [], meta.get("tables_used", list(allowed_tables))
-            )
-
-            clarification_opts = IntentClassifier.detect_ambiguity_and_options(effective_question, allowed_tables)
-            anomalies_detected = KPICalculator.detect_statistical_anomalies(rows, list(rows[0].keys()) if rows else [])
-            sql_explanation = ASTValidator.generate_sql_explanation(secured_sql, dialect=engine_dialect)
-
-            return ResponseBuilder.build_conversational_response(
-                effective_question, user_role, secured_sql, rows, meta, conversational, exec_time_ms, allowed_tables,
-                suggested_questions=suggested_questions,
-                clarification_options=clarification_opts,
-                anomalies_detected=anomalies_detected,
-                sql_explanation=sql_explanation
+            return await cls._execute_conversational_branch(
+                effective_question=effective_question,
+                user_role=user_role,
+                allowed_tables=allowed_tables,
+                blocked_columns=blocked_columns,
+                masked_columns=masked_columns,
+                table_columns_map=table_columns_map,
+                exec_target=exec_target,
+                engine_dialect=engine_dialect,
+                is_admin=is_admin,
+                start_time=start_time,
+                response_type=response_type,
+                remediation_action=remediation_action,
             )
 
         # BRANCH B: Data Analysis / Report / Hybrid
@@ -467,7 +525,7 @@ class QueryEngine:
         # unico que circula, asi que el RUT en claro no llega ni al snapshot de
         # auditoria, ni a los reportes exportados a PDF/Excel, ni a la vista.
         if masked_columns and rows:
-            mask_rows(rows, masked_columns)
+            mask_query_rows(rows, masked_columns, secured_sql, dialect=engine_dialect)
 
         SQLExecutor.persist_learning_memory(
             db=db,

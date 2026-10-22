@@ -1,6 +1,6 @@
-import datetime
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey
 from app.core.database import Base
+from app.core.time import utcnow_naive
 
 class QueryLearningMemory(Base):
     """
@@ -18,8 +18,8 @@ class QueryLearningMemory(Base):
     execution_count = Column(Integer, default=1)
     was_self_healed = Column(Boolean, default=False)
     is_golden = Column(Boolean, default=False, index=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
 
 class ChatConversation(Base):
@@ -37,8 +37,8 @@ class ChatConversation(Base):
     # Antes `/threads/shared/{id}` no filtraba ni por user_id ni por nada, asi que
     # cualquier usuario autenticado podia leer los data_rows corporativos de otro.
     is_shared = Column(Boolean, nullable=False, default=False, index=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
 
 class DashboardWidget(Base):
@@ -55,5 +55,5 @@ class DashboardWidget(Base):
     chart_option_json = Column(Text, nullable=False)
     kpis_json = Column(Text, nullable=True)
     query_text = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 

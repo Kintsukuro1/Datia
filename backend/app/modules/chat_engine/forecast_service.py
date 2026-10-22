@@ -9,8 +9,9 @@ columna. Si no se pueden resolver, se responde que no se puede y se dicen que
 columnas se buscaron — no se cae a un nombre inventado.
 
 El SQL que sale de aqui pasa por `ASTValidator` (SELECT-only, RBAC de tablas y
-columnas, LIMIT) y por `SQLExecutor` (read-only a nivel de sesion, `mask_rows`).
-Las predicciones no son un camino privilegiado alrededor de la gobernanza: son
+columnas, LIMIT), por `SQLExecutor` (read-only a nivel de sesion) y por
+`mask_query_rows` (MASKED). Las predicciones no son un camino privilegiado
+alrededor de la gobernanza: son
 el mismo camino que el chat, con el SQL escrito por codigo en vez de por el
 modelo.
 """
@@ -24,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.core.security import mask_rows
+from app.core.security import mask_query_rows
 from app.modules.admin_catalog.models import CorporateConnection
 from app.modules.chat_engine.ast_validator import ASTValidator
 from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
@@ -234,7 +235,7 @@ def _run_guarded_sql(
         # forecast de `/predict` moria con un TypeError interno y
         # `/ml/projections/run` respondia 500. El enmascarado ya ocurrio; el
         # contador es informativo y nadie lo consume (mismo uso que engine.py).
-        mask_rows(rows, masked)
+        mask_query_rows(rows, masked, secured, dialect=dialect)
 
     return rows, secured
 
@@ -467,6 +468,23 @@ def audit_data_quality(
             return findings
         dialect = "postgres"
         table, cols = _load_fact_table(db, connection, is_admin, user_role, role_id, connection_id, dialect, budget)
+
+        # La matriz de columnas se resuelve ANTES de elegir nada. Sin esto, la
+        # fecha, la metrica, el tipo y las claves de duplicados se elegian sobre
+        # TODAS las columnas fisicas: una MASKED podia terminar como metrica del
+        # reporte y una BLOCKED como clave de `GROUP BY`, o sea el auditor leia
+        # (y describia) columnas que el perfil no puede ver. Un set sin permisos
+        # ya no se interpreta como "sin restricciones": el guard falla con 503.
+        blocked_columns = GovernanceGuard.get_blocked_columns_for_role(
+            user_role=user_role, is_admin=is_admin, db=db, role_id=role_id, connection_id=connection_id
+        )
+        masked_columns = GovernanceGuard.get_masked_columns_for_role(
+            user_role=user_role, is_admin=is_admin, db=db, role_id=role_id, connection_id=connection_id
+        )
+        sin_permiso = {str(c).lower() for c in (blocked_columns or set())}
+        sin_permiso |= {str(c).lower() for c in (masked_columns or set())}
+        cols = [c for c in cols if str(c.get("name", "")).lower() not in sin_permiso]
+
         resolved = resolve_columns(cols)
         t = _quote(table, dialect)
         date_col, value_col = resolved["date_col"], resolved["value_col"]
@@ -484,11 +502,12 @@ def audit_data_quality(
     if date_col and period_col:
         try:
             expr = f"TO_CHAR({_quote(date_col)}, 'YYYY-MM')"
-            rows = SQLExecutor.execute_raw_sql(
+            rows, _ = _run_guarded_sql(
+                db,
                 connection,
                 f"SELECT COUNT(*) AS n FROM {t} WHERE {_quote(period_col)} IS NOT NULL "
                 f"AND {_quote(period_col)} <> {expr}",
-                dialect=dialect,
+                dialect, user_role, is_admin, role_id, connection_id, table, cols, budget,
             )
             n = int(rows[0].get("n") or 0) if rows else 0
             if n:
@@ -504,11 +523,12 @@ def audit_data_quality(
     if value_col and tipo_col:
         try:
             tq = _quote(tipo_col)
-            rows = SQLExecutor.execute_raw_sql(
+            rows, _ = _run_guarded_sql(
+                db,
                 connection,
                 f"SELECT COUNT(*) AS n FROM {t} WHERE {_quote(value_col)} < 0 "
                 f"AND LOWER({tq}) NOT IN ('egreso','gasto','retiro','salida','anulacion')",
-                dialect=dialect,
+                dialect, user_role, is_admin, role_id, connection_id, table, cols, budget,
             )
             n = int(rows[0].get("n") or 0) if rows else 0
             if n:
@@ -530,10 +550,11 @@ def audit_data_quality(
     if len(key_cols) >= 3:
         try:
             key = ", ".join(_quote(c, dialect) for c in key_cols)
-            rows = SQLExecutor.execute_raw_sql(
+            rows, _ = _run_guarded_sql(
+                db,
                 connection,
                 f"SELECT COUNT(*) AS n FROM (SELECT {key} FROM {t} GROUP BY {key} HAVING COUNT(*) > 1) x",
-                dialect=dialect,
+                dialect, user_role, is_admin, role_id, connection_id, table, cols, budget,
             )
             n = int(rows[0].get("n") or 0) if rows else 0
             if n:

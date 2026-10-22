@@ -10,6 +10,7 @@ en claro. Habia enum, seed, `[ENMASCARADO]` en el prompt y un docstring que prom
 Regla acordada: se conservan los ultimos 4 DIGITOS.
 """
 
+import json
 import unittest
 
 from main import app  # noqa: F401  registra los mappers de SQLAlchemy
@@ -20,44 +21,35 @@ from app.core.constants import (
     ROLE_GERENTE_TALENTO, ROLE_ANALISTA_BI, ROLE_INGENIERO_TI,
     ROLE_OFICIAL_SEGURIDAD, ROLE_USUARIO,
 )
-from app.core.security import mask_rows, mask_value
+from app.core.security import mask_query_rows, mask_rows, mask_value
 from app.modules.chat_engine.governance_guard import GovernanceGuard
 
 
 class TestMaskValue(unittest.TestCase):
-    def test_keeps_last_four_digits_of_rut(self):
-        # Regla acordada: 12.345.678-9 -> *******678-9
-        self.assertEqual(mask_value("12.345.678-9"), "*******678-9")
-        self.assertEqual(mask_value("98.765.432-4"), "*******432-4")
+    def test_mask_value_contract(self):
+        # Regla acordada: se conservan los ultimos 4 DIGITOS, no caracteres.
+        cases = (
+            ("rut", "12.345.678-9", "*******678-9"),
+            ("rut_distinto", "98.765.432-4", "*******432-4"),
+            ("sin_digitos", "texto sin numeros", "*" * len("texto sin numeros")),
+            ("corto", "123", "***"),
+            ("vacio", "", ""),
+            ("null", None, None),
+        )
+        for name, original, expected in cases:
+            with self.subTest(case=name):
+                self.assertEqual(mask_value(original), expected)
 
-    def test_counts_digits_not_characters(self):
-        # Los ultimos 4 CARACTERES serian "78-9" y perderian el 6.
+        # Los ultimos 4 CARACTERES serian "78-9" y perderian el 6. Ademas el
+        # valor original no debe ser recuperable y el largo se conserva.
         masked = mask_value("12.345.678-9")
         self.assertTrue(masked.endswith("678-9"), masked)
         self.assertNotIn("12.345", masked)
-
-    def test_original_value_is_not_recoverable(self):
-        original = "12.345.678-9"
-        masked = mask_value(original)
-        # Lo unico visible son los ultimos 4 digitos y los separadores posteriores.
-        self.assertNotIn("12.345", masked)
-        self.assertEqual(len(masked), len(original))
-
-    def test_none_stays_none(self):
-        # Un NULL tiene que seguir siendo NULL, no una cadena de asteriscos.
-        self.assertIsNone(mask_value(None))
-
-    def test_fails_closed_without_enough_digits(self):
-        # Fallar abierto seria revelar el final del dato en una columna sensible.
-        self.assertEqual(mask_value("texto sin numeros"), "*" * len("texto sin numeros"))
-        self.assertEqual(mask_value("123"), "***")
-
-    def test_empty_string(self):
-        self.assertEqual(mask_value(""), "")
+        self.assertEqual(len(masked), len("12.345.678-9"))
 
 
 class TestMaskRows(unittest.TestCase):
-    def test_masks_only_the_named_columns(self):
+    def test_masks_only_the_named_columns_case_insensitively(self):
         rows = [{
             "nombre": "Ana Perez",
             "rut_dni_cliente": "12.345.678-9",
@@ -70,11 +62,10 @@ class TestMaskRows(unittest.TestCase):
         self.assertEqual(rows[0]["nombre"], "Ana Perez")
         self.assertEqual(rows[0]["email"], "ana@empresa.com")
 
-    def test_is_case_insensitive_on_the_column_key(self):
         # El motor puede devolver la clave con el casing usado en la consulta.
-        rows = [{"RUT_DNI_CLIENTE": "12.345.678-9"}]
-        mask_rows(rows, {"rut_dni_cliente"})
-        self.assertEqual(rows[0]["RUT_DNI_CLIENTE"], "*******678-9")
+        uppercase = [{"RUT_DNI_CLIENTE": "12.345.678-9"}]
+        mask_rows(uppercase, {"rut_dni_cliente"})
+        self.assertEqual(uppercase[0]["RUT_DNI_CLIENTE"], "*******678-9")
 
     def test_empty_inputs_are_noop(self):
         rows = [{"rut_dni_cliente": "12.345.678-9"}]
@@ -82,6 +73,142 @@ class TestMaskRows(unittest.TestCase):
         self.assertEqual(mask_rows(rows, None), 0)
         self.assertEqual(mask_rows([], {"rut_dni_cliente"}), 0)
         self.assertEqual(rows[0]["rut_dni_cliente"], "12.345.678-9")
+
+
+class TestMaskQueryRows(unittest.TestCase):
+    """`mask_rows` mira la clave; el alias del SELECT puede cambiar la clave."""
+
+    def test_masks_alias_of_masked_column_in_cte_and_aggregate(self):
+        cases = (
+            (
+                "alias_directo",
+                [{"identificador": "12.345.678-9", "nombre": "Ana Perez"}],
+                "SELECT rut_dni_cliente AS identificador, nombre FROM dim_clientes",
+                "identificador",
+                "nombre",
+            ),
+            (
+                "alias_en_cte",
+                [{"r": "12.345.678-9"}],
+                "WITH x AS (SELECT rut_dni_cliente AS r FROM dim_clientes) SELECT r FROM x",
+                "r",
+                None,
+            ),
+            (
+                # El alias del CTE es una fuente MASKED: si la proyeccion
+                # externa lo agrega, el alias externo tambien se enmascara.
+                "alias_agregado",
+                [{"max_rut": "12.345.678-9"}],
+                (
+                    "WITH x AS (SELECT rut_dni_cliente AS r FROM dim_clientes) "
+                    "SELECT MAX(r) AS max_rut FROM x"
+                ),
+                "max_rut",
+                None,
+            ),
+        )
+        for name, rows, sql, key, other_key in cases:
+            with self.subTest(case=name):
+                mask_query_rows(rows, {"rut_dni_cliente"}, sql)
+                self.assertEqual(rows[0][key], "*******678-9")
+                if other_key:
+                    self.assertEqual(rows[0][other_key], "Ana Perez")
+
+    def test_unaliased_expression_and_json_subscript_mask_the_whole_row(self):
+        # Sin alias la clave la decide el driver; con `perfil['rut']` es un
+        # subscript JSONB, no JSONExtract. En ambos casos no hay una clave
+        # estable que buscar y se enmascara la fila completa.
+        cases = (
+            (
+                "sin_alias",
+                "SELECT rut_dni_cliente || 'x', nombre FROM dim_clientes",
+                "?column?",
+            ),
+            (
+                "subscript_json",
+                "SELECT perfil['rut_dni_cliente'] AS x, nombre FROM dim_clientes",
+                "x",
+            ),
+        )
+        for name, sql, key in cases:
+            with self.subTest(case=name):
+                rows = [{key: "12.345.678-9", "nombre": "Ana Perez"}]
+                mask_query_rows(rows, {"rut_dni_cliente"}, sql)
+                self.assertEqual(rows[0][key], "*******678-9")
+                self.assertEqual(rows[0]["nombre"], "*********")
+
+    def test_query_without_masked_usage_or_sql_leaves_rows_untouched(self):
+        rows = [{"total": 3}]
+        mask_query_rows(rows, {"rut_dni_cliente"}, "SELECT COUNT(*) AS total FROM dim_clientes")
+        self.assertEqual(rows[0], {"total": 3})
+
+        # Sin SQL, el fallback mira la clave directa de la fila.
+        direct = [{"rut_dni_cliente": "12.345.678-9"}]
+        mask_query_rows(direct, {"rut_dni_cliente"})
+        self.assertEqual(direct[0]["rut_dni_cliente"], "*******678-9")
+
+
+class TestMaskQueryRowsJson(unittest.TestCase):
+    """Defensa en profundidad: una columna JSON tambien pasa por el enmascarado.
+
+    `mask_rows` compara la CLAVE de la fila con el nombre de la columna MASKED.
+    Una columna JSON puede llevar el dato sensible adentro y la clave de la fila
+    no lo delata, asi que el valor saldria en claro.
+    """
+
+    def test_json_structures_with_masked_key(self):
+        with self.subTest(case="objeto"):
+            rows = [{"registro": '{"sueldo": 123456, "nombre": "Ana"}'}]
+            touched = mask_query_rows(rows, {"sueldo"})
+            doc = json.loads(rows[0]["registro"])
+            self.assertEqual(doc["sueldo"], mask_value(123456))
+            self.assertEqual(doc["nombre"], "Ana")
+            self.assertEqual(touched, 1)
+
+        with self.subTest(case="anidado"):
+            rows = [{"perfil": {"datos": {"sueldo": 123456, "area": "TI"}}}]
+            touched = mask_query_rows(rows, {"sueldo"})
+            self.assertEqual(rows[0]["perfil"]["datos"]["sueldo"], mask_value(123456))
+            self.assertEqual(rows[0]["perfil"]["datos"]["area"], "TI")
+            self.assertEqual(touched, 1)
+
+        with self.subTest(case="lista"):
+            rows = [{
+                "empleados": [
+                    {"sueldo": 111111},
+                    {"sueldo": 222222, "nombre": "Luis"},
+                ]
+            }]
+            touched = mask_query_rows(rows, {"sueldo"})
+            self.assertEqual(rows[0]["empleados"][0]["sueldo"], mask_value(111111))
+            self.assertEqual(rows[0]["empleados"][1]["sueldo"], mask_value(222222))
+            self.assertEqual(rows[0]["empleados"][1]["nombre"], "Luis")
+            self.assertEqual(touched, 2)
+
+        with self.subTest(case="array_string"):
+            rows = [{"registro": '[{"sueldo": 123456}, {"sueldo": 654321}]'}]
+            mask_query_rows(rows, {"sueldo"})
+            doc = json.loads(rows[0]["registro"])
+            self.assertEqual(doc[0]["sueldo"], mask_value(123456))
+            self.assertEqual(doc[1]["sueldo"], mask_value(654321))
+
+    def test_key_comparison_is_case_insensitive(self):
+        rows = [{"perfil": {"SUELDO": 123456}}]
+        mask_query_rows(rows, {"sueldo"})
+        self.assertEqual(rows[0]["perfil"]["SUELDO"], mask_value(123456))
+
+    def test_json_without_masked_keys_is_untouched(self):
+        cases = (
+            ("texto_normal", "texto normal, sin json"),
+            ("json_invalido", '{"sueldo": 123'),
+            ("json_sin_clave", '{"a":1}'),
+        )
+        for name, original in cases:
+            with self.subTest(case=name):
+                rows = [{"registro": original}]
+                touched = mask_query_rows(rows, {"sueldo"})
+                self.assertEqual(rows[0]["registro"], original)
+                self.assertEqual(touched, 0)
 
 
 class TestMaskedColumnsAreGovernedSeparately(unittest.TestCase):

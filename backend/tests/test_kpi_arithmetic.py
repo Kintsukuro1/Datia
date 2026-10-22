@@ -24,23 +24,24 @@ class TestKpiArithmetic(unittest.TestCase):
                 return k.value
         return None
 
-    def test_promedio_ignora_filas_no_numericas(self):
-        # 10 filas, solo 5 con valor de 40.
-        # Promedio real = 200/5 = 40. El bug dividia por len(rows)=10 -> 20.
-        rows = [
-            {"categoria": f"c{i}", "monto": 40} for i in range(5)
-        ] + [
-            {"categoria": f"x{i}", "monto": None} for i in range(5)
-        ]
-        value = self._kpis_de(rows)
-        self.assertIsNotNone(value, "no se genero KPI de promedio")
-        self.assertIn("40", str(value), f"el promedio salio {value}; debia ser 40, no 20")
-        self.assertNotIn("$20", str(value), "el promedio sigue usando len(rows) como divisor")
+    def test_promedio_divide_por_los_valores_numericos(self):
+        # 10 filas, solo 5 con valor de 40. Promedio real = 200/5 = 40. El bug
+        # dividia por len(rows)=10 -> 20.
+        with self.subTest(case="con_nulos"):
+            rows = [
+                {"categoria": f"c{i}", "monto": 40} for i in range(5)
+            ] + [
+                {"categoria": f"x{i}", "monto": None} for i in range(5)
+            ]
+            value = self._kpis_de(rows)
+            self.assertIsNotNone(value, "no se genero KPI de promedio")
+            self.assertIn("40", str(value), f"el promedio salio {value}; debia ser 40, no 20")
+            self.assertNotIn("$20", str(value), "el promedio sigue usando len(rows) como divisor")
 
-    def test_promedio_no_rompe_con_todas_numericas(self):
-        rows = [{"categoria": f"c{i}", "monto": 10} for i in range(4)]
-        value = self._kpis_de(rows)
-        self.assertIn("10", str(value))
+        with self.subTest(case="todas_numericas"):
+            rows = [{"categoria": f"c{i}", "monto": 10} for i in range(4)]
+            value = self._kpis_de(rows)
+            self.assertIn("10", str(value))
 
     def test_sin_valores_numericos_no_revienta(self):
         rows = [{"categoria": f"c{i}", "monto": "n/a"} for i in range(4)]
@@ -116,50 +117,60 @@ class TestKpiValorCalculadoPorElBackend(unittest.TestCase):
         ])
         self.assertEqual(kpis[0].value, "$600.00", f"publico el numero del modelo: {kpis[0].value}")
 
-    def test_cada_agregacion_calcula_su_valor(self):
-        esperados = {
-            "total": "12",
-            "avg": "4.0",
-            "max": "6",
-            "min": "2",
-            "count": "3",
-        }
-        for agg, esperado in esperados.items():
+    def test_agregaciones_y_formatos(self):
+        with self.subTest(case="agregaciones"):
+            esperados = {
+                "total": "12",
+                "avg": "4.0",
+                "max": "6",
+                "min": "2",
+                "count": "3",
+            }
+            for agg, esperado in esperados.items():
+                kpis = self._sintetizar([
+                    {"title": f"KPI {agg}", "column": "unidades", "agg": agg},
+                ])
+                self.assertEqual(
+                    kpis[0].value, esperado,
+                    f"agg={agg} dio {kpis[0].value}, no {esperado}",
+                )
+
+        with self.subTest(case="formatos"):
             kpis = self._sintetizar([
-                {"title": f"KPI {agg}", "column": "unidades", "agg": agg},
+                {"title": "Costo total", "column": "costo", "agg": "total"},
+                {"title": "Tasa promedio", "column": "tasa", "agg": "avg"},
             ])
-            self.assertEqual(kpis[0].value, esperado, f"agg={agg} dio {kpis[0].value}, no {esperado}")
+            self.assertIn("$", kpis[0].value, f"columna de costo sin signo de moneda: {kpis[0].value}")
+            self.assertTrue(kpis[1].value.endswith("%"), f"columna de tasa sin %: {kpis[1].value}")
 
-    def test_columna_de_dinero_y_de_porcentaje_se_formatean(self):
-        kpis = self._sintetizar([
-            {"title": "Costo total", "column": "costo", "agg": "total"},
-            {"title": "Tasa promedio", "column": "tasa", "agg": "avg"},
-        ])
-        self.assertIn("$", kpis[0].value, f"columna de costo sin signo de moneda: {kpis[0].value}")
-        self.assertTrue(kpis[1].value.endswith("%"), f"columna de tasa sin %: {kpis[1].value}")
-
-    def test_columna_desconocida_se_descarta(self):
-        # Inventar el nombre de la columna es el modo de falla principal: el
-        # numero seria incalculable, y caer al value del modelo seria publicar
-        # una cifra sin verificar.
-        kpis = self._sintetizar([
-            {"title": "Inventado", "column": "columna_que_no_existe", "agg": "total", "value": "999"},
-        ])
-        self.assertEqual(kpis, [], f"publico un KPI sobre columna inexistente: {kpis}")
-
-    def test_agregacion_invalida_se_descarta(self):
-        kpis = self._sintetizar([
-            {"title": "raro", "column": "monto", "agg": "stddev", "value": "5"},
-        ])
-        self.assertEqual(kpis, [], f"acepto una agregacion desconocida: {kpis}")
-
-    def test_columna_sin_numeros_no_publica_un_cero(self):
-        rows = [{"entidad": "A", "estado": "ANULADO"}, {"entidad": "B", "estado": "OK"}]
-        kpis = self._sintetizar(
-            [{"title": "Suma de estados", "column": "estado", "agg": "total"}],
-            rows=rows, cols=["entidad", "estado"],
+    def test_payloads_sin_anclaje_valido_se_descartan(self):
+        # Inventar el nombre de la columna, una agregacion desconocida o sumar
+        # texto serian numeros incalculables; caer al value del modelo seria
+        # publicar una cifra sin verificar.
+        cases = (
+            (
+                "columna_inexistente",
+                [{"title": "Inventado", "column": "columna_que_no_existe", "agg": "total", "value": "999"}],
+                None,
+                None,
+            ),
+            (
+                "agregacion_invalida",
+                [{"title": "raro", "column": "monto", "agg": "stddev", "value": "5"}],
+                None,
+                None,
+            ),
+            (
+                "columna_sin_numeros",
+                [{"title": "Suma de estados", "column": "estado", "agg": "total"}],
+                [{"entidad": "A", "estado": "ANULADO"}, {"entidad": "B", "estado": "OK"}],
+                ["entidad", "estado"],
+            ),
         )
-        self.assertEqual(kpis, [], f"sumo texto y publico el resultado: {kpis}")
+        for name, payload, rows, cols in cases:
+            with self.subTest(case=name):
+                kpis = self._sintetizar(payload, rows=rows, cols=cols)
+                self.assertEqual(kpis, [], f"publico un KPI sin anclaje valido: {kpis}")
 
     def test_valor_cero_de_datos_se_conserva(self):
         # El 0 es un dato legitimo ("Clientes en mora: 0"), no un campo faltante.
@@ -231,30 +242,32 @@ class TestSintesisConCantidadVariableDeKpis(unittest.TestCase):
                 )
             )
 
-    def test_dos_kpis_validos_producen_informe(self):
-        res = self._correr_semantico(self._payload(2))
-        self.assertIsNotNone(res, "2 KPIs validos descartaron la sintesis completa")
-        self.assertEqual(len(res["kpis"]), 2)
+    def test_cantidad_variable_de_kpis_validos_produce_informe(self):
+        for n_kpis in (2, 4):
+            with self.subTest(n_kpis=n_kpis):
+                res = self._correr_semantico(self._payload(n_kpis))
+                self.assertIsNotNone(
+                    res, f"{n_kpis} KPIs validos descartaron la sintesis completa"
+                )
+                self.assertGreaterEqual(len(res["kpis"]), 1)
 
-    def test_cuatro_kpis_validos_producen_informe(self):
-        res = self._correr_semantico(self._payload(4))
-        self.assertIsNotNone(res, "4 KPIs validos descartaron la sintesis completa")
-        self.assertGreaterEqual(len(res["kpis"]), 1)
-
-    def test_sin_kpis_no_produce_informe(self):
+    def test_sin_kpis_anclados_no_produce_informe(self):
         # Sin KPIs validos no se emite una lista vacia: el motor conserva las
-        # tarjetas deterministas de build_dynamic_visualization.
-        res = self._correr_semantico({"overview": "Panorama.", "kpis": []})
-        self.assertFalse(res["kpis"], "una lista de KPIs vacia pisaria las KPIs deterministas")
-
-    def test_kpi_sobre_columna_inexistente_no_produce_informe(self):
-        # Es la degradacion nueva: si el modelo no puede anclar el KPI a una
-        # columna real, se descartan TODOS y mandan las deterministas. Publicar
-        # el `value` del modelo seria volver al numero sin verificar.
-        res = self._correr_semantico({"overview": "Panorama.", "kpis": [
-            {"title": "Imaginario", "column": "no_existe", "agg": "total", "value": "999"},
-        ]})
-        self.assertFalse(res["kpis"], "publico un KPI anclado a una columna inexistente")
+        # tarjetas deterministas de build_dynamic_visualization. Si el modelo no
+        # puede anclar el KPI a una columna real, se descartan TODOS.
+        cases = (
+            ("lista_vacia", {"overview": "Panorama.", "kpis": []}),
+            (
+                "columna_inexistente",
+                {"overview": "Panorama.", "kpis": [
+                    {"title": "Imaginario", "column": "no_existe", "agg": "total", "value": "999"},
+                ]},
+            ),
+        )
+        for name, payload in cases:
+            with self.subTest(case=name):
+                res = self._correr_semantico(payload)
+                self.assertFalse(res["kpis"], f"publico KPIs sin anclaje valido: {res['kpis']}")
 
     def test_kpi_en_cero_no_tira_la_sintesis(self):
         rows = [{"entidad": "A", "monto": 0.0}, {"entidad": "B", "monto": 0.0}]

@@ -554,10 +554,19 @@ class DynamicSchemaPruningService:
                     table_columns_map[tbl].append(c_name)
                     desc = catalog_desc_map.get(f"{tbl}.{c_lower}", "").strip()
                     syns = catalog_synonyms_map.get(f"{tbl}.{c_lower}", "")
-                    is_masked = column_perm_map.get(f"{tbl}.{c_lower}") == "MASKED"
+                    is_masked = (
+                        c_lower in masked_columns
+                        or column_perm_map.get(f"{tbl}.{c_lower}") == "MASKED"
+                    )
 
-                    # Compact samples (max 2 items, max 25 chars each)
-                    samples = pc.get("samples", [])[:2]
+                    # Una muestra real de una columna MASKED es exactamente el
+                    # valor que la mascara existe para tapar, y antes viajaba al
+                    # prompt (hasta dos muestras) ANTES de agregar
+                    # `[ENMASCARADO]`. La marca llegaba tarde. Ahora al prompt
+                    # va el tipo y la marca, sin ningun valor. Una columna
+                    # BLOCKED ya no llega a esta linea: se omite entera arriba,
+                    # asi que tampoco puede aportar muestras.
+                    samples = [] if is_masked else pc.get("samples", [])[:2]
                     clean_samples = []
                     for s in samples:
                         s_str = cls._truncate(str(s).strip(), 25)

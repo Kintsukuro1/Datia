@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import MagicMock
+from fastapi import HTTPException
 from app.modules.chat_engine.engine import QueryEngine
 from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
 
@@ -81,18 +82,25 @@ class TestRBACGovernance(unittest.TestCase):
         self.assertEqual(res, set())
 
     def test_db_exception_fails_closed(self):
-        """When DB query raises an Exception, system fails closed by returning empty set."""
+        """Con la matriz RBAC caída no se inventan permisos: 503.
+
+        Devolver `set()` funcionaba para `allowed_tables` (deniega), pero para
+        `blocked_columns`/`masked_columns` el mismo vacío significaba "no hay
+        nada bloqueado", o sea fail-open. El guard ahora corta con 503 en los
+        tres campos.
+        """
         mock_db = MagicMock()
         mock_db.query.side_effect = Exception("Database connection lost")
 
-        res = QueryEngine.get_allowed_tables_for_role(
-            user_role="Economista",
-            is_admin=False,
-            db=mock_db,
-            role_id=10,
-            connection_id=1
-        )
-        self.assertEqual(res, set())
+        with self.assertRaises(HTTPException) as ctx:
+            QueryEngine.get_allowed_tables_for_role(
+                user_role="Economista",
+                is_admin=False,
+                db=mock_db,
+                role_id=10,
+                connection_id=1
+            )
+        self.assertEqual(ctx.exception.status_code, 503)
 
     def test_column_permissions_queried_from_permission_model(self):
         """Blocked columns are dynamically queried from RoleColumnPermission model."""

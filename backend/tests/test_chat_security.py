@@ -113,34 +113,68 @@ class TestChatSecurity(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertIn("999999", resp.text)
 
-    def test_self_register_ignores_extra_admin_fields(self):
-        """
-        POST /auth/register uses UserSelfRegister. Even if a malicious request
-        supplies is_admin=True and role_id=1, the endpoint ignores undeclared fields
-        and creates a standard user with is_admin=False and role 'Usuario Consultor'.
-        """
-        username = f"hacker_{uuid.uuid4().hex[:6]}"
-        payload = {
+    def test_public_self_registration_is_disabled(self):
+        """Solo un admin crea cuentas: /auth/register ya no existe."""
+        username = f"selfreg_{uuid.uuid4().hex[:6]}"
+        resp = self.client.post("/api/v1/auth/register", json={
             "username": username,
             "email": f"{username}@example.com",
             "password": "Password123!",
+        })
+        self.assertIn(resp.status_code, (404, 405), resp.text[:300])
+        self.assertIsNone(self.db.query(User).filter(User.username == username).first())
+
+    def test_admin_create_ignores_extra_fields_and_issues_temp_password(self):
+        """
+        POST /auth/users usa UserAdminCreate: un payload con is_admin=True,
+        role_id=1 y password="a" no elige rol ni clave. El servidor genera una
+        temporal de alta entropía y la cuenta nace sin privilegios de admin.
+        """
+        username = f"hacker_{uuid.uuid4().hex[:6]}"
+        admin_headers = make_auth_headers(self.db, "admin")
+        user_in_db = None
+        payload = {
+            "username": username,
+            "email": f"{username}@example.com",
+            "password": "a",
             "is_admin": True,
-            "role_id": 1
+            "role_id": 1,
         }
         try:
-            resp = self.client.post("/api/v1/auth/register", json=payload)
-            self.assertEqual(resp.status_code, 201)
+            resp = self.client.post("/api/v1/auth/users", json=payload, headers=admin_headers)
+            self.assertEqual(resp.status_code, 201, resp.text[:300])
             data = resp.json()
-            self.assertFalse(data["is_admin"])
-            self.assertEqual(data.get("role_name"), ROLE_USUARIO)
+            created = data["user"]
+            self.assertFalse(created["is_admin"])
+            self.assertEqual(created.get("role_name"), ROLE_USUARIO)
+            # El alta fuerza el cambio: la temporal entra, pero la cuenta no
+            # opera hasta cambiarla.
+            self.assertTrue(created["must_change_password"])
+            self.assertIsNotNone(created["temp_password_expires_at"])
 
-            # Check directly in the database
+            temp_password = data["temporary_password"]
+            self.assertTrue(temp_password.startswith("Datia-"))
+            self.assertGreaterEqual(len(temp_password), 24)
+            self.assertNotEqual(temp_password, "a")
+
+            # La clave se guarda hasheada, nunca en claro.
             user_in_db = self.db.query(User).filter(User.username == username).first()
             self.assertIsNotNone(user_in_db)
+            self.assertNotEqual(user_in_db.hashed_password, temp_password)
             self.assertFalse(user_in_db.is_admin)
-            if user_in_db.role:
-                self.assertEqual(user_in_db.role.name, ROLE_USUARIO)
+            self.assertIsNotNone(user_in_db.temp_password_issued_at)
+
+            # La temporal sirve para entrar; el cambio se exige después del login.
+            login = self.client.post("/api/v1/auth/login", json={
+                "username": username,
+                "password": temp_password,
+            })
+            self.assertEqual(login.status_code, 200, login.text[:300])
         finally:
-            self.db.query(User).filter(User.username == username).delete()
-            self.db.commit()
+            user_in_db = self.db.query(User).filter(User.username == username).first()
+            if user_in_db:
+                from app.modules.auth.models import UserSession
+                self.db.query(UserSession).filter(UserSession.user_id == user_in_db.id).delete()
+                self.db.query(User).filter(User.id == user_in_db.id).delete()
+                self.db.commit()
 

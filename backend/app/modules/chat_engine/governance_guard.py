@@ -26,8 +26,16 @@ class GovernanceGuard:
 
         Un solo cuerpo para `allowed_tables`, `blocked_columns` y
         `masked_columns`: los tres resuelven la misma sesion local y comparten
-        la misma politica de error (cualquier falla devuelve `set()` vacio,
-        nunca permisos).
+        la misma politica de error.
+
+        Antes cualquier falla devolvia `set()`. Para `allowed_tables` eso deniega,
+        pero para `blocked_columns`/`masked_columns` un set vacio es fail-OPEN:
+        "ninguna columna bloqueada ni enmascarada", o sea los valores sensibles
+        salen en claro. El set vacio tambien disfrazaba de RBAC un fallo de
+        infraestructura. Ahora, si la matriz no se puede resolver, se lanza 503:
+        una request sin matriz no es una request con cero restricciones. Las
+        `HTTPException` deliberadas de la capa de abajo (un 404 de conexion, por
+        ejemplo) se re-lanzan sin reescribirse.
         """
         local_db = None
         if db is None:
@@ -35,38 +43,48 @@ class GovernanceGuard:
                 from app.core.database import SessionLocal
                 local_db = SessionLocal()
                 active_db = local_db
-            except Exception:
-                active_db = None
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="No se pudo resolver la matriz RBAC de permisos: no hay sesion de metadatos.",
+                ) from exc
         else:
             active_db = db
 
-        if active_db is not None:
-            try:
-                schema_info = DynamicSchemaPruningService.get_authorized_schema_prompt(
-                    db=active_db,
-                    role_id=role_id,
-                    user_role=user_role,
-                    connection_id=connection_id,
-                    is_admin=is_admin
-                )
-                return schema_info.get(field, set())
-            except HTTPException:
-                # Un 404 de conexion no es "sin permisos": convertirlo en set()
-                # lo disfrazaba de RBAC y el motor respondia 200 en vez de 404.
-                raise
-            except Exception:
-                # La sesion es del CALLER, no nuestra. Tragarnos el error sin
-                # deshacer la transaccion abortada la deja muerta, y el siguiente
-                # query de esa request falla con `InFailedSqlTransaction` — un error
-                # sin relacion con lo que fallo. Fail-closed se mantiene: el
-                # permiso denied sigue siendo `set()`, solo se la devuelve usable.
-                discard_failed_transaction(active_db)
-                return set()
-            finally:
-                if local_db is not None:
-                    local_db.close()
+        if active_db is None:
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudo resolver la matriz RBAC de permisos: no hay sesion de metadatos.",
+            )
 
-        return set()
+        try:
+            schema_info = DynamicSchemaPruningService.get_authorized_schema_prompt(
+                db=active_db,
+                role_id=role_id,
+                user_role=user_role,
+                connection_id=connection_id,
+                is_admin=is_admin
+            )
+            return schema_info.get(field, set())
+        except HTTPException:
+            # Un 404 de conexion no es "sin permisos": convertirlo en 503 (o en
+            # set()) lo disfrazaba de RBAC y el motor respondia con el codigo
+            # equivocado. Se re-lanza tal cual.
+            raise
+        except Exception as exc:
+            # La sesion es del CALLER, no nuestra. Tragarnos el error sin
+            # deshacer la transaccion abortada la deja muerta, y el siguiente
+            # query de esa request falla con `InFailedSqlTransaction` — un error
+            # sin relacion con lo que fallo. Fail-closed de verdad: la request
+            # falla con 503 en vez de seguir sin restricciones de columna.
+            discard_failed_transaction(active_db)
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudo resolver la matriz RBAC de permisos para este perfil.",
+            ) from exc
+        finally:
+            if local_db is not None:
+                local_db.close()
 
     @classmethod
     def get_allowed_tables_for_role(
