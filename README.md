@@ -99,7 +99,7 @@ npm run dev
 | Servicio | URL |
 | :--- | :--- |
 | 🖥️ Frontend | `http://localhost:5173/` |
-| 📚 Backend API Docs | `http://localhost:8000/docs` |
+| 📚 Backend API Docs | `http://127.0.0.1:8000/docs` |
 
 > [!NOTE]
 > **Datos demo**
@@ -125,7 +125,7 @@ docker compose up -d
 > Generar una `FERNET_KEY` nueva:
 > `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
 
-El frontend queda en `http://localhost/` y Nginx hace de proxy inverso hacia el backend en `http://backend:8000`.
+El frontend queda en `http://127.0.0.1/` (publicado solo en loopback) y Nginx hace de proxy inverso hacia el backend en `http://backend:8000`.
 
 > Si algo falla al levantar el stack (puertos, secretos, volúmenes), los
 > problemas frecuentes y su diagnóstico están en [`PARTE-DOCKER.md`](PARTE-DOCKER.md).

@@ -18,7 +18,7 @@ Doble clic en **`setup.bat`**, en esta misma carpeta. El script hace todo:
   pueden quedar en default: `FERNET_KEY`, `SECRET_KEY` y `POSTGRES_PASSWORD`;
 - verifica que Docker esté instalado y encendido (si no, te lo dice y no hace
   nada más);
-- baja las imágenes, arranca los tres servicios y abre **http://localhost**.
+- baja las imágenes, arranca los tres servicios y abre **http://127.0.0.1**.
 
 Se puede volver a ejecutar sin miedo: si ya había un `.env`, respeta los
 valores configurados y solo completa lo que falte.
@@ -54,7 +54,7 @@ Después, **un solo comando**:
 docker compose -f docker-compose.partner.yml up -d
 ```
 
-Y abrí **http://localhost**
+Y abrí **http://127.0.0.1**
 
 > Fijate que el comando lleva **solo** `docker-compose.partner.yml`. Si le
 > agregás `-f docker-compose.yml`, ese archivo manda `build:` y te compila todo
@@ -111,8 +111,8 @@ docker compose -f docker-compose.partner.yml up -d
 **El puerto 80 está ocupado** (a veces lo agarra otro programa en Windows):
 ```bash
 docker compose -f docker-compose.partner.yml down
-# cambiá "80:80" por "8080:80" en docker-compose.partner.yml (sección frontend)
-# y abrí http://localhost:8080
+# cambiá "127.0.0.1:80:80" por "127.0.0.1:8080:80" en docker-compose.partner.yml (sección frontend)
+# y abrí http://127.0.0.1:8080
 ```
 
 **Empezar de cero** (borra la base y toda la data):

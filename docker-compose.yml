@@ -64,9 +64,11 @@ services:
       # sigue sirviendo para correr sin Docker; acá no aplica.
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-coder:7b}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
-    ports:
-      - "8000:8000"
+      - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost"]}
+      - TEMP_PASSWORD_TTL_DAYS=${TEMP_PASSWORD_TTL_DAYS:-7}
+    # Sin `ports`: el backend solo se alcanza por la red interna de compose, a
+    # traves del proxy de nginx. Publicar 8000:8000 lo dejaba accesible desde la
+    # LAN salteando el frontend y su rate limiting.
     volumes:
       - data_sources_data:/app/data_sources
     extra_hosts:
@@ -85,13 +87,19 @@ services:
       # desplegable igual. La maquina demo pone VITE_DEMO_MODE=true en su .env.
       args:
         VITE_DEMO_MODE: ${VITE_DEMO_MODE:-false}
+        # Relativo y fijo: nginx hace proxy de /api/ al backend. No se interpola
+        # desde .env porque el `.env` de desarrollo apunta a 127.0.0.1:8000 y esa
+        # URL quedaria horneada en la imagen, rota para el navegador del cliente.
+        VITE_API_BASE_URL: /api/v1
     container_name: datia-frontend
     restart: unless-stopped
     depends_on:
       - backend
     ports:
-      - "80:80"
-      - "5173:80"
+      # Solo loopback del host. En Docker Desktop/Windows la publicacion en
+      # 0.0.0.0 exponia la app a toda la LAN.
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:5173:80"
     networks:
       - datia-network
 

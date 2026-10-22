@@ -3,6 +3,15 @@
 #
 #   docker compose -f docker-compose.partner.yml up -d
 #
+# Por defecto escucha SOLO en loopback (127.0.0.1). Para acceder desde otra
+# maquina de la LAN hay que decidirlo explicitamente:
+#
+#   PowerShell:  $env:DATIA_BIND_IP="0.0.0.0"; docker compose -f docker-compose.partner.yml up -d
+#   bash:        DATIA_BIND_IP=0.0.0.0 docker compose -f docker-compose.partner.yml up -d
+#
+# Esta es una maquina de demostracion con credenciales publicadas: no la
+# expongas a Internet. Si la expones a la LAN, hazlo en una red de confianza.
+#
 # Autonomouso a proposito: no necesita el docker-compose.yml de al lado ni
 # Node/Python. Todo lo que hace falta esta aca.
 #
@@ -69,9 +78,13 @@ services:
       # que este tiene que ser el host de la maquina donde corre Ollama.
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-coder:7b}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
+      - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost"]}
+    # Loopback: la imagen publicada puede tener horneada la URL absoluta al
+    # backend, asi que el puerto sigue disponible para el navegador local, pero
+    # no para la LAN. Para exponerlo a otra maquina hace falta un proxy TLS y
+    # una decision explicita, no el default.
     ports:
-      - "8000:8000"
+      - "${DATIA_BIND_IP:-127.0.0.1}:8000:8000"
     volumes:
       - data_sources_data:/app/data_sources
     extra_hosts:
@@ -89,8 +102,10 @@ services:
     depends_on:
       - backend
     ports:
-      - "80:80"
-      - "5173:80"
+      # Loopback por defecto. Para otra maquina, define DATIA_BIND_IP=0.0.0.0
+      # (ver cabecera); no se abre a la LAN sin esa decision explicita.
+      - "${DATIA_BIND_IP:-127.0.0.1}:80:80"
+      - "${DATIA_BIND_IP:-127.0.0.1}:5173:80"
     networks:
       - datia-network
 
