@@ -1,14 +1,28 @@
+import type { EChartsOption } from 'echarts';
+
 export interface User {
   id: number;
   username: string;
   email?: string;
   is_admin: boolean;
+  // Alta/baja de la cuenta. Opcional porque el usuario se persiste en
+  // localStorage y un registro viejo (o un caller parcial) no lo trae;
+  // el backend siempre lo manda.
+  is_active?: boolean;
   // null = la cuenta no tiene rol. Es lo que manda el backend, asi que el tipo
   // tiene que decirlo: los callers resolvian ese null como si fuera un rol.
   role_name?: string | null;
   must_change_password?: boolean;
+  temp_password_issued_at?: string | null;
+  temp_password_expires_at?: string | null;
   failed_login_attempts?: number;
   locked_until?: string | null;
+}
+
+export interface UserCreationResult {
+  message: string;
+  temporary_password: string;
+  user: User;
 }
 
 export interface UserSession {
@@ -47,7 +61,7 @@ export interface AuditLogsPage {
   items: AuditLog[];
 }
 
-export interface AuditFilterParams {
+export type AuditFilterParams = {
   start_date?: string;
   end_date?: string;
   username?: string;
@@ -61,6 +75,7 @@ export interface PasswordResetResult {
   message: string;
   username: string;
   temporary_password: string;
+  temp_password_expires_at?: string | null;
 }
 
 export interface KPICard {
@@ -70,7 +85,7 @@ export interface KPICard {
   change_direction?: 'positive' | 'negative' | 'neutral';
 }
 
-export interface ExecutiveReport {
+interface ExecutiveReport {
   overview: string;
   key_findings: string[];
   recommendations: string[];
@@ -89,7 +104,7 @@ export interface TraceabilityAudit {
   target_database?: string | null;
 }
 
-export interface PresentationHints {
+interface PresentationHints {
   show_executive_report?: boolean;
   show_kpis?: boolean;
   show_chart?: boolean;
@@ -105,9 +120,9 @@ export interface QueryResult {
   executive_report?: ExecutiveReport;
   kpis: KPICard[];
   chart_type: 'bar' | 'line' | 'area' | 'pie' | 'donut' | 'none';
-  chart_option: any; // ECharts option
+  chart_option: EChartsOption;
   data_columns: string[];
-  data_rows: Record<string, any>[];
+  data_rows: Record<string, unknown>[];
   traceability: TraceabilityAudit;
   pipeline_source?: 'backend' | 'llm_direct' | 'fallback';
   response_type?: 'data_analysis' | 'advisory' | 'explanation' | 'report' | 'hybrid' | 'greeting' | 'error' | 'out_of_scope';
@@ -175,7 +190,7 @@ export interface ComponentHealth {
   status: 'OPERATIVO' | 'DEGRADADO' | 'CRITICO' | 'ERROR';
   latency_ms: number;
   message: string;
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
 }
 
 export interface SystemHealthResponse {

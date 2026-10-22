@@ -21,7 +21,7 @@
  * que es justo lo que el diseño local-first no quiere. Fijar el cliente es
  * menos invasivo y no cambia la postura de seguridad.
  */
-const API_BASE_URL = ((import.meta as any).env?.VITE_API_BASE_URL as string) || 'http://127.0.0.1:8000/api/v1';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) || 'http://127.0.0.1:8000/api/v1';
 const TOKEN_KEY = 'datia_auth_token:v1';
 let inMemoryToken: string | null = null;
 
@@ -55,16 +55,42 @@ export const getAuthToken = (): string | null => {
   return inMemoryToken;
 };
 
+/**
+ * Revoca la sesión en el servidor y borra el token local.
+ *
+ * El orden importa: se captura el token ANTES de borrarlo. No se espera la
+ * respuesta — el usuario ya cerró sesión y la UI no debe quedarse colgada — pero
+ * `keepalive` permite que el request sobreviva a la navegación de salida.
+ * Si falla la red, el token local ya se borró; el peor caso es el de antes (el
+ * JWT vive hasta expirar), no uno nuevo.
+ */
+export const revokeCurrentSession = (): void => {
+  const token = getAuthToken();
+  setAuthToken(null);
+  if (!token) return;
+  try {
+    void fetch(`${API_BASE_URL}/auth/logout`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      keepalive: true,
+    }).catch(() => {
+      // Best-effort: la sesión local ya está cerrada.
+    });
+  } catch {
+    // `fetch` puede lanzar de forma síncrona en entornos sin red.
+  }
+};
+
 // `get_current_user` responde 403 con este detalle mientras `must_change_password`
 // sigue en True. No es un error de permisos: es una instruccion accionable, y sin
 // esto la app la muestra como "error generico" y el usuario no tiene por donde
 // cambiar la clave. El evento lo escucha AuthContext y abre el formulario forzado.
 export const PASSWORD_CHANGE_PENDING_EVENT = 'datia:password-change-pending';
 
-const isPasswordChangePending = (status: number, data: any): boolean =>
-  status === 403 &&
-  typeof data?.detail === 'string' &&
-  data.detail.includes('/auth/change-password');
+const isPasswordChangePending = (status: number, data: unknown): boolean => {
+  const detail = (data as { detail?: unknown } | null)?.detail;
+  return status === 403 && typeof detail === 'string' && detail.includes('/auth/change-password');
+};
 
 /**
  * Convierte `detail` de FastAPI en un string.
@@ -87,7 +113,10 @@ const detailToMessage = (detail: unknown, statusText: string): string => {
   if (typeof detail === 'string' && detail.length > 0) return detail;
   if (Array.isArray(detail)) {
     const parts = detail
-      .map((d: any) => (typeof d?.msg === 'string' ? d.msg : null))
+      .map((d: unknown) => {
+        const msg = (d as { msg?: unknown } | null)?.msg;
+        return typeof msg === 'string' ? msg : null;
+      })
       .filter((m: string | null): m is string => Boolean(m));
     if (parts.length > 0) return parts.join('; ');
   }
@@ -120,15 +149,19 @@ export const getApiErrorMessage = (
 };
 
 interface RequestConfig {
-  params?: Record<string, any>;
+  params?: Record<string, unknown>;
   headers?: Record<string, string>;
   responseType?: string;
   signal?: AbortSignal;
 }
 
+interface ApiError extends Error {
+  response?: { status: number; data: unknown };
+}
+
 export interface SseEvent {
   event: string;
-  data: any;
+  data: Record<string, unknown>;
 }
 
 /**
@@ -159,7 +192,7 @@ export const parseSseEvent = (raw: string): SseEvent | null => {
   }
 };
 
-async function request<T = any>(path: string, options: RequestInit & RequestConfig = {}): Promise<{ data: T }> {
+async function request<T = unknown>(path: string, options: RequestInit & RequestConfig = {}): Promise<{ data: T }> {
   let url = path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
   if (options.params) {
     const searchParams = new URLSearchParams();
@@ -196,12 +229,13 @@ async function request<T = any>(path: string, options: RequestInit & RequestConf
   });
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+    const errorData: Record<string, unknown> = await response.json().catch(() => ({ detail: response.statusText }));
     if (isPasswordChangePending(response.status, errorData)) {
       window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_PENDING_EVENT));
     }
-    errorData.detail = detailToMessage(errorData.detail, response.statusText);
-    const error: any = new Error(errorData.detail);
+    const message = detailToMessage(errorData.detail, response.statusText);
+    errorData.detail = message;
+    const error = new Error(message) as ApiError;
     error.response = { status: response.status, data: errorData };
     throw error;
   }
@@ -217,7 +251,7 @@ async function request<T = any>(path: string, options: RequestInit & RequestConf
 }
 
 export const apiClient = {
-  get: <T = any>(url: string, config?: RequestConfig) =>
+  get: <T = unknown>(url: string, config?: RequestConfig) =>
     request<T>(url, { method: 'GET', ...config }),
 
   /**
@@ -230,7 +264,7 @@ export const apiClient = {
    * Reusa el token y el header `Authorization` del resto de la API: el JWT va
    * en la cabecera, nunca en la URL.
    */
-  rawStream: async (path: string, body: any, signal?: AbortSignal): Promise<Response> => {
+  rawStream: async (path: string, body: unknown, signal?: AbortSignal): Promise<Response> => {
     const url = path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
     const token = getAuthToken();
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -244,36 +278,37 @@ export const apiClient = {
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+      const errorData: Record<string, unknown> = await response.json().catch(() => ({ detail: response.statusText }));
       if (isPasswordChangePending(response.status, errorData)) {
         window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_PENDING_EVENT));
       }
-      errorData.detail = detailToMessage(errorData.detail, response.statusText);
-      const error: any = new Error(errorData.detail);
+      const message = detailToMessage(errorData.detail, response.statusText);
+      errorData.detail = message;
+      const error = new Error(message) as ApiError;
       error.response = { status: response.status, data: errorData };
       throw error;
     }
 
     return response;
   },
-  post: <T = any>(url: string, data?: any, config?: RequestConfig) =>
+  post: <T = unknown>(url: string, data?: unknown, config?: RequestConfig) =>
     request<T>(url, {
       method: 'POST',
       body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
       ...config,
     }),
-  put: <T = any>(url: string, data?: any, config?: RequestConfig) =>
+  put: <T = unknown>(url: string, data?: unknown, config?: RequestConfig) =>
     request<T>(url, {
       method: 'PUT',
       body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
       ...config,
     }),
-  patch: <T = any>(url: string, data?: any, config?: RequestConfig) =>
+  patch: <T = unknown>(url: string, data?: unknown, config?: RequestConfig) =>
     request<T>(url, {
       method: 'PATCH',
       body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
       ...config,
     }),
-  delete: <T = any>(url: string, config?: RequestConfig) =>
+  delete: <T = unknown>(url: string, config?: RequestConfig) =>
     request<T>(url, { method: 'DELETE', ...config }),
 };

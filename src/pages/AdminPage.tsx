@@ -12,7 +12,7 @@ import { authService } from '../features/auth/services/auth_service';
 import { useAuth } from '../features/auth/context/AuthContext';
 import { useNotifications } from '../context/NotificationContext';
 import { User } from '../types';
-import { resolveRoleLabel } from '../constants';
+import { isPlatformAdmin, resolveRoleLabel } from '../constants';
 import { getApiErrorMessage } from '../shared/api/api_client';
 
 export const AdminPage: React.FC = () => {
@@ -26,7 +26,7 @@ export const AdminPage: React.FC = () => {
   const [editingConnector, setEditingConnector] = useState<CorporateConnection | null>(null);
 
   // Users State
-  const [dbUsers, setDbUsers] = useState<Array<{ id: number; name: string; username?: string; email: string; role: string; is_admin: boolean }>>([]);
+  const [dbUsers, setDbUsers] = useState<Array<{ id: number; name: string; username?: string; email: string; role: string; is_admin: boolean; is_active?: boolean }>>([]);
   // '[]' y "todavia no llego la respuesta" son cosas distintas: sin este flag
   // la tabla queda mostrando la lista anterior y el badge un numero que miente.
   const [usersLoaded, setUsersLoaded] = useState(false);
@@ -36,7 +36,7 @@ export const AdminPage: React.FC = () => {
   // monta y se espera al 403, no al reves. El resto del panel de admin ya
   // depende de endpoints admin-only (/auth/users), asi que el guard alcanza
   // para toda la ruta.
-  const isAdmin = Boolean(user?.is_admin);
+  const isAdmin = isPlatformAdmin(user);
 
   const fetchUsers = async () => {
     try {
@@ -49,6 +49,9 @@ export const AdminPage: React.FC = () => {
           email: u.email || `${u.username}@empresa.com`,
           role: resolveRoleLabel(u),
           is_admin: u.is_admin,
+          is_active: u.is_active,
+          must_change_password: u.must_change_password,
+          temp_password_expires_at: u.temp_password_expires_at,
         }))
       );
     } catch (err: any) {

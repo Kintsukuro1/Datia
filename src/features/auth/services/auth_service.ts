@@ -1,5 +1,5 @@
-import { apiClient, setAuthToken } from '../../../shared/api/api_client';
-import { User, UserSession, PasswordResetResult } from '../../../types';
+import { apiClient, revokeCurrentSession, setAuthToken } from '../../../shared/api/api_client';
+import { User, UserSession, PasswordResetResult, UserCreationResult } from '../../../types';
 
 export interface LoginResponse {
   access_token: string;
@@ -16,14 +16,10 @@ export const authService = {
     return res.data;
   },
 
-  async register(data: {
-    username: string;
-    email?: string;
-    password: string;
-    role_id?: number;
-    is_admin?: boolean;
-  }): Promise<User> {
-    const res = await apiClient.post<User>('/auth/register', data);
+  // Alta exclusiva de administrador. La clave la genera el servidor y se
+  // devuelve una sola vez; el cliente no la elige ni la reenvía.
+  async createUser(data: { username: string; email?: string }): Promise<UserCreationResult> {
+    const res = await apiClient.post<UserCreationResult>('/auth/users', data);
     return res.data;
   },
 
@@ -49,7 +45,10 @@ export const authService = {
   // Sin catch: si el servidor no confirma, el error sube. Un "Guardar Rol" que
   // escribe en localStorage y anuncia exito es exactamente el bug que se
   // elimino de la UI; con este metodo la UI tiene algo real que esperar.
-  async updateUserRole(userId: number, data: { role?: string; is_admin?: boolean }): Promise<User> {
+  async updateUserRole(
+    userId: number,
+    data: { role?: string; is_admin?: boolean; is_active?: boolean },
+  ): Promise<User> {
     const res = await apiClient.patch<User>(`/auth/users/${userId}`, data);
     return res.data;
   },
@@ -84,6 +83,6 @@ export const authService = {
   },
 
   logout() {
-    setAuthToken(null);
+    revokeCurrentSession();
   }
 };

@@ -14,7 +14,7 @@ import {
   Sun,
 } from 'lucide-react';
 import { SystemHealthPopover } from './SystemHealthPopover';
-import { NO_ROLE_LABEL, resolveRoleLabel } from '../../constants';
+import { NO_ROLE_LABEL, isPlatformAdmin, resolveRoleLabel } from '../../constants';
 import logoDatiaDark from '../../pages/Logo_datia_2.png';
 import logoDatiaLight from '../../pages/Logo_Datia_3.png';
 
@@ -159,7 +159,7 @@ export const Header: React.FC = () => {
           <span>Proyecciones</span>
         </button>
 
-        {user.is_admin && (
+        {isPlatformAdmin(user) && (
           <button
             type="button"
             aria-current={activePath === '/admin' ? 'page' : undefined}
@@ -278,7 +278,7 @@ export const Header: React.FC = () => {
                   <span>Proyecciones ML</span>
                 </button>
 
-                {user.is_admin && (
+                {isPlatformAdmin(user) && (
                   <button
                     type="button"
                     onClick={() => {

@@ -60,7 +60,7 @@ export const DEFAULT_POSTGRES_DB = 'democratizacion_metadatos';
  * El backend (`system/router.py`, `health_service.py`) tiene su propia copia en
  * Python: compartir un mapa entre los dos lenguajes no vale el costo.
  */
-export const PROVIDER_LABELS: Record<string, string> = {
+const PROVIDER_LABELS: Record<string, string> = {
   llama_cpp: 'llama.cpp',
   ollama: 'Ollama',
   openai_compatible: 'OpenAI Compatible',
@@ -108,6 +108,14 @@ export interface RoleLabelSource {
  */
 export const resolveRoleLabel = (user?: RoleLabelSource | null): string =>
   user?.role_name || (user?.is_admin ? PLATFORM_ADMIN_ROLE_NAME : NO_ROLE_LABEL);
+
+/**
+ * Misma regla que `is_admin_user` del backend: el flag o el rol de plataforma.
+ * Sin esto, una cuenta con el rol "Administrador de Plataforma" pero
+ * `is_admin=false` podia administrar por API y no veia el enlace al panel.
+ */
+export const isPlatformAdmin = (user?: RoleLabelSource | null): boolean =>
+  Boolean(user?.is_admin || user?.role_name === PLATFORM_ADMIN_ROLE_NAME);
 
 export const CORPORATE_ROLES: CorporateRoleDefinition[] = [
   {

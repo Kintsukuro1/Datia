@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveRoleLabel, getRoleBadgeStyle, CORPORATE_ROLES } from '../constants';
+import { isPlatformAdmin, resolveRoleLabel, getRoleBadgeStyle, CORPORATE_ROLES } from '../constants';
 
 describe('resolveRoleLabel: el rol que se muestra sale del catalogo o se declara ausente', () => {
   it('con rol lo devuelve tal cual, sin reescribirlo', () => {
@@ -42,6 +42,22 @@ describe('resolveRoleLabel: el rol que se muestra sale del catalogo o se declara
         expect(catalogNames.includes(label) || label === 'Sin rol asignado').toBe(true);
       }
     }
+  });
+});
+
+describe('isPlatformAdmin: misma regla que is_admin_user del backend', () => {
+  it('el flag o el rol de plataforma alcanzan', () => {
+    expect(isPlatformAdmin({ is_admin: true, role_name: null })).toBe(true);
+    expect(isPlatformAdmin({ is_admin: false, role_name: 'Administrador de Plataforma' })).toBe(true);
+  });
+
+  it('un rol corporativo comun no alcanza', () => {
+    expect(isPlatformAdmin({ is_admin: false, role_name: 'Analista de Datos & BI' })).toBe(false);
+  });
+
+  it('sin usuario no hay privilegios', () => {
+    expect(isPlatformAdmin(undefined)).toBe(false);
+    expect(isPlatformAdmin(null)).toBe(false);
   });
 });
 

@@ -10,12 +10,11 @@ interface AuthContextType {
   isLoading: boolean;
   error: string | null;
   login: (username: string, password: string) => Promise<void>;
-  register: (username: string, email: string, password: string) => Promise<void>;
 
   logout: () => void;
   updateSettings: (newSettings: Partial<AppSettings>) => boolean;
   clearError: () => void;
-  /** Limpia `must_change_password` en el estado tras un cambio confirmado. */
+  /** Limpia el flag y la temporal tras un cambio confirmado. */
   completePasswordChange: () => void;
 }
 
@@ -97,21 +96,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
-  const register = useCallback(async (username: string, email: string, password: string) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      await authService.register({ username, email, password });
-      await login(username, password);
-    } catch (err: any) {
-      const msg = getApiErrorMessage(err, 'Error en el registro. Intenta con otro usuario o correo.');
-      setError(msg);
-      throw new Error(msg);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [login]);
-
   // RETIRADO: `loginDemo` fabricaba una sesion local con is_admin:true y la guardaba
   // en localStorage sin.token. LoginPage lo llamaba cuando el login real fallaba, de
   // modo que un password incorrecto, una cuenta bloqueada o el backend caido
@@ -137,11 +121,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const clearError = useCallback(() => setError(null), []);
 
   const handlePasswordChangeSuccess = useCallback(() => {
-    setUser((prev) => (prev ? { ...prev, must_change_password: false } : null));
+    setUser((prev) => (
+      prev
+        ? {
+            ...prev,
+            must_change_password: false,
+            temp_password_issued_at: null,
+            temp_password_expires_at: null,
+          }
+        : null
+    ));
     try {
       const saved = loadPersistedUser();
       if (saved) {
-        localStorage.setItem(USER_KEY, JSON.stringify({ ...saved, must_change_password: false }));
+        localStorage.setItem(USER_KEY, JSON.stringify({
+          ...saved,
+          must_change_password: false,
+          temp_password_issued_at: null,
+          temp_password_expires_at: null,
+        }));
       }
     } catch { /* ignore storage errors */ }
   }, []);
@@ -165,7 +163,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isLoading,
       error,
       login,
-      register,
       logout,
       updateSettings,
       clearError,
@@ -177,7 +174,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isLoading,
       error,
       login,
-      register,
       logout,
       updateSettings,
       clearError,

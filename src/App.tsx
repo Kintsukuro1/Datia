@@ -4,7 +4,7 @@ import { AuthProvider } from './features/auth/context/AuthContext';
 import { NotificationProvider } from './context/NotificationContext';
 import { AppRouter } from './app/router/AppRouter';
 
-export function App() {
+function App() {
   return (
     <NotificationProvider>
       <SettingsProvider>

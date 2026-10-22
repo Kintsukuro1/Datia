@@ -1,9 +1,11 @@
 import React, { Suspense, lazy } from 'react';
 import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../features/auth/context/AuthContext';
+import { hasPendingPasswordChange } from '../../features/auth/temp_password';
 import { Header } from '../../shared/layout/Header';
 import { ToastContainer } from '../../components/shared/ToastContainer';
 import { MandatoryPasswordChangeModal } from '../../components/auth/MandatoryPasswordChangeModal';
+import { TemporaryPasswordBanner } from '../../components/auth/TemporaryPasswordBanner';
 import { LoginPage } from '../../pages/LoginPage';
 import { ChatEngineProvider } from '../../features/chat/hooks/useChatEngine';
 
@@ -56,13 +58,14 @@ const ProtectedLayout: React.FC<{ children: React.ReactNode }> = ({ children }) 
   // vez de un condicional en cada una. El logout sigue disponible: lo tiene el
   // propio modal ("Salir de mi cuenta"), que en esta ruta es la pantalla
   // completa, asi que el overlay ya no tapa nada.
-  if (user.must_change_password) {
+  if (hasPendingPasswordChange(user)) {
     return <Navigate to="/change-password" replace />;
   }
 
   return (
     <div className="flex flex-col h-screen bg-[var(--app-bg)] text-[var(--app-text)] overflow-hidden font-sans">
       <Header />
+      <TemporaryPasswordBanner />
       <main className="flex-1 overflow-hidden relative flex flex-col min-h-0">
         <ChatEngineProvider>{children}</ChatEngineProvider>
       </main>
@@ -94,7 +97,7 @@ const MandatoryPasswordChangeRoute: React.FC = () => {
   }
 
   // Ya no hay clave pendiente (el backend la limpio): la pantalla era temporal.
-  if (!user.must_change_password) {
+  if (!hasPendingPasswordChange(user)) {
     return <Navigate to="/chat" replace />;
   }
 
@@ -123,7 +126,7 @@ export const AppRouter: React.FC = () => {
             // Con clave pendiente el login no es la pantalla: mandar al chat
             // seria mandar a ProtectedLayout, que redirige igual, pero con un
             // salto visible.
-            <Navigate to={user.must_change_password ? '/change-password' : '/chat'} replace />
+            <Navigate to={hasPendingPasswordChange(user) ? '/change-password' : '/chat'} replace />
           ) : (
             <>
               <LoginPage />
@@ -178,7 +181,7 @@ export const AppRouter: React.FC = () => {
               to={
                 !user
                   ? "/login"
-                  : user.must_change_password
+                  : hasPendingPasswordChange(user)
                     ? "/change-password"
                     : "/chat"
               }

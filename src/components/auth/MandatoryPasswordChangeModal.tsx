@@ -10,6 +10,7 @@ import {
   Lock,
   LogOut,
   ShieldCheck,
+  X,
 } from 'lucide-react';
 import { authService } from '../../features/auth/services/auth_service';
 import { getApiErrorMessage } from '../../shared/api/api_client';
@@ -19,6 +20,8 @@ interface MandatoryPasswordChangeModalProps {
   isOpen: boolean;
   onSuccess: () => void;
   onCancel?: () => void;
+  /** `true` cuando el usuario entra desde la advertencia, no por un bloqueo. */
+  voluntary?: boolean;
 }
 
 // Regla dura única del backend: `backend/app/modules/auth/schemas.py`
@@ -68,6 +71,7 @@ export const MandatoryPasswordChangeModal: React.FC<MandatoryPasswordChangeModal
   isOpen,
   onSuccess,
   onCancel,
+  voluntary = false,
 }) => {
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -128,7 +132,7 @@ export const MandatoryPasswordChangeModal: React.FC<MandatoryPasswordChangeModal
       ref={modalRef}
       role="dialog"
       aria-modal="true"
-      aria-label="Cambio de contraseña obligatorio"
+      aria-label={voluntary ? 'Cambio de contraseña' : 'Cambio de contraseña obligatorio'}
       tabIndex={-1}
       className="animate-fadeIn fixed inset-0 z-[100] overflow-y-auto bg-app-bg"
     >
@@ -147,9 +151,13 @@ export const MandatoryPasswordChangeModal: React.FC<MandatoryPasswordChangeModal
                 <KeyRound className="h-5 w-5" />
               </div>
               <div className="space-y-1">
-                <h1 className="text-lg font-bold tracking-tight">Cambio de contraseña obligatorio</h1>
+                <h1 className="text-lg font-bold tracking-tight">
+                  {voluntary ? 'Cambiar contraseña' : 'Cambio de contraseña obligatorio'}
+                </h1>
                 <p className="text-xs leading-relaxed text-app-muted">
-                  Tu clave es temporal o un administrador solicitó el cambio. Definí una nueva para continuar en la plataforma.
+                  {voluntary
+                    ? 'Estás usando una contraseña temporal. Definí una nueva cuando quieras; si no lo hacés, el sistema te la exigirá al vencer.'
+                    : 'Tu clave es temporal o un administrador solicitó el cambio. Definí una nueva para continuar en la plataforma.'}
                 </p>
               </div>
             </div>
@@ -331,8 +339,8 @@ export const MandatoryPasswordChangeModal: React.FC<MandatoryPasswordChangeModal
                     onClick={onCancel}
                     className="flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-app-border bg-app-bg text-xs font-medium text-app-muted transition-colors hover:bg-app-hover hover:text-app-text"
                   >
-                    <LogOut className="h-3.5 w-3.5" />
-                    <span>Salir de mi cuenta</span>
+                    {voluntary ? <X className="h-3.5 w-3.5" /> : <LogOut className="h-3.5 w-3.5" />}
+                    <span>{voluntary ? 'Cancelar' : 'Salir de mi cuenta'}</span>
                   </button>
                 )}
               </div>

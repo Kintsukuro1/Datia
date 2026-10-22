@@ -10,13 +10,10 @@ import {
   Headset,
   Loader2,
   Lock,
-  LogIn,
-  Mail,
   Network,
   ShieldCheck,
   Sparkles,
   User,
-  UserPlus,
   Users,
 } from 'lucide-react';
 import { CORPORATE_ROLES } from '../constants';
@@ -72,14 +69,11 @@ const DEMO_PROFILES = DEMO_MODE
 const PERFIL_INICIAL = DEMO_PROFILES[0]?.username ?? '';
 
 export const LoginPage: React.FC = () => {
-  const { login, register, error, clearError } = useAuth();
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const { login, error, clearError } = useAuth();
 
   // Form Fields
   const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -88,8 +82,7 @@ export const LoginPage: React.FC = () => {
   // campo. Si compartieran estado, teclear un usuario cerrando en el perfil
   // "Administrador" pondria las credenciales de otro sin que nadie lo pidiera.
   const [perfilDemo, setPerfilDemo] = useState<string>(PERFIL_INICIAL);
-  // One toggle for both password fields on purpose: confirming a password means
-  // comparing the two, which needs them visible at the same time.
+  // Un solo toggle para el campo: ya no hay confirmación que comparar.
   const [showPasswords, setShowPasswords] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -102,24 +95,9 @@ export const LoginPage: React.FC = () => {
       return;
     }
 
-    if (mode === 'register') {
-      if (password !== confirmPassword) {
-        setLocalError('Las contraseñas no coinciden.');
-        return;
-      }
-      if (password.length < 6) {
-        setLocalError('La contraseña debe tener al menos 6 caracteres.');
-        return;
-      }
-    }
-
     setIsSubmitting(true);
     try {
-      if (mode === 'login') {
-        await login(username, password);
-      } else {
-        await register(username, email, password);
-      }
+      await login(username, password);
     } catch (err: any) {
       setLocalError(err.message || 'Credenciales inválidas. Verifica tu usuario y contraseña.');
     } finally {
@@ -236,46 +214,14 @@ export const LoginPage: React.FC = () => {
           {/* COLUMNA DERECHA: acceso */}
           <div className="flex flex-col items-center justify-center gap-5 bg-app-bg p-6 lg:w-[45%] lg:p-12">
             <div className="glass-panel w-full max-w-[420px] space-y-5 rounded-2xl border border-app-border p-6 shadow-xl lg:p-8">
-              {/* Mode Switcher Tabs */}
-              <div className="flex rounded-xl border border-app-border bg-app-bg/80 p-1">
-                <button
-                  type="button"
-                  onClick={() => { setMode('login'); setLocalError(null); clearError(); }}
-                  className={`flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors ${
-                    mode === 'login'
-                      ? 'bg-brand-600 text-white shadow-md shadow-brand-600/30'
-                      : 'text-app-muted hover:text-app-text'
-                  }`}
-                >
-                  <LogIn className="h-3.5 w-3.5" />
-                  <span>Iniciar sesión</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setMode('register'); setLocalError(null); clearError(); }}
-                  className={`flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors ${
-                    mode === 'register'
-                      ? 'bg-brand-600 text-white shadow-md shadow-brand-600/30'
-                      : 'text-app-muted hover:text-app-text'
-                  }`}
-                >
-                  <UserPlus className="h-3.5 w-3.5" />
-                  <span>Registrarse</span>
-                </button>
-              </div>
-
               {/* Encabezado de la tarjeta */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-xl font-bold tracking-tight">
-                    {mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
-                  </h2>
+                  <h2 className="text-xl font-bold tracking-tight">Iniciar sesión</h2>
                   <ShieldCheck className="h-5 w-5 text-brand-400" />
                 </div>
                 <p className="text-xs text-app-muted">
-                  {mode === 'login'
-                    ? 'Ingresá tus credenciales corporativas autorizadas.'
-                    : 'Completá tus datos para crear tu cuenta.'}
+                  Ingresá tus credenciales corporativas autorizadas.
                 </p>
               </div>
 
@@ -305,24 +251,6 @@ export const LoginPage: React.FC = () => {
                   </div>
                 </div>
 
-                {mode === 'register' && (
-                  <div className="animate-fadeIn space-y-1.5">
-                    <label htmlFor="login-email-input" className="block text-xs font-medium text-app-muted">Correo Electrónico</label>
-                    <div className="relative">
-                      <input
-                        id="login-email-input"
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        placeholder="usuario@empresa.com"
-                        required
-                        className="h-11 w-full rounded-xl border border-app-border bg-app-bg pl-10 pr-3 text-sm text-app-text placeholder-gray-500 transition-colors focus:border-brand-500 focus:outline-none"
-                      />
-                      <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
-                    </div>
-                  </div>
-                )}
-
                 <div className="space-y-1.5">
                   <label htmlFor="login-password-input" className="block text-xs font-medium text-app-muted">Contraseña</label>
                   <div className="relative">
@@ -330,7 +258,7 @@ export const LoginPage: React.FC = () => {
                       id="login-password-input"
                       name="password"
                       type={showPasswords ? 'text' : 'password'}
-                      autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                      autoComplete="current-password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="••••••••"
@@ -341,33 +269,13 @@ export const LoginPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setShowPasswords((v) => !v)}
-                      aria-label={showPasswords ? 'Ocultar contraseñas' : 'Mostrar contraseñas'}
+                      aria-label={showPasswords ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                       className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-app-muted transition-colors hover:bg-app-hover hover:text-app-text"
                     >
                       {showPasswords ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
                   </div>
                 </div>
-
-                {mode === 'register' && (
-                  <div className="animate-fadeIn space-y-1.5">
-                    <label htmlFor="login-confirm-password-input" className="block text-xs font-medium text-app-muted">Confirmar Contraseña</label>
-                    <div className="relative">
-                      <input
-                        id="login-confirm-password-input"
-                        name="confirmPassword"
-                        type={showPasswords ? 'text' : 'password'}
-                        autoComplete="new-password"
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        placeholder="••••••••"
-                        required
-                        className="h-11 w-full rounded-xl border border-app-border bg-app-bg pl-10 pr-11 text-sm text-app-text placeholder-gray-500 transition-colors focus:border-brand-500 focus:outline-none"
-                      />
-                      <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
-                    </div>
-                  </div>
-                )}
 
                 <button
                   type="submit"
@@ -377,11 +285,11 @@ export const LoginPage: React.FC = () => {
                   {isSubmitting ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      <span>{mode === 'login' ? 'Ingresando…' : 'Creando cuenta…'}</span>
+                      <span>Ingresando…</span>
                     </>
                   ) : (
                     <>
-                      <span>{mode === 'login' ? 'Ingresar' : 'Crear cuenta'}</span>
+                      <span>Ingresar</span>
                       <ArrowRight className="h-4 w-4" />
                     </>
                   )}
