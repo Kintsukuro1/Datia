@@ -43,7 +43,7 @@ vi.mock('../features/chat/hooks/useChatEngine', () => ({
   }),
 }));
 
-vi.mock('echarts-for-react', async () => {
+vi.mock('echarts-for-react/lib/core', async () => {
   const react = await import('react');
   return {
     default: () =>

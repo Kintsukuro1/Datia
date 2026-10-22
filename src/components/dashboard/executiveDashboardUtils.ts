@@ -1,4 +1,4 @@
-import { ChartType, THEME_COLORS, computeChartStats, deriveProcessedRows, formatMetricNumber } from '../../features/dashboard/components/charts/theme';
+import { ChartType, THEME_COLORS } from '../../features/dashboard/components/charts/theme';
 import { buildBarChartOption } from '../../features/dashboard/components/charts/barChartConfig';
 import { buildPieChartOption } from '../../features/dashboard/components/charts/pieChartConfig';
 import { buildLineChartOption } from '../../features/dashboard/components/charts/lineChartConfig';
@@ -6,12 +6,8 @@ import { buildExtraChartOption } from '../../features/dashboard/components/chart
 
 export {
   THEME_COLORS,
-  computeChartStats,
   deriveProcessedRows,
-  formatMetricNumber,
   type ChartType,
-  type ColorTheme,
-  type ChartStats,
 } from '../../features/dashboard/components/charts/theme';
 
 export function buildDynamicChartOption(params: {

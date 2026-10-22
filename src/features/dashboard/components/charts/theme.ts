@@ -95,7 +95,7 @@ export const BASE_TOOLTIP = {
  *
  * `BASE_TOOLTIP` de abajo es la cascara de ECharts; esto es lo que va DENTRO.
  */
-export const TOOLTIP_CSS = {
+const TOOLTIP_CSS = {
   // `Inter` estaba aqui desde antes, pero NUNCA se aplico: `index.html` solo
   // descarga "Plus Jakarta Sans" y `tailwind.config.js` deja `Inter` como
   // segundo de una pila donde nunca llega a usarse, asi que el navegador caia a
@@ -115,7 +115,7 @@ export const TOOLTIP_CSS = {
   dotSize: '8px',
 } as const;
 
-export function buildTooltipHtml(
+function buildTooltipHtml(
   name: string,
   valueText: string,
   valueShareText: string,

@@ -2,13 +2,13 @@ import React from 'react';
 import { Copy, Check } from 'lucide-react';
 import { useCopyFeedback } from '../../../../hooks/useCopyFeedback';
 
-export interface TableData {
+interface TableData {
   headers: string[];
   alignments: ('left' | 'center' | 'right')[];
   rows: string[][];
 }
 
-export interface MarkdownSection {
+interface MarkdownSection {
   id: string;
   type: 'h2' | 'h3' | 'callout' | 'bullet' | 'paragraph' | 'table';
   content: string;
@@ -46,7 +46,7 @@ const parseAlignments = (line: string): ('left' | 'center' | 'right')[] => {
   });
 };
 
-export const parseMarkdownContent = (text: string) => {
+const parseMarkdownContent = (text: string) => {
   const lines = text.split('\n');
   const sections: MarkdownSection[] = [];
 
@@ -153,7 +153,7 @@ const GLOSSARY_DICT: Record<string, string> = {
   arpu: 'Average Revenue Per User: Ingreso promedio generado por cada usuario activo.',
 };
 
-export const formatInlineMarkdown = (text: string, keyPrefix: string = 'inline') => {
+const formatInlineMarkdown = (text: string, keyPrefix: string = 'inline') => {
   const rawParts = text.split(/(\*\*.*?\*\*|`.*?`|\[OPORTUNIDAD\]|\[RIESGO\]|\[ESTABLE\])/gi);
   let counter = 0;
   const parts = rawParts.map((content) => {

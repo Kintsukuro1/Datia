@@ -1,5 +1,6 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
-import ReactECharts from 'echarts-for-react';
+import ReactEChartsCore from 'echarts-for-react/lib/core';
+import echarts from '../../../shared/echarts';
 import { QueryResult } from '../../../types';
 import { THEME_COLORS, ColorTheme, ChartType, prefersReducedMotion } from './charts/theme';
 import { buildDynamicChartOption, deriveProcessedRows } from '../../../components/dashboard/executiveDashboardUtils';
@@ -364,7 +365,8 @@ export const ChartSection: React.FC<ChartSectionProps> = ({
 
       {/* ECharts Canvas with Click Event Listener */}
       <div className="w-full h-80 sm:h-96">
-        <ReactECharts
+        <ReactEChartsCore
+          echarts={echarts}
           option={finalOption}
           style={{ height: '100%', width: '100%' }}
           notMerge={true}

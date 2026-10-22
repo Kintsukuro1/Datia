@@ -100,7 +100,7 @@ async captureChartAsBase64(scope?: ParentNode | null): Promise<string | undefine
       include_raw_data: options.include_raw_data ?? true,
     };
 
-    const res = await apiClient.post('/reports/export/pdf', payload, {
+    const res = await apiClient.post<Blob>('/reports/export/pdf', payload, {
       responseType: 'blob',
     });
 
@@ -125,7 +125,7 @@ async captureChartAsBase64(scope?: ParentNode | null): Promise<string | undefine
       include_raw_data: options?.include_raw_data ?? true,
     };
 
-    const res = await apiClient.post('/reports/export/excel', payload, {
+    const res = await apiClient.post<Blob>('/reports/export/excel', payload, {
       responseType: 'blob',
     });
 

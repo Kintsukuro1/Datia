@@ -30,7 +30,7 @@ export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceabili
     <div ref={modalRef} role="dialog" aria-modal="true" aria-label="Panel de trazabilidad y auditoría" tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-sm animate-fadeIn">
       <div className="glass-panel w-full max-w-3xl rounded-2xl sm:rounded-3xl border border-white/10 shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
         {/* Header */}
-        <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-dark-border flex items-center justify-between bg-dark-surface/80">
+        <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-app-border flex items-center justify-between bg-app-surface/80">
           <div className="flex items-center space-x-3">
             <div className="p-2 rounded-xl bg-brand-500/10 text-brand-400 border border-brand-500/20 shrink-0">
               <ShieldCheck className="w-5 h-5" />
@@ -43,7 +43,7 @@ export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceabili
           <button
             onClick={onClose}
             aria-label="Cerrar modal de trazabilidad"
-            className="text-gray-400 hover:text-app-text p-1.5 rounded-lg hover:bg-dark-card transition-colors"
+            className="text-gray-400 hover:text-app-text p-1.5 rounded-lg hover:bg-app-card transition-colors"
           >
             ✕
           </button>
@@ -53,7 +53,7 @@ export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceabili
         <div className="p-4 sm:p-6 overflow-y-auto space-y-4 sm:space-y-6">
           {/* Status Bar Badges */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
-            <div className="bg-dark-base/60 p-2.5 sm:p-3 rounded-xl border border-dark-border flex items-center space-x-2.5 sm:space-x-3">
+            <div className="bg-app-bg/60 p-2.5 sm:p-3 rounded-xl border border-app-border flex items-center space-x-2.5 sm:space-x-3">
               <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400 shrink-0" />
               <div className="truncate">
                 <div className="text-[9px] sm:text-[10px] text-gray-400 uppercase">Validación AST</div>
@@ -61,7 +61,7 @@ export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceabili
               </div>
             </div>
 
-            <div className="bg-dark-base/60 p-2.5 sm:p-3 rounded-xl border border-dark-border flex items-center space-x-2.5 sm:space-x-3">
+            <div className="bg-app-bg/60 p-2.5 sm:p-3 rounded-xl border border-app-border flex items-center space-x-2.5 sm:space-x-3">
               <Clock className="w-4 h-4 sm:w-5 sm:h-5 text-brand-400 shrink-0" />
               <div className="truncate">
                 <div className="text-[9px] sm:text-[10px] text-gray-400 uppercase">Latencia BD</div>
@@ -69,7 +69,7 @@ export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceabili
               </div>
             </div>
 
-            <div className="bg-dark-base/60 p-2.5 sm:p-3 rounded-xl border border-dark-border flex items-center space-x-2.5 sm:space-x-3">
+            <div className="bg-app-bg/60 p-2.5 sm:p-3 rounded-xl border border-app-border flex items-center space-x-2.5 sm:space-x-3">
               <Database className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-400 shrink-0" />
               <div className="truncate">
                 <div className="text-[9px] sm:text-[10px] text-gray-400 uppercase">Filas Devueltas</div>
@@ -77,7 +77,7 @@ export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceabili
               </div>
             </div>
 
-            <div className="bg-dark-base/60 p-2.5 sm:p-3 rounded-xl border border-dark-border flex items-center space-x-2.5 sm:space-x-3">
+            <div className="bg-app-bg/60 p-2.5 sm:p-3 rounded-xl border border-app-border flex items-center space-x-2.5 sm:space-x-3">
               <Layers className="w-4 h-4 sm:w-5 sm:h-5 text-purple-400 shrink-0" />
               <div className="truncate">
                 <div className="text-[9px] sm:text-[10px] text-gray-400 uppercase">Tablas Usadas</div>
@@ -87,7 +87,7 @@ export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceabili
           </div>
 
           {/* Explanation */}
-          <div className="bg-dark-card/40 p-4 rounded-xl border border-dark-border space-y-2">
+          <div className="bg-app-card/40 p-4 rounded-xl border border-app-border space-y-2">
             <div className="flex items-center space-x-2 text-xs font-semibold text-gray-300">
               <Info className="w-4 h-4 text-brand-400" />
               <span>Metodología de Cálculo & Diccionario de Datos</span>
@@ -110,18 +110,18 @@ export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceabili
                 <span>{copied ? 'Copiado' : 'Copiar SQL'}</span>
               </button>
             </div>
-            <pre className="bg-dark-base p-4 rounded-xl border border-dark-border font-mono text-xs text-emerald-400 overflow-x-auto whitespace-pre-wrap">
+            <pre className="bg-app-bg p-4 rounded-xl border border-app-border font-mono text-xs text-emerald-400 overflow-x-auto whitespace-pre-wrap">
               {traceability.sql_executed}
             </pre>
           </div>
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 border-t border-dark-border bg-dark-surface/60 flex items-center justify-between text-xs text-gray-400">
+        <div className="px-6 py-3 border-t border-app-border bg-app-surface/60 flex items-center justify-between text-xs text-gray-400">
           <span>Gobernanza RBAC: Inyección de esquema dinámico y filtro AST activo</span>
           <button
             onClick={onClose}
-            className="px-4 py-1.5 rounded-lg bg-dark-card hover:bg-dark-border text-app-text text-xs font-medium transition-colors"
+            className="px-4 py-1.5 rounded-lg bg-app-card hover:bg-app-border text-app-text text-xs font-medium transition-colors"
           >
             Cerrar
           </button>

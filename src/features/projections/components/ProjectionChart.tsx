@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
-import ReactECharts from 'echarts-for-react';
+import ReactEChartsCore from 'echarts-for-react/lib/core';
+import echarts from '../../../shared/echarts';
 import {
   BASE_TOOLTIP,
   CHART_FONT_FAMILY,
@@ -210,7 +211,8 @@ function buildOption(result: ProjectionResult) {
 export const ProjectionChart: React.FC<{ result: ProjectionResult }> = ({ result }) => {
   const option = useMemo(() => buildOption(result), [result]);
   return (
-    <ReactECharts
+    <ReactEChartsCore
+      echarts={echarts}
       option={option}
       style={{ height: 320, width: '100%' }}
       opts={{ renderer: 'canvas' }}

@@ -10,7 +10,7 @@ import { apiClient } from '../../../shared/api/api_client';
  * muestran "—" y "sin evidencia" a partir del `null`, nunca un cero.
  */
 
-export interface ProjectionStep {
+interface ProjectionStep {
   step: number;
   period: string | null;
   point: number | null;

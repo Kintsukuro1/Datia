@@ -4,9 +4,9 @@ import { SystemHealthResponse } from '../types';
 import { useNotifications } from '../context/NotificationContext';
 import { useAuth } from '../features/auth/context/AuthContext';
 
-export const DEFAULT_POLLING_INTERVAL_MS = 60000;
+const DEFAULT_POLLING_INTERVAL_MS = 60000;
 
-export type SystemHealthStatus = 'OPERATIVO' | 'DEGRADADO' | 'CRITICO' | 'DESCONOCIDO';
+type SystemHealthStatus = 'OPERATIVO' | 'DEGRADADO' | 'CRITICO' | 'DESCONOCIDO';
 
 export const useSystemHealth = (pollingIntervalMs: number = DEFAULT_POLLING_INTERVAL_MS) => {
   const [healthData, setHealthData] = useState<SystemHealthResponse | null>(null);

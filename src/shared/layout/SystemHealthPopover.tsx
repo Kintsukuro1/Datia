@@ -65,7 +65,8 @@ export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
           label: 'Sistema Degradado',
         };
       case 'OPERATIVO': {
-        const provLabel = getProviderLabel(details?.llm_engine?.details?.provider);
+        const provider = details?.llm_engine?.details?.provider;
+        const provLabel = getProviderLabel(typeof provider === 'string' ? provider : undefined);
         return {
           bg: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25',
           icon: <Wifi className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />,
