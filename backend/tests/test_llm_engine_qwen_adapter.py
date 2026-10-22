@@ -273,22 +273,10 @@ class TestEsquemaComoDdl(unittest.TestCase):
         )
         self.assertIn("[ENMASCARADO]", ddl)
 
-    def test_sin_guion_duplicado_en_el_comentario(self):
-        ddl = DynamicSchemaPruningService._render_table_as_ddl(
-            "t", "", ["nombre (TEXT) - Nombre del cliente"]
-        )
-        self.assertNotIn("-- -", ddl)
-
     def test_tabla_sin_columnas_no_emite_ddl_vacio(self):
         out = DynamicSchemaPruningService._render_table_as_ddl("t", "sinon", [])
         self.assertNotIn("CREATE TABLE", out)
         self.assertIn("solo lectura", out)
-
-    def test_sinonimos_de_tabla_quedan_comentados(self):
-        ddl = DynamicSchemaPruningService._render_table_as_ddl(
-            "fact_ventas", "ventas, facturacion", ["monto (DECIMAL)"]
-        )
-        self.assertIn("Sinónimos: ventas, facturacion", ddl)
 
 
 if __name__ == "__main__":

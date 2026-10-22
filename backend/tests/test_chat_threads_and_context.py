@@ -151,16 +151,22 @@ def test_shared_chat_thread_and_golden_query(auth_headers):
         "title": "Reporte Compartido de Pruebas",
         "connection_id": 1,
         "is_shared": True,
-        "results": [{"id": "r1", "question": "test share", "summary_text": "ok"}]
+        "results": [{
+            "id": "r1",
+            "question": "test share",
+            "summary_text": "ok",
+            "traceability": {"sql_executed": "SELECT 1 AS ok"},
+        }]
     }
     res = client.post("/api/v1/chat/threads", json=thread_payload, headers=auth_headers)
     assert res.status_code == 200
 
-    # 2. Access via shared endpoint
+    # 2. Access via shared endpoint. La vista compartida regenera la tabla y
+    # no devuelve el titulo/pregunta libres del dueño.
     res_shared = client.get("/api/v1/chat/threads/shared/thread-shared-xyz", headers=auth_headers)
     assert res_shared.status_code == 200
     assert res_shared.json()["id"] == "thread-shared-xyz"
-    assert res_shared.json()["title"] == "Reporte Compartido de Pruebas"
+    assert res_shared.json()["title"] == "Hilo compartido"
 
     # 3. Test Golden Query toggle.
     # Este endpoint escribe la memoria COMPARTIDA de la conexion (no tiene

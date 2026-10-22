@@ -1,9 +1,8 @@
 import asyncio
 import logging
-import datetime
 import json
 import time
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Set
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -18,6 +17,7 @@ from app.api.deps import (
     _persist_audit_log, require_assigned_role as _require_assigned_role,
 )
 from app.core.database import SessionLocal
+from app.core.time import utcnow_naive
 from app.modules.catalog.services.schema_inspector import SchemaInspector
 from app.modules.auth.models import User
 from app.modules.telemetry_audit.models import AuditLog
@@ -34,11 +34,17 @@ from app.modules.chat_engine.schemas import (
 )
 from app.modules.chat_engine import forecast_service
 from app.modules.chat_engine.engine import QueryEngine
-from app.modules.chat_engine.llm_service import LLMService, validate_llm_base_url
-from app.modules.chat_engine.llm_diagnostic_router import llm_diagnostic_router
+from app.modules.chat_engine.sql_executor import SQLExecutor
+from app.modules.chat_engine.llm_service import LLMService
+from app.modules.chat_engine.llm_diagnostic_router import (
+    llm_diagnostic_router,
+    _resolve_llm_base_url,
+)
 
 from app.core.constants import ADMIN_ROLES, ROLE_ADMINISTRADOR
 from app.core.database import discard_failed_transaction
+from app.core.security import mask_query_rows
+from app.modules.chat_engine.ast_validator import ASTValidator, ASTValidationError
 from app.modules.chat_engine.governance_guard import GovernanceGuard
 
 router = APIRouter()
@@ -70,19 +76,30 @@ def _resolve_target_database(db: Session, connection_id: int) -> str:
 
 
 def _validated_request_llm_base_url(query_in: QueryRequest) -> Optional[str]:
-    """Config LLM de Ajustes que trae la request, pasada por la allowlist anti-SSRF.
+    """Config LLM de Ajustes que trae la request, pasada por la allowlist de LOOPBACK.
 
     Una sola definicion para `/query` y `/query/stream`: el 400 sale ANTES de
     tocar el motor (en el stream, antes de abrir el stream: adentro de un
-    generador ya no hay status HTTP que devolver). El sink la valida de nuevo;
-    misma politica, dos puertas.
+    generador ya no hay status HTTP que devolver).
+
+    Por que `_resolve_llm_base_url` y no `validate_llm_base_url`
+    ------------------------------------------------------------
+    `validate_llm_base_url` (la del sink) acepta ademas RFC1918 y
+    `host.docker.internal` porque tiene que cubrir la URL CONFIGURADA POR EL
+    DESPLIEGUE (docker-compose: `OLLAMA_BASE_URL=http://host.docker.internal:11434`,
+    o un Ollama en otra maquina de la LAN). Eso es politica del operador, no del
+    usuario: aca la URL la elige cualquiera con sesion, y aceptar una IP privada
+    significa que el backend emite el POST con el prompt a un host que el usuario
+    controla (SSRF/exfiltracion). El cliente solo puede elegir el LLM de su propia
+    maquina, o sea loopback.
+
+    El sink sigue validando con su propia politica (`validate_llm_base_url`):
+    loopback pasa por ahi tambien, y la URL del servidor no cambia.
     """
     if not query_in.llm_base_url:
         return None
-    try:
-        return validate_llm_base_url(query_in.llm_base_url)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+    # Levanta HTTPException(400) sin emitir ninguna request.
+    return _resolve_llm_base_url(query_in.llm_base_url)
 
 
 def _audit_response(
@@ -293,7 +310,7 @@ async def process_chat_query_stream(
 
                 # La auditoria se persiste sobre la MISMA logica que usa
                 # `POST /chat/query`. Un stream no puede dejar de registrar lo que
-                # el usuario leyo: es el mismo dato corporativo,WER la misma
+                # el usuario leyo: es el mismo dato corporativo y la misma
                 # evidencia de compliance.
                 _audit_response(
                     db=stream_db,
@@ -685,6 +702,173 @@ async def get_dynamic_suggestions(
 # CHAT THREADS PERSISTENCE & HISTORY ENDPOINTS
 # =========================================================================
 
+_SHARED_TITLE = "Hilo compartido"
+_SHARED_QUESTION = "Resultado compartido"
+_SHARED_SUMMARY = (
+    "Vista compartida: la tabla se generó de nuevo con la matriz RBAC de tu "
+    "perfil. No se muestran gráficos, resúmenes, preguntas ni el SQL del dueño."
+)
+
+
+def _rebuild_shared_results(
+    results: List[Any],
+    *,
+    allowed_tables: Set[str],
+    blocked_columns: Set[str],
+    masked_columns: Set[str],
+    is_admin: bool,
+    connection: CorporateConnection,
+    target_database: str,
+    db: Optional[Session] = None,
+    current_user: Optional[User] = None,
+    role_name: Optional[str] = None,
+    thread_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Regenera la vista compartida desde el SQL, sin confiar en el cliente.
+
+    El dueño guarda `results` tal como los recibió (o como quiera: el POST
+    acepta JSON libre). Validar solo `traceability.sql_executed` no prueba que
+    `data_rows`, gráficos o preguntas hayan salido de ese SQL. Por eso la vista
+    compartida ignora todo el contenido del cliente y vuelve a ejecutar el SQL
+    con la matriz RBAC del lector; las filas frescas son las únicas que se
+    enmascaran y se devuelven.
+
+    Cualquier resultado sin SQL verificable se deniega: un resumen o un gráfico
+    sin trazabilidad no se puede revalidar. La respuesta es solo tabla; los
+    artefactos derivados del dueño no se sirven.
+
+    ponytail: una consulta por resultado al abrir el hilo. Si un hilo con
+    decenas de resultados vuelve lenta la vista, el siguiente paso es generar
+    un snapshot de servidor al compartir (opción B), no aflojar la regeneración.
+    """
+    rebuilt: List[Dict[str, Any]] = []
+    for result in results:
+        if not isinstance(result, dict):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "No tienes permisos para ver este hilo compartido: "
+                    "contiene un resultado en un formato que no se puede regenerar."
+                ),
+            )
+
+        traceability = result.get("traceability")
+        sql = traceability.get("sql_executed") if isinstance(traceability, dict) else None
+        if not isinstance(sql, str) or not sql.strip():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "No tienes permisos para ver este hilo compartido: "
+                    "contiene un resultado sin SQL verificable. No se sirven "
+                    "resúmenes ni gráficos sin trazabilidad."
+                ),
+            )
+
+        try:
+            _, secured_sql, metadata = ASTValidator.validate_and_secure_sql(
+                sql,
+                dialect="postgres",
+                allowed_tables=allowed_tables,
+                blocked_columns=blocked_columns,
+                is_admin=is_admin,
+            )
+        except ASTValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "No tienes permisos para ver este hilo compartido: "
+                    f"su consulta usa datos fuera de tu matriz RBAC. {exc}"
+                ),
+            ) from exc
+
+        started = time.time()
+        try:
+            rows = SQLExecutor.execute_raw_sql(connection, secured_sql, dialect="postgres")
+        except Exception as exc:
+            logger.exception(
+                "No se pudo regenerar un resultado del hilo compartido %s",
+                getattr(connection, "id", "?"),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "No se pudo regenerar la tabla del hilo compartido. "
+                    "No se muestran datos guardados sin verificación."
+                ),
+            ) from exc
+
+        if masked_columns and rows:
+            mask_query_rows(rows, masked_columns, secured_sql, dialect="postgres")
+
+        rebuilt.append({
+            "question": _SHARED_QUESTION,
+            "summary_text": _SHARED_SUMMARY,
+            "executive_report": None,
+            "kpis": [],
+            "chart_type": "none",
+            "chart_option": {},
+            "data_columns": list(rows[0].keys()) if rows else [],
+            "data_rows": rows,
+            "response_type": "data_analysis",
+            "conversational_response": None,
+            "grounding_info": None,
+            "presentation_hints": {
+                "show_executive_report": False,
+                "show_kpis": False,
+                "show_chart": False,
+                "preferred_view": "table",
+                "summary_style": "concise",
+            },
+            "suggested_questions": [],
+            "clarification_options": [],
+            "anomalies_detected": [],
+            "sql_explanation": None,
+            "nulls_detected": None,
+            "traceability": {
+                # El SQL del dueño puede contener literales con datos. La vista
+                # compartida no lo devuelve; la UI oculta el bloque si está vacío.
+                "sql_executed": "",
+                "execution_time_ms": int((time.time() - started) * 1000),
+                "rows_returned": len(rows),
+                "validation_status": "REVALIDADO",
+                "schema_tables_used": metadata.get("tables_used") or [],
+                "explanation": "Tabla regenerada con la matriz RBAC del lector.",
+                "target_database": target_database,
+            },
+            "audit_log_id": None,
+        })
+
+    # La lectura compartida regenera datos frescos y no devuelve el SQL del
+    # dueño, pero sigue siendo una consulta corporativa: sin este registro, el
+    # acceso a la tabla no dejaba huella en `audit_logs`. Se escribe una sola
+    # fila por apertura y se propaga su id a los resultados para que la UI y el
+    # export de compliance puedan enlazarla.
+    if db is not None and current_user is not None and rebuilt:
+        audit_id = _persist_audit_log(
+            db=db,
+            user_id=current_user.id,
+            username=current_user.username,
+            user_role=(
+                role_name
+                or getattr(getattr(current_user, "role", None), "name", None)
+            ),
+            question_prompt=(
+                f"Lectura de hilo compartido '{thread_id or '?'}' "
+                f"({len(rebuilt)} resultado(s) regenerado(s))."
+            ),
+            sql_generated=None,
+            validation_status="HILO_COMPARTIDO_REVALIDADO",
+            target_database=target_database,
+            rows_returned=sum(
+                len(item.get("data_rows") or []) for item in rebuilt
+            ),
+        )
+        if audit_id is not None:
+            for item in rebuilt:
+                item["audit_log_id"] = audit_id
+
+    return rebuilt
+
 @router.get("/threads", response_model=List[ChatThreadSummary])
 def list_chat_threads(
     current_user: User = Depends(get_current_user),
@@ -746,9 +930,16 @@ def get_shared_chat_thread(
     """Gets details and all QueryResult messages for a conversation thread the owner marked as shared.
 
     Solo se sirve si `is_shared` es True. Antes el endpoint filtraba unicamente por
-    id, asi que cualquier usuario autenticado que人要figurara un id podia leer los
+    id, asi que cualquier usuario autenticado que adivinara un id podia leer los
     `data_rows` corporativos de otro. Los mensajes contienen filas reales de la BD
     del cliente, no un resumen.
+
+    Compartir NO es una excepcion a la gobernanza: el SQL guardado se revalida
+    contra la matriz RBAC del LECTOR y se vuelve a ejecutar con esa misma matriz.
+    Se devuelve solo la tabla fresca: las filas, graficos, resumenes y preguntas
+    que guardo el dueño no se sirven porque no se puede probar que hayan salido
+    de ese SQL. Un hilo sin SQL verificable devuelve 403; si la regeneracion
+    falla, 503, nunca una caida a los datos guardados.
     """
     thread = db.query(ChatConversation).filter(
         ChatConversation.id == thread_id,
@@ -757,14 +948,63 @@ def get_shared_chat_thread(
     if not thread:
         # 404 y no 403: no revelamos si el hilo existe pero es privado.
         raise HTTPException(status_code=404, detail="Hilo de conversación no encontrado")
+
+    connection_id = thread.connection_id or 1
+    target_database = _resolve_target_database(db, connection_id)
+    role_name = _require_assigned_role(
+        current_user,
+        db,
+        f"Shared thread: GET /chat/threads/shared/{thread_id}",
+        target_database,
+    )
+    is_admin = _is_admin(current_user)
+    allowed_tables = GovernanceGuard.get_allowed_tables_for_role(
+        role_name, is_admin, db=db, role_id=current_user.role_id, connection_id=connection_id,
+    )
+    blocked_columns = GovernanceGuard.get_blocked_columns_for_role(
+        role_name, is_admin, db=db, role_id=current_user.role_id, connection_id=connection_id,
+    )
+    masked_columns = GovernanceGuard.get_masked_columns_for_role(
+        role_name, is_admin, db=db, role_id=current_user.role_id, connection_id=connection_id,
+    )
+
+    # La vista compartida no usa `data_rows` del cliente: necesita la conexión
+    # real para regenerar la tabla. Un conector inexistente es 404; uno que no
+    # se puede abrir se falla cerrado más abajo (503), nunca con datos guardados.
+    try:
+        connection = SchemaInspector.resolve_connection(db, connection_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Shared thread: no se pudo resolver la conexión %s", connection_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo abrir la conexión corporativa del hilo compartido.",
+        ) from exc
+
     try:
         results = json.loads(thread.messages_json or "[]")
     except Exception:
         results = []
+    results = _rebuild_shared_results(
+        results,
+        allowed_tables=allowed_tables,
+        blocked_columns=blocked_columns,
+        masked_columns=masked_columns,
+        is_admin=is_admin,
+        connection=connection,
+        target_database=target_database,
+        db=db,
+        current_user=current_user,
+        role_name=role_name,
+        thread_id=thread.id,
+    )
     return ChatThreadDetail(
         id=thread.id,
-        title=thread.title,
-        connection_id=thread.connection_id or 1,
+        title=_SHARED_TITLE,
+        connection_id=connection_id,
         results=results,
         created_at=thread.created_at.isoformat() if thread.created_at else "",
         updated_at=thread.updated_at.isoformat() if thread.updated_at else ""
@@ -785,6 +1025,10 @@ def save_chat_thread(
         ChatConversation.user_id == current_user.id,
     ).first()
 
+    # `results` es lo que el cliente dice haber visto; se guarda para el dueño.
+    # La vista compartida NO lo usa: `_rebuild_shared_results` re-ejecuta el SQL
+    # con el RBAC del lector. No agregar acá una validación de filas que despues
+    # se olvide en el endpoint compartido.
     msgs_json = json.dumps(thread_in.results)
 
     if thread:
@@ -792,7 +1036,7 @@ def save_chat_thread(
         thread.connection_id = thread_in.connection_id or 1
         thread.messages_json = msgs_json
         thread.is_shared = bool(getattr(thread_in, "is_shared", False))
-        thread.updated_at = datetime.datetime.utcnow()
+        thread.updated_at = utcnow_naive()
     else:
         thread = ChatConversation(
             id=thread_in.id,
@@ -801,8 +1045,8 @@ def save_chat_thread(
             connection_id=thread_in.connection_id or 1,
             messages_json=msgs_json,
             is_shared=bool(getattr(thread_in, "is_shared", False)),
-            created_at=datetime.datetime.utcnow(),
-            updated_at=datetime.datetime.utcnow()
+            created_at=utcnow_naive(),
+            updated_at=utcnow_naive()
         )
         db.add(thread)
 
@@ -826,7 +1070,7 @@ def save_chat_thread(
             thread.connection_id = thread_in.connection_id or 1
             thread.messages_json = msgs_json
             thread.is_shared = bool(getattr(thread_in, "is_shared", False))
-            thread.updated_at = datetime.datetime.utcnow()
+            thread.updated_at = utcnow_naive()
             db.commit()
 
     if thread is None or not getattr(thread, "id", None):
@@ -1150,7 +1394,7 @@ def pin_dashboard_widget(
         chart_option_json=widget_in.chart_option_json,
         kpis_json=widget_in.kpis_json,
         query_text=widget_in.query_text,
-        created_at=datetime.datetime.utcnow()
+        created_at=utcnow_naive()
     )
     db.add(new_widget)
     db.commit()

@@ -6,7 +6,11 @@ Hoy el backend solo acepta esos datos en `/llm/test-*` y `/system/health`:
 default. Estos tests fijan las tres propiedades del fix:
 
 1. Una URL fuera de la allowlist se rechaza con 400 y el motor NO corre
-   (anti-SSRF, misma politica que `validate_llm_base_url` en el sink).
+   (anti-SSRF). La puerta del ROUTER es la de solo loopback
+   (`_resolve_llm_base_url`): la allowlist mas amplia de
+   `validate_llm_base_url` es del SINK y cubre la URL del despliegue, no la
+   que elige el usuario. Los casos hostiles estan en
+   `test_chat_llm_private_host.py`.
 2. La config viaja POR REQUEST (ContextVar) hasta el motor, en el endpoint
    normal y dentro del task del stream.
 3. `LLMService.generate_completion/stream_completion` la usan como default:

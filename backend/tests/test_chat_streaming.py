@@ -309,7 +309,7 @@ class TestNarrativeStreaming(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_masking_happens_before_the_stream_sink_is_reached(self):
         """
-        El sink se invoca DESPUES de `mask_rows`, nunca antes.
+        El sink se invoca DESPUES del enmascarado, nunca antes.
 
         Es la garantia de seguridad de este cambio: si el sink se llamara antes
         del enmascarado, estariamos mandando al navegador datos de una columna
@@ -319,7 +319,10 @@ class TestNarrativeStreaming(unittest.TestCase):
         from app.modules.chat_engine.engine import QueryEngine
 
         src = _inspect.getsource(QueryEngine.execute_query)
-        mask_pos = src.index("mask_rows(rows, masked_columns)")
+        # rindex: el sink vive en la rama analitica, que es la ULTIMA llamada a
+        # mask_query_rows. Con index se validaba la rama conversacional, que ni
+        # siquiera tiene sink.
+        mask_pos = src.rindex("mask_query_rows(rows, masked_columns, secured_sql, dialect=engine_dialect)")
         sink_pos = src.index("narrative_sink=narrative_sink")
         self.assertLess(
             mask_pos, sink_pos,
