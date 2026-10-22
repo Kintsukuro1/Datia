@@ -71,14 +71,14 @@ export interface EnrichEstimateResponse {
   budget_seconds: number;
 }
 
-export interface NullColumnInfo {
+interface NullColumnInfo {
   column_name: string;
   data_type: string;
   null_count: number;
   null_percentage: number;
 }
 
-export interface NullTableInfo {
+interface NullTableInfo {
   table_name: string;
   schema_name: string;
   total_rows: number;
@@ -200,7 +200,7 @@ export const catalogService = {
   async applyNullPolicy(connectionId: number, policy: 'delete_rows' | 'mode' | 'nearest' | 'open'): Promise<{ status: string; policy: string; message: string }> {
     // El backend exige confirmación server-side para las políticas destructivas;
     // el clic en el paso "nulls_check" del wizard es esa confirmación.
-    const res = await apiClient.post(`/catalog/connections/${connectionId}/nulls-policy`, { policy, confirm: true });
+    const res = await apiClient.post<{ status: string; policy: string; message: string }>(`/catalog/connections/${connectionId}/nulls-policy`, { policy, confirm: true });
     return res.data;
   },
 };

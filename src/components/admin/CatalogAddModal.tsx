@@ -71,7 +71,7 @@ export const CatalogAddModal: React.FC<CatalogAddModalProps> = ({
     <div ref={modalRef} role="dialog" aria-modal="true" aria-label="Agregar regla de catálogo" tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
       <div className="glass-panel w-full max-w-md rounded-2xl sm:rounded-3xl border border-white/10 shadow-2xl overflow-hidden flex flex-col max-h-[88vh] sm:max-h-[90vh]">
         {/* Header */}
-        <div className="shrink-0 px-5 sm:px-6 py-4 border-b border-dark-border flex items-center justify-between bg-dark-surface/95 backdrop-blur">
+        <div className="shrink-0 px-5 sm:px-6 py-4 border-b border-app-border flex items-center justify-between bg-app-surface/95 backdrop-blur">
           <div className="space-y-0.5">
             <h4 className="text-sm font-bold text-app-text flex items-center gap-2">
               <BookOpen className="w-4 h-4 text-purple-400" /> Nueva Regla Semántica
@@ -87,7 +87,7 @@ export const CatalogAddModal: React.FC<CatalogAddModalProps> = ({
             type="button"
             onClick={onClose}
             aria-label="Cerrar modal"
-            className="text-gray-400 hover:text-app-text p-1 rounded-lg hover:bg-dark-card transition-colors shrink-0"
+            className="text-gray-400 hover:text-app-text p-1 rounded-lg hover:bg-app-card transition-colors shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
@@ -112,7 +112,7 @@ export const CatalogAddModal: React.FC<CatalogAddModalProps> = ({
               value={formTable}
               onChange={(e) => setFormTable(e.target.value)}
               placeholder="ej. Answer o fact_ventas"
-              className="w-full bg-dark-base border border-dark-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500 font-mono"
+              className="w-full bg-app-bg border border-app-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500 font-mono"
               required
             />
           </div>
@@ -128,7 +128,7 @@ export const CatalogAddModal: React.FC<CatalogAddModalProps> = ({
               value={formColumn}
               onChange={(e) => setFormColumn(e.target.value)}
               placeholder="ej. AnswerText o monto_total"
-              className="w-full bg-dark-base border border-dark-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500 font-mono"
+              className="w-full bg-app-bg border border-app-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500 font-mono"
               required
             />
           </div>
@@ -144,7 +144,7 @@ export const CatalogAddModal: React.FC<CatalogAddModalProps> = ({
               onChange={(e) => setFormDesc(e.target.value)}
               placeholder="Explicación de qué representa este campo para que la IA elija la columna correcta..."
               rows={3}
-              className="w-full bg-dark-base border border-dark-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500"
+              className="w-full bg-app-bg border border-app-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500"
               required
             />
           </div>
@@ -160,17 +160,17 @@ export const CatalogAddModal: React.FC<CatalogAddModalProps> = ({
               value={formFormula}
               onChange={(e) => setFormFormula(e.target.value)}
               placeholder="ej. SUM(monto) / MASKED / TEXT_LITERAL"
-              className="w-full bg-dark-base border border-dark-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500 font-mono"
+              className="w-full bg-app-bg border border-app-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500 font-mono"
             />
           </div>
         </form>
 
         {/* Fixed Sticky Footer Actions */}
-        <div className="shrink-0 px-5 sm:px-6 py-3.5 border-t border-dark-border bg-dark-surface/95 backdrop-blur flex justify-end space-x-2 z-10">
+        <div className="shrink-0 px-5 sm:px-6 py-3.5 border-t border-app-border bg-app-surface/95 backdrop-blur flex justify-end space-x-2 z-10">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 rounded-xl bg-dark-card text-gray-300 text-xs hover:bg-dark-border transition-colors"
+            className="px-4 py-2 rounded-xl bg-app-card text-gray-300 text-xs hover:bg-app-border transition-colors"
           >
             Cancelar
           </button>

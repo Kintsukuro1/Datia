@@ -1,41 +1,19 @@
 import React, { useState, useRef } from 'react';
 import {
-  Sparkles,
-  Database,
-  UploadCloud,
-  CheckCircle2,
-  AlertTriangle,
   AlertCircle,
-  ArrowRight,
   ArrowLeft,
+  ArrowRight,
   Check,
   Loader2,
+  Sparkles,
   X,
-  Server,
-  Table as TableIcon,
-  Key,
-  ShieldCheck,
-  UserCheck,
-  Bot,
-  Edit3,
-  Trash2,
-  BarChart3,
-  MapPin,
-  Clock,
-  WifiOff,
-  Box,
-  Cylinder,
   Zap,
 } from 'lucide-react';
-import { UploadDropzone } from './upload/UploadDropzone';
-import { ConnectorFormFields } from './ConnectorFormFields';
 import { connectorService, ConnectionTestResult, CorporateConnection } from '../../features/admin/services/connector_service';
 import {
   catalogService,
   AutoEnrichResponse,
   DataDictionaryResponse,
-  DataDictionaryTable,
-  DataDictionaryColumn,
   EnrichEstimateResponse,
   NullsAuditResponse,
 } from '../../features/admin/services/catalog_service';
@@ -43,6 +21,23 @@ import { useAuth } from '../../features/auth/context/AuthContext';
 import { apiClient, getApiErrorMessage } from '../../shared/api/api_client';
 import { SystemHealthResponse } from '../../types';
 import { useModalA11y } from '../../hooks/useModalA11y';
+import { ChoiceStep } from './database-wizard/ChoiceStep';
+import { CompleteStep } from './database-wizard/CompleteStep';
+import { GeneratingStep } from './database-wizard/GeneratingStep';
+import { InputStep } from './database-wizard/InputStep';
+import { NullsStep } from './database-wizard/NullsStep';
+import { ReviewStep } from './database-wizard/ReviewStep';
+import {
+  UI_STEP_INDEX,
+  WIZARD_STEPS,
+  type ColumnEdit,
+  type CreationMode,
+  type IngestionMode,
+  type LlmStatus,
+  type NullPolicy,
+  type RemoteFormState,
+  type WizardStep,
+} from './database-wizard/wizardConfig';
 
 interface DatabaseWizardModalProps {
   isOpen: boolean;
@@ -51,71 +46,6 @@ interface DatabaseWizardModalProps {
   onSuccess: () => void;
   onNavigateToCatalog?: () => void;
 }
-
-type WizardStep = 'input' | 'choice' | 'generating' | 'review' | 'nulls_check' | 'complete';
-type IngestionMode = 'file' | 'remote';
-type CreationMode = 'ai' | 'manual';
-type LlmStatus = 'checking' | 'available' | 'unavailable';
-
-// Estados del proceso (solo texto). El avance de la barra NO sale de acá: es
-// el tiempo transcurrido contra la estimación medida del modelo (ver
-// `generationPct`). Un porcentaje fijo mentía mientras el modelo trabajaba.
-const GENERATION_PHASES = [
-  'Introspeccionando esquema físico y metadatos relacionales...',
-  'Muestreando valores representativos de columnas...',
-  'Invocando modelo de IA para descripciones de negocio y fórmulas...',
-  'Compilando catálogo semántico y reglas de gobernanza...',
-];
-
-// Pasos visibles del tracker. 'generating' y 'review' comparten el paso 3
-// (Diccionario): generar y revisar es el mismo tramo del flujo.
-const WIZARD_STEPS = [
-  'Ingreso BD',
-  'Evaluación & Modo',
-  'Diccionario & IA',
-  'Tratamiento Nulos',
-  'Finalizado',
-];
-
-const UI_STEP_INDEX: Record<WizardStep, number> = {
-  input: 0,
-  choice: 1,
-  generating: 2,
-  review: 2,
-  nulls_check: 3,
-  complete: 4,
-};
-
-type RemoteDbType = 'postgresql' | 'mssql' | 'mysql' | 'oracle';
-
-// Motores soportados por el backend, con el puerto por defecto real que aplica
-// el formulario al seleccionarlos.
-const ENGINES: {
-  id: RemoteDbType;
-  label: string;
-  hint: string;
-  icon: React.ComponentType<{ className?: string }>;
-}[] = [
-  { id: 'postgresql', label: 'PostgreSQL', hint: 'Puerto 5432', icon: Database },
-  { id: 'mssql', label: 'MS SQL Server', hint: 'Puerto 1433', icon: Server },
-  { id: 'mysql', label: 'MySQL / MariaDB', hint: 'Puerto 3306', icon: Box },
-  { id: 'oracle', label: 'Oracle Database', hint: 'Puerto 1521', icon: Cylinder },
-];
-
-const DEFAULT_PORTS: Record<RemoteDbType, number> = {
-  postgresql: 5432,
-  mssql: 1433,
-  mysql: 3306,
-  oracle: 1521,
-};
-
-// Segundos -> texto legible. Se redondea a pasos de 5s para no fingir una
-// precisión que la estimación (una medición + una fórmula) no tiene.
-const formatDuration = (seconds?: number | null): string => {
-  if (!seconds || seconds <= 0) return '—';
-  if (seconds < 90) return `${Math.max(5, Math.round(seconds / 5) * 5)} s`;
-  return `${Math.round(seconds / 60)} min`;
-};
 
 export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   isOpen,
@@ -142,9 +72,9 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Remote DB State
-  const [remoteForm, setRemoteForm] = useState({
+  const [remoteForm, setRemoteForm] = useState<RemoteFormState>({
     name: '',
-    dbType: 'postgresql' as RemoteDbType,
+    dbType: 'postgresql',
     host: 'localhost',
     port: 5432,
     databaseName: '',
@@ -174,12 +104,12 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   // Dictionary Review State
   const [dictionaryData, setDictionaryData] = useState<DataDictionaryResponse | null>(null);
   const [selectedTableIndex, setSelectedTableIndex] = useState(0);
-  const [editedColumns, setEditedColumns] = useState<Record<string, { friendly_name: string; description: string; business_formula: string }>>({});
+  const [editedColumns, setEditedColumns] = useState<Record<string, ColumnEdit>>({});
   const [isSavingReview, setIsSavingReview] = useState(false);
 
   // Null Remediation State
   const [nullsData, setNullsData] = useState<NullsAuditResponse | null>(null);
-  const [selectedNullPolicy, setSelectedNullPolicy] = useState<'delete_rows' | 'mode' | 'nearest' | 'open'>('open');
+  const [selectedNullPolicy, setSelectedNullPolicy] = useState<NullPolicy>('open');
   const [isApplyingNullPolicy, setIsApplyingNullPolicy] = useState(false);
 
   // LLM availability for step 2. Same source as the header badge
@@ -381,16 +311,11 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
       setRegisteredConnection(createdConn);
       setIsProcessing(false);
       setCurrentStep('choice');
-    } catch (err: any) {
+    } catch (err) {
       const msg = getApiErrorMessage(err, 'Error al conectar/ingresar la fuente de datos.', true);
       setErrorMessage(msg);
       setIsProcessing(false);
     }
-  };
-
-  const handleRemoteDbTypeChange = (dbType: RemoteDbType) => {
-    setRemoteForm((prev) => ({ ...prev, dbType, port: DEFAULT_PORTS[dbType] ?? prev.port }));
-    setTestResult(null);
   };
 
   // Prueba de conectividad real sin crear el conector: socket TCP al puerto.
@@ -496,7 +421,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
           setErrorMessage(enrich.message);
         }
         setCurrentStep('review');
-      } catch (err: any) {
+      } catch {
         // Acá solo puede caer `getDataDictionary`: `autoEnrich` ya se manejó
         // arriba. Antes esta rama reintentaba la carga; ahora el único fallo
         // posible es la introspección, así que se reporta de una.
@@ -512,7 +437,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
         initializeEditedColumns(dict);
         setIsProcessing(false);
         setCurrentStep('review');
-      } catch (err: any) {
+      } catch {
         setIsProcessing(false);
         setErrorMessage('No se pudo introspeccionar la base de datos para edición manual.');
       }
@@ -520,7 +445,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   };
 
   const initializeEditedColumns = (dict: DataDictionaryResponse) => {
-    const edits: Record<string, { friendly_name: string; description: string; business_formula: string }> = {};
+    const edits: Record<string, ColumnEdit> = {};
     for (const table of dict.tables || []) {
       for (const col of table.columns || []) {
         const key = `${table.table_name}.${col.name}`;
@@ -537,7 +462,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   const handleColumnEditChange = (
     tableName: string,
     colName: string,
-    field: 'friendly_name' | 'description' | 'business_formula',
+    field: keyof ColumnEdit,
     val: string
   ) => {
     const key = `${tableName}.${colName}`;
@@ -616,7 +541,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
 
       setCurrentStep('complete');
       onSuccess();
-    } catch (err: any) {
+    } catch {
       setErrorMessage('Error al persistir algunas modificaciones del diccionario.');
       setIsSavingReview(false);
     }
@@ -633,16 +558,12 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
       setIsApplyingNullPolicy(false);
       setCurrentStep('complete');
       onSuccess();
-    } catch (err: any) {
+    } catch (err) {
       setIsApplyingNullPolicy(false);
       setErrorMessage(getApiErrorMessage(err, 'Error al aplicar el tratamiento de valores nulos.', true));
     }
   };
 
-  const activeTable: DataDictionaryTable | undefined = dictionaryData?.tables?.[selectedTableIndex];
-
-  // Sin LLM verificado (chequeando o caído) el modo IA no es cliqueable.
-  const aiDisabled = llmStatus !== 'available';
   const uiStepIndex = UI_STEP_INDEX[currentStep];
 
   return (
@@ -732,852 +653,78 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
         <div className="flex-1 overflow-y-auto min-h-0 p-5 sm:p-6">
           {/* ================= STEP 1: INPUT ================= */}
           {currentStep === 'input' && (
-            <form id="wizard-step-1" onSubmit={handleIngestDatabase} className="space-y-5">
-              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 pb-3 border-b border-app-border">
-                <div className="flex flex-col gap-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-600 dark:text-brand-400">
-                      Paso 1 de 5
-                    </span>
-                    <span className="text-[11px] text-app-muted">Configuración de la fuente</span>
-                  </div>
-                  <h4 className="text-sm font-bold text-app-text">Selecciona el método de ingreso de la Base de Datos</h4>
-                  <p className="text-xs text-app-muted leading-relaxed max-w-lg">
-                    Puedes importar un archivo o conectar un servidor corporativo en red.
-                  </p>
-                </div>
-                {/* Tabs */}
-                <div className="flex items-center bg-app-bg rounded-xl p-1 border border-app-border shrink-0 self-start">
-                  <button
-                    type="button"
-                    onClick={() => setIngestionMode('file')}
-                    className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors flex items-center space-x-1.5 ${
-                      ingestionMode === 'file' ? 'bg-brand-600 text-white' : 'text-app-muted hover:text-app-text'
-                    }`}
-                  >
-                    <UploadCloud className="w-3.5 h-3.5" />
-                    <span>Archivo</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIngestionMode('remote')}
-                    className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors flex items-center space-x-1.5 ${
-                      ingestionMode === 'remote' ? 'bg-brand-600 text-white' : 'text-app-muted hover:text-app-text'
-                    }`}
-                  >
-                    <Server className="w-3.5 h-3.5" />
-                    <span>Conexión Remota</span>
-                  </button>
-                </div>
-              </div>
-
-              {ingestionMode === 'file' ? (
-                <div className="space-y-4">
-                  <UploadDropzone
-                    selectedFile={selectedFile}
-                    fileInputRef={fileInputRef}
-                    isDragging={isDragging}
-                    setIsDragging={setIsDragging}
-                    handleFileChange={handleFileChange}
-                    handleDrop={handleDrop}
-                    onRemoveFile={() => setSelectedFile(null)}
-                  />
-                  <div className="space-y-1">
-                    <label htmlFor="wizard-custom-name" className="block text-[10px] font-semibold text-app-muted uppercase tracking-wider">
-                      Nombre identificador de la fuente <span className="text-brand-500">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      id="wizard-custom-name"
-                      value={customName}
-                      onChange={(e) => setCustomName(e.target.value)}
-                      placeholder="Ej: FINANZAS_2026, INVENTARIO_GENERAL..."
-                      required
-                      className="w-full bg-app-bg border border-app-border rounded-xl px-3.5 py-2.5 text-xs text-app-text placeholder:text-app-muted focus:outline-none focus:border-brand-500"
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-5">
-                  {/* Motor de datos */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="block text-[10px] font-semibold text-app-muted uppercase tracking-wider">
-                        1. Motor de datos <span className="text-rose-500">*</span>
-                      </label>
-                      <span className="text-[10px] text-app-muted">{ENGINES.length} motores soportados</span>
-                    </div>
-                    <div role="radiogroup" aria-label="Motor de base de datos" className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-                      {ENGINES.map((engine) => {
-                        const selected = remoteForm.dbType === engine.id;
-                        const Icon = engine.icon;
-                        return (
-                          <button
-                            key={engine.id}
-                            type="button"
-                            role="radio"
-                            aria-checked={selected}
-                            onClick={() => handleRemoteDbTypeChange(engine.id)}
-                            className={`relative flex flex-col items-start gap-2 p-3 rounded-xl border text-left transition-colors cursor-pointer ${
-                              selected
-                                ? 'bg-brand-500/10 border-brand-500/60 ring-1 ring-brand-500/40'
-                                : 'bg-app-card border-app-border hover:bg-app-hover'
-                            }`}
-                          >
-                            {selected && (
-                              <span className="absolute top-2 right-2 w-4 h-4 rounded-full bg-brand-600 text-white flex items-center justify-center">
-                                <Check className="w-2.5 h-2.5" />
-                              </span>
-                            )}
-                            <span className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                              selected ? 'bg-brand-600 text-white' : 'bg-app-bg text-app-muted border border-app-border'
-                            }`}>
-                              <Icon className="w-4 h-4" />
-                            </span>
-                            <span className="flex flex-col min-w-0">
-                              <span className="text-[11px] font-bold text-app-text leading-tight">{engine.label}</span>
-                              <span className="text-[10px] text-app-muted">{engine.hint}</span>
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Parámetros de endpoint y autenticación */}
-                  <div className="rounded-xl bg-app-card border border-app-border p-4 space-y-4">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                      <div>
-                        <h5 className="text-xs font-bold text-app-text">2. Parámetros de endpoint y autenticación</h5>
-                        <p className="text-[11px] text-app-muted">Las credenciales se cifran antes de guardarse y no se devuelven por la API.</p>
-                      </div>
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-app-bg border border-app-border text-[10px] font-semibold text-app-muted shrink-0 self-start">
-                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                        <span>Cifrado de credenciales activo</span>
-                      </span>
-                    </div>
-                    <ConnectorFormFields
-                      name={remoteForm.name}
-                      dbType={remoteForm.dbType}
-                      host={remoteForm.host}
-                      port={remoteForm.port}
-                      databaseName={remoteForm.databaseName}
-                      username={remoteForm.username}
-                      password={remoteForm.password}
-                      isActive={remoteForm.isActive}
-                      editingConnector={null}
-                      hideDbTypeSelector
-                      onFieldChange={(field, val) => {
-                        setTestResult(null);
-                        setRemoteForm((prev) => {
-                          const updated = { ...prev, [field]: val };
-                          if (field === 'name') {
-                            const oldSlug = prev.name.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-                            if (!prev.databaseName || prev.databaseName === oldSlug) {
-                              updated.databaseName = String(val).toLowerCase().replace(/[^a-z0-9_]/g, '_');
-                            }
-                          }
-                          return updated;
-                        });
-                      }}
-                      onDbTypeChange={handleRemoteDbTypeChange}
-                    />
-                  </div>
-
-                  {/* Resultado de la prueba de conectividad */}
-                  {testResult && (
-                    <div
-                      role="status"
-                      className={`p-3 rounded-xl border flex items-start gap-2.5 text-xs animate-fadeIn ${
-                        testResult.success
-                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
-                          : 'bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-300'
-                      }`}
-                    >
-                      {testResult.success ? (
-                        <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-                      ) : (
-                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                      )}
-                      <div className="min-w-0 space-y-0.5">
-                        <span className="font-semibold block">{testResult.message}</span>
-                        {testResult.success && testResult.latency_ms > 0 && (
-                          <span className="text-[11px] opacity-90">Latencia medida: {testResult.latency_ms} ms</span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  <p className="text-[10px] text-app-muted">
-                    Cada base de datos se crea de forma individual e independiente en el sistema.
-                  </p>
-                </div>
-              )}
-            </form>
+            <InputStep
+              ingestionMode={ingestionMode}
+              onIngestionModeChange={setIngestionMode}
+              selectedFile={selectedFile}
+              onRemoveFile={() => setSelectedFile(null)}
+              customName={customName}
+              onCustomNameChange={setCustomName}
+              isDragging={isDragging}
+              onDraggingChange={setIsDragging}
+              fileInputRef={fileInputRef}
+              onFileChange={handleFileChange}
+              onDrop={handleDrop}
+              remoteForm={remoteForm}
+              setRemoteForm={setRemoteForm}
+              testResult={testResult}
+              setTestResult={setTestResult}
+              onSubmit={handleIngestDatabase}
+            />
           )}
 
           {/* ================= STEP 2: CHOICE & EVALUATION ================= */}
           {currentStep === 'choice' && registeredConnection && (
-            <div className="space-y-5 animate-fadeIn">
-              {/* Step header */}
-              <div className="flex flex-col gap-1 pb-3 border-b border-app-border">
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-600 dark:text-brand-400">
-                    Paso 2 de 5
-                  </span>
-                  <span className="text-[11px] text-app-muted">Fuente registrada</span>
-                </div>
-                <h4 className="text-sm font-bold text-app-text">Evaluación de la fuente y modo de creación</h4>
-                <p className="text-xs text-app-muted leading-relaxed max-w-lg">
-                  Verificá el resumen de la conexión y elegí cómo construir el diccionario y catálogo de datos.
-                </p>
-              </div>
-
-              {/* Evaluated summary card */}
-              <div className="p-4 rounded-2xl bg-app-card border border-app-border flex items-center justify-between gap-3">
-                <div className="flex items-center space-x-3 min-w-0">
-                  <div className="p-2.5 rounded-xl bg-brand-500/10 text-brand-600 dark:text-brand-400 border border-brand-500/30 shrink-0">
-                    <Database className="w-5 h-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <h4 className="text-sm font-bold text-app-text truncate">{registeredConnection.name}</h4>
-                    <p className="text-xs text-app-muted">
-                      Motor: <span className="font-mono text-brand-600 dark:text-brand-400 uppercase">{registeredConnection.db_type}</span> • Estado: <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Evaluada y Conectada</span>
-                    </p>
-                  </div>
-                </div>
-                <div className="text-right text-xs shrink-0">
-                  <span className="px-2.5 py-1 rounded-lg bg-app-bg border border-app-border text-app-muted font-mono">
-                    ID #{registeredConnection.id}
-                  </span>
-                </div>
-              </div>
-
-              <div>
-                <h4 className="text-sm font-bold text-app-text">¿Cómo deseas estructurar el Diccionario y Catálogo de Datos?</h4>
-                <p className="text-xs text-app-muted mt-0.5">
-                  Elige si deseas que la Inteligencia Artificial analice y describa las columnas, o hacerlo manualmente:
-                </p>
-              </div>
-
-              {/* Mode Selection Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Option 1: AI */}
-                <div
-                  role="button"
-                  tabIndex={aiDisabled ? -1 : 0}
-                  aria-disabled={aiDisabled}
-                  onClick={() => { if (!aiDisabled) setCreationMode('ai'); }}
-                  onKeyDown={(e) => { if (!aiDisabled && (e.key === 'Enter' || e.key === ' ')) setCreationMode('ai'); }}
-                  className={`p-4 rounded-2xl border transition-all text-left space-y-3 relative ${
-                    aiDisabled
-                      ? 'border-app-border bg-app-card/40 opacity-60 cursor-not-allowed'
-                      : creationMode === 'ai'
-                        ? 'border-brand-500 bg-brand-500/10 shadow-lg shadow-brand-500/10 ring-1 ring-brand-500 cursor-pointer'
-                        : 'border-app-border bg-app-card hover:border-brand-500/40 cursor-pointer'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="p-2 rounded-xl bg-brand-500/15 text-brand-600 dark:text-brand-400 border border-brand-500/30">
-                      <Bot className="w-5 h-5" />
-                    </div>
-                    {llmStatus === 'available' ? (
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-brand-500/15 text-brand-600 dark:text-brand-400 border border-brand-500/30">
-                        Recomendado
-                      </span>
-                    ) : llmStatus === 'checking' ? (
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-app-bg text-app-muted border border-app-border">
-                        Verificando…
-                      </span>
-                    ) : (
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-700 dark:text-rose-300 border border-rose-500/30">
-                        No Disponible
-                      </span>
-                    )}
-                  </div>
-                  <div>
-                    <h5 className="text-sm font-bold text-app-text flex items-center gap-1.5">
-                      <span>Generar con Inteligencia Artificial</span>
-                    </h5>
-                    <p className="text-xs text-app-muted mt-1">
-                      La IA examina la estructura, tipos y valores muestrales para formular descripciones semánticas, nombres de negocio y fórmulas automáticamente.
-                    </p>
-                    {llmStatus === 'available' && isEstimating && (
-                      <div className="mt-2 flex items-center gap-1.5 text-[10px] text-app-muted">
-                        <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-                        <span>Midiendo velocidad del modelo para estimar la duración…</span>
-                      </div>
-                    )}
-                    {llmStatus === 'available' && !isEstimating && estimate && (
-                      <div className="mt-2 space-y-1 text-[10px]">
-                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-brand-600 dark:text-brand-400">
-                          <Clock className="w-3.5 h-3.5 shrink-0" />
-                          <span>
-                            Duración estimada: ~{formatDuration(estimate.min_seconds)} a {formatDuration(estimate.max_seconds)} (
-                            {estimate.total_tables} tabla{estimate.total_tables === 1 ? '' : 's'} ·{' '}
-                            {estimate.total_columns} columna{estimate.total_columns === 1 ? '' : 's'} ·{' '}
-                            {estimate.tokens_per_second} tok/s medidos)
-                          </span>
-                        </div>
-                        {estimate.beyond_budget && (
-                          <div className="text-amber-700 dark:text-amber-300">
-                            Supera el límite de {Math.round(estimate.budget_seconds / 60)} min por corrida: las últimas
-                            tablas quedarán con reglas automáticas.
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  {llmStatus === 'unavailable' ? (
-                    /* Sin LLM: la razón del bloqueo, el mensaje del backend y un
-                       reintento en caliente (encender el modelo sin cerrar). */
-                    <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-700 dark:text-rose-300 text-[11px] space-y-1">
-                      <div className="flex items-center space-x-1.5 font-bold">
-                        <WifiOff className="w-3.5 h-3.5 shrink-0" />
-                        <span>No hay LLM conectada</span>
-                      </div>
-                      <p className="text-[10px] leading-relaxed opacity-90">
-                        {llmMessage || 'No se pudo contactar al servidor LLM local. Verifica que llama.exe serve u Ollama esté activo.'}{' '}
-                        Puedes reconectar el modelo en Opciones o continuar con la Creación Manual.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); checkLlmAndEstimate(); }}
-                        className="text-[10px] font-semibold underline underline-offset-2 hover:opacity-80"
-                      >
-                        Verificar de nuevo
-                      </button>
-                    </div>
-                  ) : (
-                    /* Warning disclaimer inside AI card */
-                    <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[11px] space-y-1">
-                      <div className="flex items-center space-x-1.5 font-bold">
-                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        <span>Aviso de Precaución</span>
-                      </div>
-                      <p className="text-[10px] leading-relaxed opacity-90">
-                        La IA puede cometer imprecisiones en terminología o lógica de negocio. Se te permitirá auditar y corregir cada definición en el siguiente paso.
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Option 2: Manual */}
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setCreationMode('manual')}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setCreationMode('manual'); }}
-                  className={`p-4 rounded-2xl border transition-all cursor-pointer text-left space-y-3 relative ${
-                    creationMode === 'manual'
-                      ? 'border-brand-500 bg-brand-500/10 shadow-lg shadow-brand-500/10 ring-1 ring-brand-500'
-                      : 'border-app-border bg-app-card hover:border-brand-500/40'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="p-2 rounded-xl bg-app-bg text-app-muted border border-app-border">
-                      <UserCheck className="w-5 h-5" />
-                    </div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-app-bg text-app-muted border border-app-border">
-                      Manual
-                    </span>
-                  </div>
-                  <div>
-                    <h5 className="text-sm font-bold text-app-text">Creación Manual por el Usuario</h5>
-                    <p className="text-xs text-app-muted mt-1">
-                      Construye las descripciones y definiciones tú mismo sin inferencias de IA, manteniendo el control absoluto de cada término.
-                    </p>
-                  </div>
-                  <div className="p-2.5 rounded-xl bg-app-bg/80 border border-app-border text-app-muted text-[10px] space-y-1">
-                    <div className="flex items-center space-x-1.5 font-semibold text-app-text">
-                      <ShieldCheck className="w-3.5 h-3.5 text-brand-500 shrink-0" />
-                      <span>Control Total</span>
-                    </div>
-                    <p className="leading-relaxed">
-                      El asistente introspeccionará el esquema físico y te llevará directamente a la mesa de edición para documentar las tablas.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <ChoiceStep
+              connection={registeredConnection}
+              creationMode={creationMode}
+              onCreationModeChange={setCreationMode}
+              llmStatus={llmStatus}
+              llmMessage={llmMessage}
+              isEstimating={isEstimating}
+              estimate={estimate}
+              onRetryLlm={checkLlmAndEstimate}
+            />
           )}
 
           {/* ================= STEP 3: GENERATING (AI Progress) ================= */}
           {currentStep === 'generating' && (
-            <div className="py-10 px-4 text-center space-y-6 animate-fadeIn max-w-lg mx-auto">
-              <div className="relative mx-auto w-16 h-16">
-                <div className="absolute inset-0 rounded-2xl bg-brand-600/20 animate-ping"></div>
-                <div className="relative w-16 h-16 rounded-2xl bg-brand-600 flex items-center justify-center text-white shadow-xl shadow-brand-600/30">
-                  <Bot className="w-8 h-8 animate-pulse" />
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <h4 className="text-base font-bold text-app-text">
-                  Generando Diccionario de Datos con IA
-                </h4>
-                <p className="text-xs text-app-muted">
-                  {estimate
-                    ? `El modelo local está redactando descripciones de negocio para ${estimate.total_columns} columna${estimate.total_columns === 1 ? '' : 's'} de ${estimate.total_tables} tabla${estimate.total_tables === 1 ? '' : 's'}.`
-                    : 'El modelo local está redactando descripciones de negocio y fórmulas para cada campo.'}
-                </p>
-              </div>
-
-              {/* Progress Bar: avance real = tiempo transcurrido contra la
-                  estimación medida del modelo. El 100% solo llega con la
-                  respuesta del backend; por eso el tope visual es 96%. */}
-              <div className="space-y-2">
-                <div className="w-full bg-app-bg rounded-full h-2.5 overflow-hidden border border-app-border">
-                  <div
-                    className="bg-brand-600 h-2.5 rounded-full transition-all duration-700 ease-out"
-                    style={{ width: `${generationPct}%` }}
-                  ></div>
-                </div>
-                <div className="flex justify-between text-[11px] text-app-muted font-mono">
-                  <span>Fase {generationPhaseIndex + 1} de 4 · {generationElapsed} s</span>
-                  <span className="text-brand-600 dark:text-brand-400 font-semibold">{generationPct}%</span>
-                </div>
-                <p className="text-[11px] text-app-muted leading-relaxed">
-                  {estimate
-                    ? `Estimado: ${formatDuration(estimate.min_seconds)} a ${formatDuration(estimate.max_seconds)} (${estimate.tokens_per_second} tok/s medidos del modelo). Podés revisar y ajustar todo al terminar.`
-                    : 'Con modelos locales esto puede tardar de uno a tres minutos. Podés revisar y ajustar todo al terminar.'}
-                </p>
-                {estimate?.beyond_budget && (
-                  <p className="text-[11px] text-amber-600 dark:text-amber-400 leading-relaxed">
-                    Supera el límite de {Math.round(estimate.budget_seconds / 60)} min por corrida:
-                    se describirá lo que entre en ese tiempo y el resto queda heurístico para revisión.
-                  </p>
-                )}
-              </div>
-
-              {/* Active Step Indicator */}
-              <div className="p-3.5 rounded-xl bg-app-card border border-brand-500/30 text-xs text-app-text flex items-center justify-center space-x-2.5">
-                <Loader2 className="w-4 h-4 animate-spin text-brand-600 dark:text-brand-400 shrink-0" />
-                <span>{GENERATION_PHASES[generationPhaseIndex]}</span>
-              </div>
-            </div>
+            <GeneratingStep
+              estimate={estimate}
+              generationPhaseIndex={generationPhaseIndex}
+              generationElapsed={generationElapsed}
+              generationPct={generationPct}
+            />
           )}
 
           {/* ================= STEP 4: REVIEW & EDIT ================= */}
           {currentStep === 'review' && dictionaryData && (
-            <div className="space-y-4 animate-fadeIn">
-              {/* Step header */}
-              <div className="flex flex-col gap-1 pb-3 border-b border-app-border">
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-600 dark:text-brand-400">
-                    Paso 3 de 5
-                  </span>
-                  <span className="text-[11px] text-app-muted">
-                    {creationMode === 'ai' ? 'Perfilado semántico con IA' : 'Edición manual del diccionario'}
-                  </span>
-                </div>
-                <h4 className="text-sm font-bold text-app-text">Revisión y validación del diccionario de datos</h4>
-                <p className="text-xs text-app-muted leading-relaxed max-w-2xl">
-                  {creationMode === 'ai'
-                    ? 'Verificá que la IA haya generado descripciones correctas. Podés ajustar cualquier campo antes de autorizar.'
-                    : 'Definí los nombres de negocio, fórmulas y descripciones para cada columna detectada.'}
-                </p>
-              </div>
-
-              {/* Resumen de lo procesado (conteos reales del diccionario) */}
-              <div className="p-3 rounded-xl bg-app-card border border-app-border text-xs flex items-center justify-between gap-3">
-                <div className="flex items-center space-x-2.5 text-app-muted min-w-0">
-                  <Edit3 className="w-4 h-4 text-brand-500 shrink-0" />
-                  <span className="truncate">
-                    {dictionaryData.connection_name} · <span className="font-mono uppercase">{dictionaryData.db_type}</span>
-                  </span>
-                </div>
-                <div className="text-right text-[11px] text-app-muted shrink-0">
-                  <span className="text-app-text font-bold">{dictionaryData.total_tables}</span> tablas •{' '}
-                  <span className="text-brand-600 dark:text-brand-400 font-bold">{dictionaryData.total_columns}</span> columnas
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-                {/* Master: tablas procesadas */}
-                <aside className="lg:col-span-4 space-y-2">
-                  <div className="flex items-center justify-between px-1">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Tablas procesadas</span>
-                    <span className="text-[10px] text-app-muted">{dictionaryData.tables.length}</span>
-                  </div>
-                  <div className="flex flex-col gap-1.5 max-h-[46vh] overflow-y-auto custom-scrollbar pr-0.5">
-                    {dictionaryData.tables.map((t, idx) => {
-                      const isSelected = selectedTableIndex === idx;
-                      return (
-                        <button
-                          key={t.table_name}
-                          type="button"
-                          onClick={() => setSelectedTableIndex(idx)}
-                          aria-pressed={isSelected}
-                          className={`w-full text-left p-2.5 rounded-lg border transition-colors cursor-pointer ${
-                            isSelected
-                              ? 'bg-brand-500/10 border-brand-500/50'
-                              : 'bg-app-card border-app-border hover:bg-app-hover'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="flex items-center gap-1.5 min-w-0">
-                              <TableIcon className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-brand-500' : 'text-app-muted'}`} />
-                              <span className="font-mono text-[11px] font-semibold text-app-text truncate">{t.table_name}</span>
-                            </span>
-                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-app-bg border border-app-border text-app-muted shrink-0">
-                              {t.columns.length} col
-                            </span>
-                          </div>
-                          <div className="text-[10px] text-app-muted pl-5 mt-0.5 truncate">
-                            {t.row_count.toLocaleString()} filas · Esquema: {t.schema_name}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </aside>
-
-                {/* Detail: columnas de la tabla activa */}
-                <section className="lg:col-span-8 space-y-3">
-                  {activeTable ? (
-                    <>
-                      <div className="flex items-center justify-between gap-3 pb-1">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span className="w-9 h-9 rounded-lg bg-brand-500/10 text-brand-600 dark:text-brand-400 flex items-center justify-center shrink-0">
-                            <TableIcon className="w-4 h-4" />
-                          </span>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-sm font-bold text-app-text font-mono truncate">{activeTable.table_name}</span>
-                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-app-bg border border-app-border text-app-muted uppercase">
-                                {dictionaryData.db_type}
-                              </span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-app-bg border border-app-border text-app-muted">
-                                Esquema: {activeTable.schema_name}
-                              </span>
-                            </div>
-                            <span className="text-[10px] text-app-muted">Fuente: {dictionaryData.connection_name}</span>
-                          </div>
-                        </div>
-                        {creationMode === 'ai' && (
-                          <span className="text-[10px] text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-full shrink-0 flex items-center gap-1">
-                            <AlertTriangle className="w-3 h-3" />
-                            <span>Revisá los campos de la IA</span>
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="space-y-2.5 max-h-[46vh] overflow-y-auto pr-1 custom-scrollbar">
-                        {activeTable.columns.map((col: DataDictionaryColumn) => {
-                          const editKey = `${activeTable.table_name}.${col.name}`;
-                          const values = editedColumns[editKey] || {
-                            friendly_name: col.friendly_name || col.name,
-                            description: col.description || '',
-                            business_formula: col.business_formula || '',
-                          };
-
-                          return (
-                            <div
-                              key={col.name}
-                              className="p-3 rounded-xl bg-app-card border border-app-border hover:border-brand-500/40 transition-colors space-y-2.5"
-                            >
-                              <div className="flex flex-wrap items-center gap-2">
-                                {col.is_pk && (
-                                  <span title="Clave Primaria" className="text-amber-500">
-                                    <Key className="w-3.5 h-3.5" />
-                                  </span>
-                                )}
-                                <span className="font-mono text-xs font-bold text-app-text">{col.name}</span>
-                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-app-bg border border-app-border text-brand-600 dark:text-brand-400">
-                                  {col.data_type}
-                                </span>
-                                {!col.is_nullable && (
-                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-app-bg border border-app-border text-app-muted">
-                                    No nulo
-                                  </span>
-                                )}
-
-                                {/* Samples Preview */}
-                                {col.sample_values && col.sample_values.length > 0 && (
-                                  <div className="flex items-center gap-1 text-[10px] text-app-muted ml-auto min-w-0">
-                                    <span className="shrink-0">Ejemplos:</span>
-                                    <div className="flex gap-1 overflow-hidden">
-                                      {col.sample_values.slice(0, 2).map((val, vIdx) => (
-                                        <span
-                                          key={`${col.name}-sample-${val}-${vIdx}`}
-                                          className="font-mono bg-app-bg px-1.5 py-0.5 rounded border border-app-border text-app-muted truncate max-w-[100px]"
-                                        >
-                                          {val}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* Editable Fields */}
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                                <div>
-                                  <label
-                                    htmlFor={`wizard-fn-${activeTable.table_name}-${col.name}`}
-                                    className="block text-[10px] font-semibold text-app-muted uppercase tracking-wider mb-1"
-                                  >
-                                    Nombre Amigable
-                                  </label>
-                                  <input
-                                    id={`wizard-fn-${activeTable.table_name}-${col.name}`}
-                                    type="text"
-                                    value={values.friendly_name}
-                                    onChange={(e) =>
-                                      handleColumnEditChange(activeTable.table_name, col.name, 'friendly_name', e.target.value)
-                                    }
-                                    placeholder="Ej: Monto Facturado"
-                                    className="w-full bg-app-bg border border-app-border rounded-lg px-2.5 py-1.5 text-xs text-app-text placeholder:text-app-muted focus:outline-none focus:border-brand-500"
-                                  />
-                                </div>
-
-                                <div>
-                                  <label
-                                    htmlFor={`wizard-formula-${activeTable.table_name}-${col.name}`}
-                                    className="block text-[10px] font-semibold text-app-muted uppercase tracking-wider mb-1"
-                                  >
-                                    Fórmula o Regla
-                                  </label>
-                                  <input
-                                    id={`wizard-formula-${activeTable.table_name}-${col.name}`}
-                                    type="text"
-                                    value={values.business_formula}
-                                    onChange={(e) =>
-                                      handleColumnEditChange(activeTable.table_name, col.name, 'business_formula', e.target.value)
-                                    }
-                                    placeholder="Ej: Columna directa, sum(monto_usd)"
-                                    className="w-full bg-app-bg border border-app-border rounded-lg px-2.5 py-1.5 text-xs text-app-text placeholder:text-app-muted focus:outline-none focus:border-brand-500 font-mono"
-                                  />
-                                </div>
-
-                                <div className="sm:col-span-2">
-                                  <label
-                                    htmlFor={`wizard-desc-${activeTable.table_name}-${col.name}`}
-                                    className="block text-[10px] font-semibold text-app-muted uppercase tracking-wider mb-1"
-                                  >
-                                    Definición / Descripción Funcional
-                                  </label>
-                                  <textarea
-                                    id={`wizard-desc-${activeTable.table_name}-${col.name}`}
-                                    rows={2}
-                                    value={values.description}
-                                    onChange={(e) =>
-                                      handleColumnEditChange(activeTable.table_name, col.name, 'description', e.target.value)
-                                    }
-                                    placeholder="Describe el significado para el negocio..."
-                                    className="w-full bg-app-bg border border-app-border rounded-lg px-2.5 py-1.5 text-xs text-app-text placeholder:text-app-muted focus:outline-none focus:border-brand-500 resize-none"
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="py-8 text-center text-app-muted text-xs">
-                      No se encontraron tablas para revisar en esta base de datos.
-                    </div>
-                  )}
-                </section>
-              </div>
-            </div>
+            <ReviewStep
+              dictionaryData={dictionaryData}
+              creationMode={creationMode}
+              selectedTableIndex={selectedTableIndex}
+              onSelectTable={setSelectedTableIndex}
+              editedColumns={editedColumns}
+              onColumnEditChange={handleColumnEditChange}
+            />
           )}
 
           {/* ================= STEP 4.5: NULL REMEDIATION ================= */}
           {currentStep === 'nulls_check' && nullsData && (
-            <div className="space-y-5 animate-fadeIn">
-              {/* Alert Header */}
-              <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center space-x-2.5 min-w-0">
-                    <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 shrink-0">
-                        Paso 4 de 5
-                      </span>
-                      <h4 className="text-sm font-bold text-app-text truncate">Auditoría de Calidad: Valores Nulos Detectados</h4>
-                    </div>
-                  </div>
-                  <span className="text-[11px] font-mono px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 shrink-0">
-                    {nullsData.total_tables_with_nulls} {nullsData.total_tables_with_nulls === 1 ? 'tabla afectada' : 'tablas afectadas'}
-                  </span>
-                </div>
-                <p className="text-xs text-amber-700 dark:text-amber-300 leading-relaxed">
-                  Se detectaron campos con valores <code className="font-mono text-amber-700 dark:text-amber-200">NULL</code> en los datos recién ingresados.
-                  Como administrador, define la política corporativa que aplicará a estos registros:
-                </p>
-              </div>
-
-              {/* Table / Column Breakdown List */}
-              <div className="p-3.5 rounded-2xl bg-app-bg border border-app-border space-y-2.5 max-h-36 overflow-y-auto custom-scrollbar">
-                <span className="text-[10px] font-bold text-app-muted uppercase tracking-wider block">
-                  Columnas afectadas por tabla:
-                </span>
-                <div className="space-y-2">
-                  {nullsData.tables.map((tbl) => (
-                    <div key={tbl.table_name} className="flex flex-wrap items-center gap-1.5 text-xs">
-                      <span className="font-mono font-bold text-app-text bg-app-card px-2 py-0.5 rounded border border-app-border">
-                        {tbl.table_name}
-                      </span>
-                      <span className="text-app-muted">→</span>
-                      {tbl.columns_with_nulls.map((col) => (
-                        <span
-                          key={col.column_name}
-                          className="font-mono bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded text-[11px]"
-                        >
-                          {col.column_name}: <strong>{col.null_count}</strong> nulos ({col.null_percentage}%)
-                        </span>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* 4 Interactive Choice Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                {/* Option 1: Delete Rows */}
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setSelectedNullPolicy('delete_rows')}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedNullPolicy('delete_rows'); }}
-                  className={`p-3.5 rounded-2xl border transition-all cursor-pointer text-left space-y-2 relative ${
-                    selectedNullPolicy === 'delete_rows'
-                      ? 'border-rose-500 bg-rose-500/10 shadow-lg shadow-rose-500/10 ring-1 ring-rose-500'
-                      : 'border-app-border bg-app-card hover:border-rose-500/40'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="p-2 rounded-xl bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30">
-                      <Trash2 className="w-4 h-4" />
-                    </div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30">
-                      Depuración
-                    </span>
-                  </div>
-                  <h5 className="text-xs font-bold text-app-text">1. Eliminar registros con nulos</h5>
-                  <p className="text-[11px] text-app-muted leading-relaxed">
-                    Elimina físicamente de la base de datos las filas que contienen campos vacíos, garantizando que solo existan filas 100% completas.
-                  </p>
-                </div>
-
-                {/* Option 2: Mode */}
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setSelectedNullPolicy('mode')}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedNullPolicy('mode'); }}
-                  className={`p-3.5 rounded-2xl border transition-all cursor-pointer text-left space-y-2 relative ${
-                    selectedNullPolicy === 'mode'
-                      ? 'border-brand-500 bg-brand-500/10 shadow-lg shadow-brand-500/10 ring-1 ring-brand-500'
-                      : 'border-app-border bg-app-card hover:border-brand-500/40'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="p-2 rounded-xl bg-brand-500/15 text-brand-600 dark:text-brand-400 border border-brand-500/30">
-                      <BarChart3 className="w-4 h-4" />
-                    </div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-brand-500/15 text-brand-600 dark:text-brand-400 border border-brand-500/30">
-                      Estadística
-                    </span>
-                  </div>
-                  <h5 className="text-xs font-bold text-app-text">2. Adaptar a la moda estadística</h5>
-                  <p className="text-[11px] text-app-muted leading-relaxed">
-                    Imputa cada valor nulo con el valor más frecuente de su columna, preservando la tendencia y distribución mayoritaria.
-                  </p>
-                </div>
-
-                {/* Option 3: Nearest */}
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setSelectedNullPolicy('nearest')}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedNullPolicy('nearest'); }}
-                  className={`p-3.5 rounded-2xl border transition-all cursor-pointer text-left space-y-2 relative ${
-                    selectedNullPolicy === 'nearest'
-                      ? 'border-cyan-500 bg-cyan-500/10 shadow-lg shadow-cyan-500/10 ring-1 ring-cyan-500'
-                      : 'border-app-border bg-app-card hover:border-cyan-500/40'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="p-2 rounded-xl bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30">
-                      <MapPin className="w-4 h-4" />
-                    </div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30">
-                      Proximidad
-                    </span>
-                  </div>
-                  <h5 className="text-xs font-bold text-app-text">3. Adaptar al más cercano</h5>
-                  <p className="text-[11px] text-app-muted leading-relaxed">
-                    Rellena cada valor nulo con el dato contiguo no-nulo más próximo (interpolación de arrastre / forward-fill).
-                  </p>
-                </div>
-
-                {/* Option 4: Open to User */}
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setSelectedNullPolicy('open')}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedNullPolicy('open'); }}
-                  className={`p-3.5 rounded-2xl border transition-all cursor-pointer text-left space-y-2 relative ${
-                    selectedNullPolicy === 'open'
-                      ? 'border-emerald-500 bg-emerald-500/10 shadow-lg shadow-emerald-500/10 ring-1 ring-emerald-500'
-                      : 'border-app-border bg-app-card hover:border-emerald-500/40'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="p-2 rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
-                      <Sparkles className="w-4 h-4" />
-                    </div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
-                      Recomendado
-                    </span>
-                  </div>
-                  <h5 className="text-xs font-bold text-app-text">4. Dejar la opción abierta al usuario</h5>
-                  <p className="text-[11px] text-app-muted leading-relaxed">
-                    Conserva los datos intactos. Cuando una consulta maneje nulos, la IA le advertirá previamente y le dará a elegir qué hacer.
-                  </p>
-                </div>
-              </div>
-            </div>
+            <NullsStep
+              nullsData={nullsData}
+              selectedNullPolicy={selectedNullPolicy}
+              onPolicyChange={setSelectedNullPolicy}
+            />
           )}
 
           {/* ================= STEP 5: COMPLETE ================= */}
           {currentStep === 'complete' && registeredConnection && (
-            <div className="py-8 px-4 text-center space-y-5 animate-fadeIn max-w-md mx-auto">
-              <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/20">
-                <CheckCircle2 className="w-8 h-8" />
-              </div>
-              <div className="space-y-1.5">
-                <h4 className="text-base font-bold text-app-text">
-                  ¡Base de Datos y Diccionario Instalados Exitosamente!
-                </h4>
-                <p className="text-xs text-app-muted">
-                  La fuente de datos <strong className="text-app-text">{registeredConnection.name}</strong> ha sido registrada, estructurada y catalogada.
-                </p>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-app-bg border border-app-border text-left text-xs space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-app-muted">Fuente:</span>
-                  <span className="text-app-text font-semibold">{registeredConnection.name}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-app-muted">Modo de Creación:</span>
-                  <span className="text-brand-600 dark:text-brand-400 font-semibold">{creationMode === 'ai' ? 'Asistido por IA (Auditado)' : 'Manual por Usuario'}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-app-muted">Tablas Catalogadas:</span>
-                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{dictionaryData?.total_tables || 1} Tablas</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-app-muted">Gobernanza RBAC:</span>
-                  <span className="text-cyan-700 dark:text-cyan-300 font-semibold">Reglas Activas</span>
-                </div>
-              </div>
-            </div>
+            <CompleteStep
+              connection={registeredConnection}
+              creationMode={creationMode}
+              dictionaryData={dictionaryData}
+            />
           )}
         </div>
 
