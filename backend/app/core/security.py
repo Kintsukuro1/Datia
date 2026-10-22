@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Union, Optional
@@ -171,4 +172,147 @@ def mask_rows(rows, masked_columns) -> int:
             if key.lower() in lowered:
                 row[key] = mask_value(row[key])
                 touched += 1
+    return touched
+
+
+def _masked_output_keys(sql: str, masked_lower: set, dialect: str = "postgres"):
+    """Aliases de salida que provienen de una columna MASKED.
+
+    `mask_rows` compara la CLAVE de la fila con el nombre de la columna. Eso deja
+    pasar `SELECT rut_dni_cliente AS identificador`: la clave es
+    `identificador`, no `rut_dni_cliente`. Devuelve (aliases, mask_all):
+    `mask_all=True` cuando una proyeccion usa una columna MASKED y no tiene alias,
+    porque en ese caso no hay una clave estable que podamos identificar.
+    """
+    if not sql or not sql.strip():
+        return set(), False
+    try:
+        from sqlglot import exp, parse_one
+    except Exception:
+        return set(), False
+
+    read = dialect.lower() if dialect and dialect.lower() in {"postgres", "tsql", "mysql", "oracle"} else "postgres"
+    try:
+        expression = parse_one(sql.strip().rstrip(";"), read=read)
+    except Exception:
+        return set(), False
+    if expression is None:
+        return set(), False
+
+    # `perfil['rut']` es un subscript JSONB (PostgreSQL 14+), no un
+    # JSONExtract. El AST lo rechaza, pero si algun caller futuro le pasa SQL
+    # sin pasar por el validador, el sink no debe dejar el escalar en claro.
+    # Sin tipos no se distingue de `arr[1]`; se enmascara toda la fila.
+    if expression.find(exp.Bracket) is not None:
+        return set(), True
+
+    projections = []
+    for select_node in expression.find_all(exp.Select):
+        projections.extend(select_node.expressions)
+
+    # Punto fijo: un alias de una columna MASKED es, a su vez, una fuente
+    # MASKED para las proyecciones que lo consumen. Sin propagarlo,
+    # `WITH x AS (SELECT rut AS r ...) SELECT MAX(r) AS max_rut ...` dejaba
+    # `max_rut` en claro: la proyeccion externa solo menciona `r`, no `rut`.
+    masked_names = set(masked_lower)
+    mask_all = False
+    changed = True
+    while changed:
+        changed = False
+        for projection in projections:
+            columns = list(projection.find_all(exp.Column))
+            if isinstance(projection, exp.Column) and projection not in columns:
+                columns.append(projection)
+            if not any((col.name or "").lower() in masked_names for col in columns):
+                continue
+            alias = (projection.alias_or_name or "").strip()
+            if alias:
+                alias_lower = alias.lower()
+                if alias_lower not in masked_names:
+                    masked_names.add(alias_lower)
+                    changed = True
+            else:
+                # Sin alias la clave real la decide el driver (p. ej. `sum` o
+                # `?column?`). No hay forma segura de saber cual es, asi que el
+                # llamador enmascara todos los valores de esa fila.
+                mask_all = True
+    return masked_names - masked_lower, mask_all
+
+
+def _mask_masked_json(value, lowered):
+    """Recorre dict/list/string JSON y enmascara las claves MASKED anidadas.
+
+    Defensa en profundidad: una columna JSON puede traer el dato sensible dentro
+    del documento (`{"sueldo": 123456}`). `mask_rows` no lo ve porque compara la
+    CLAVE de la fila (el nombre de la columna JSON), no las claves del documento.
+    Devuelve `(valor, cantidad_enmascarada)`; el valor puede ser un string nuevo
+    cuando hubo que reserializar JSON.
+    """
+    if isinstance(value, dict):
+        touched = 0
+        for key in list(value.keys()):
+            if str(key).lower() in lowered:
+                value[key] = mask_value(value[key])
+                touched += 1
+            else:
+                value[key], nested = _mask_masked_json(value[key], lowered)
+                touched += nested
+        return value, touched
+
+    if isinstance(value, list):
+        touched = 0
+        for index, item in enumerate(value):
+            value[index], nested = _mask_masked_json(item, lowered)
+            touched += nested
+        return value, touched
+
+    if isinstance(value, str):
+        # Solo se intenta parsear lo que parece un objeto/array JSON. Un string
+        # normal no se toca, y si el parseo falla se devuelve tal cual.
+        if value.lstrip()[:1] in ("{", "["):
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError):
+                return value, 0
+            if isinstance(parsed, (dict, list)):
+                parsed, touched = _mask_masked_json(parsed, lowered)
+                if touched:
+                    return json.dumps(parsed, ensure_ascii=False), touched
+                # Sin claves MASKED adentro se conserva el texto original: no se
+                # reformatea un JSON que no habia que enmascarar.
+                return value, 0
+
+    return value, 0
+
+
+def mask_query_rows(rows, masked_columns, sql: Optional[str] = None, dialect: str = "postgres") -> int:
+    """Enmascara filas MASKED resolviendo tambien los alias del SELECT.
+
+    Es el reemplazo de `mask_rows` en los caminos que tienen el SQL a mano. Sin
+    SQL se comporta igual que `mask_rows`, para no romper callers viejos.
+    Ademas recorre dict/list/JSON anidados: una columna JSON puede llevar el
+    dato sensible adentro y la clave de la fila no lo delata.
+    """
+    if not masked_columns or not rows:
+        return 0
+    lowered = {str(c).lower() for c in masked_columns}
+    aliases, mask_all = _masked_output_keys(sql or "", lowered, dialect)
+
+    if mask_all:
+        touched = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for key in list(row.keys()):
+                row[key] = mask_value(row[key])
+                touched += 1
+        return touched
+
+    touched = mask_rows(rows, lowered | aliases)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in list(row.keys()):
+            row[key], nested = _mask_masked_json(row[key], lowered)
+            touched += nested
     return touched

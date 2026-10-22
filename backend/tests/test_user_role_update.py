@@ -10,8 +10,9 @@ endpoint de escalacion de privilegios es un 403 de decorado.
 Casos:
   1. no-admin -> 403
   2. admin cambia el rol -> el usuario queda con el rol nuevo (y la respuesta lo confirma)
-  3. admin NO puede quitarse `is_admin` a si mismo
-  4. admin NO puede quitarle `is_admin` al ultimo admin
+  3. admin NO puede quitarse los derechos de admin a si mismo (flag O rol);
+     limpiar solo el flag no degrada si el rol sigue siendo de plataforma
+  4. admin NO puede degradar al ultimo admin
   5. rol inexistente -> 4xx, no se guarda el string suelto
   6. body {} -> 400, no un no-op que responda 200
   7. subir `is_admin` exige admin: ser el destinatario no alcanza
@@ -105,12 +106,11 @@ class TestUserRoleUpdate(unittest.TestCase):
 
     # --- 1. quien no es admin no entra -------------------------------------
 
-    def test_non_admin_gets_403(self):
+    def test_unauthenticated_and_non_admin_are_rejected(self):
         res = self._patch(self.target_id, {"role": ROLE_INGENIERO_TI}, as_user_id=self.plain_id)
         self.assertEqual(res.status_code, 403, res.text[:300])
         self.assertEqual(self._role_of(self.target_id), ROLE_ANALISTA_FINANCIERO)
 
-    def test_anonymous_gets_401(self):
         res = self.client.patch(f"/api/v1/auth/users/{self.target_id}", json={"role": ROLE_INGENIERO_TI})
         self.assertEqual(res.status_code, 401, res.text[:300])
 
@@ -139,14 +139,31 @@ class TestUserRoleUpdate(unittest.TestCase):
 
     # --- 3. un admin no se degrada a si mismo -------------------------------
 
-    def test_admin_cannot_remove_own_is_admin(self):
-        res = self._patch(self.admin_id, {"is_admin": False}, as_user_id=self.admin_id)
+    def test_admin_cannot_remove_own_admin_rights(self):
+        # `is_admin=False` solo no degrada: el rol de plataforma sigue dando
+        # admin. Para probar una degradacion real hay que sacar las DOS fuentes.
+        res = self._patch(
+            self.admin_id,
+            {"is_admin": False, "role": ROLE_ANALISTA_FINANCIERO},
+            as_user_id=self.admin_id,
+        )
         self.assertEqual(res.status_code, 400, res.text[:300])
         self.db.expire_all()
-        self.assertTrue(
-            self.db.query(User).filter(User.id == self.admin_id).first().is_admin,
-            "el admin se quito sus propios permisos",
-        )
+        user = self.db.query(User).filter(User.id == self.admin_id).first()
+        self.assertTrue(user.is_admin, "el admin se quito sus propios permisos")
+        self.assertEqual(user.role.name, ROLE_ADMINISTRADOR)
+
+    def test_clearing_is_admin_flag_alone_keeps_role_admin(self):
+        """Limpiar el flag no es degradar si el rol sigue siendo de plataforma.
+
+        La regla efectiva es flag O rol (la misma que `get_current_admin`). Si
+        este PATCH devolviera 400, el endpoint estaria tratando como perdida una
+        degradacion que no ocurrio.
+        """
+        res = self._patch(self.admin_id, {"is_admin": False}, as_user_id=self.admin_id)
+        self.assertEqual(res.status_code, 200, res.text[:300])
+        self.assertFalse(res.json()["is_admin"])
+        self.assertEqual(res.json()["role_name"], ROLE_ADMINISTRADOR)
 
     def test_admin_cannot_remove_own_admin_rights_by_moving_own_role(self):
         """El bloqueo no mira solo `is_admin`.
@@ -181,15 +198,18 @@ class TestUserRoleUpdate(unittest.TestCase):
             demo_admin.is_active = False
             self.db.commit()
 
-            res = self._patch(self.admin_id, {"is_admin": False}, as_user_id=self.admin_id)
+            res = self._patch(
+                self.admin_id,
+                {"is_admin": False, "role": ROLE_ANALISTA_FINANCIERO},
+                as_user_id=self.admin_id,
+            )
             # Da igual si el error venga por "no te degrades a vos" o por "es el
             # ultimo": lo que no puede pasar es que devuelva 200.
             self.assertEqual(res.status_code, 400, res.text[:300])
             self.db.expire_all()
-            self.assertTrue(
-                self.db.query(User).filter(User.id == self.admin_id).first().is_admin,
-                "el sistema se quedo sin ningun administrador",
-            )
+            user = self.db.query(User).filter(User.id == self.admin_id).first()
+            self.assertTrue(user.is_admin, "el sistema se quedo sin ningun administrador")
+            self.assertEqual(user.role.name, ROLE_ADMINISTRADOR)
         finally:
             demo_admin.is_active, demo_admin.is_admin = demo_snapshot
             self.db.commit()
@@ -197,48 +217,60 @@ class TestUserRoleUpdate(unittest.TestCase):
     def test_last_admin_can_be_demoted_when_another_admin_exists(self):
         """La salvaguarda es "queda al menos uno", no "nunca se degrada"."""
         second_admin = self._make(f"{PREFIX}admin2", is_admin=True, role_name=ROLE_ADMINISTRADOR)
-        res = self._patch(self.admin_id, {"is_admin": False}, as_user_id=self.admin_id)
+        res = self._patch(
+            self.admin_id,
+            {"is_admin": False, "role": ROLE_ANALISTA_FINANCIERO},
+            as_user_id=self.admin_id,
+        )
         self.assertEqual(res.status_code, 400, res.text[:300])
 
-        # Ahora que hay otro admin, un admin distinto si puede degradarlo.
-        res = self._patch(self.admin_id, {"is_admin": False}, as_user_id=second_admin)
+        # Ahora que hay otro admin, un admin distinto si puede degradarlo:
+        # hay que sacar el flag Y el rol, porque cualquiera de los dos alcanza.
+        res = self._patch(
+            self.admin_id,
+            {"is_admin": False, "role": ROLE_ANALISTA_FINANCIERO},
+            as_user_id=second_admin,
+        )
         self.assertEqual(res.status_code, 200, res.text[:300])
         self.assertFalse(res.json()["is_admin"])
+        self.assertEqual(res.json()["role_name"], ROLE_ANALISTA_FINANCIERO)
+        self.assertEqual(self._role_of(self.admin_id), ROLE_ANALISTA_FINANCIERO)
 
     # --- 5. rol inexistente -------------------------------------------------
 
-    def test_unknown_role_is_rejected_and_not_stored(self):
-        res = self._patch(
-            self.target_id, {"role": "Super Admin Inventado"}, as_user_id=self.admin_id
+    def test_invalid_role_strings_are_rejected_and_not_stored(self):
+        cases = (
+            ("inexistente", "Super Admin Inventado"),
+            ("vacio", "   "),
         )
-        self.assertEqual(res.status_code, 400, res.text[:300])
-        # Y lo importante: no queda el string suelto, que despues no matchea
-        # ningun rol y rompe el badge.
-        self.assertEqual(self._role_of(self.target_id), ROLE_ANALISTA_FINANCIERO)
-
-    def test_empty_role_string_is_rejected(self):
-        res = self._patch(self.target_id, {"role": "   "}, as_user_id=self.admin_id)
-        self.assertEqual(res.status_code, 400, res.text[:300])
-        self.assertEqual(self._role_of(self.target_id), ROLE_ANALISTA_FINANCIERO)
+        for name, role in cases:
+            with self.subTest(case=name):
+                res = self._patch(
+                    self.target_id, {"role": role}, as_user_id=self.admin_id
+                )
+                self.assertEqual(res.status_code, 400, res.text[:300])
+                # No queda el string suelto, que despues no matchea ningun rol
+                # y rompe el badge.
+                self.assertEqual(self._role_of(self.target_id), ROLE_ANALISTA_FINANCIERO)
 
     # --- 6. body vacio ------------------------------------------------------
 
-    def test_empty_body_is_400_not_a_silent_noop(self):
-        res = self._patch(self.target_id, {}, as_user_id=self.admin_id)
-        self.assertEqual(res.status_code, 400, res.text[:300])
-
-    def test_body_with_only_nulls_is_400(self):
-        res = self._patch(
-            self.target_id, {"role": None, "is_admin": None}, as_user_id=self.admin_id
+    def test_empty_body_and_null_body_are_400(self):
+        cases = (
+            ("vacio", {}),
+            ("solo_nulls", {"role": None, "is_admin": None}),
         )
-        self.assertEqual(res.status_code, 400, res.text[:300])
+        for name, body in cases:
+            with self.subTest(case=name):
+                res = self._patch(self.target_id, body, as_user_id=self.admin_id)
+                self.assertEqual(res.status_code, 400, res.text[:300])
 
     # --- 7. la escalada exige admin, no basta con ser el destinatario ------
 
-    def test_granting_is_admin_requires_admin_caller(self):
+    def test_non_admin_cannot_grant_or_revoke_admin(self):
         """El destinatario no se auto-promueve: `get_current_admin` corre antes
         de tocar nada, asi que un no-admin recibe 403 aunque sea el usuario
-       _TARGET_ del PATCH."""
+        _TARGET_ del PATCH."""
         res = self._patch(self.plain_id, {"is_admin": True}, as_user_id=self.plain_id)
         self.assertEqual(res.status_code, 403, res.text[:300])
         self.db.expire_all()
@@ -247,7 +279,6 @@ class TestUserRoleUpdate(unittest.TestCase):
             "un usuario se auto-otorgó is_admin",
         )
 
-    def test_non_admin_cannot_revoke_admin_rights_either(self):
         res = self._patch(self.admin_id, {"is_admin": False}, as_user_id=self.plain_id)
         self.assertEqual(res.status_code, 403, res.text[:300])
         self.db.expire_all()

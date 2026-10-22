@@ -10,6 +10,7 @@ import app.modules.telemetry_audit.models
 import app.modules.chat_engine.models
 from app.core.database import SessionLocal
 from app.core.security import decode_token_payload
+from app.core.time import utcnow_naive
 from app.modules.auth.models import User, UserSession
 from app.modules.telemetry_audit.models import AuditLog
 from app.core.constants import (
@@ -32,13 +33,35 @@ def get_db() -> Generator:
 
 def _password_change_pending_allowed(request: Request) -> bool:
     """
-    Rutas que siguen accesibles con `must_change_password=True`.
+    Rutas que siguen accesibles con `must_change_password=True` o clave vencida.
 
     Sin las dos primeras el usuario queda atrapado: no puede ni ver su propio flag
     (`/auth/me`) ni limpiarlo (`/auth/change-password`), porque ambas pasan por acá.
+    `/auth/logout` tambien queda abierta: una sesión que no sirve para nada más
+    tiene que poder cerrarse.
     """
     path = request.url.path.rstrip("/")
-    return path.endswith("/auth/change-password") or path.endswith("/auth/me")
+    return (
+        path.endswith("/auth/change-password")
+        or path.endswith("/auth/me")
+        or path.endswith("/auth/logout")
+    )
+
+
+def temporary_password_expired(user: User) -> bool:
+    """`True` si la cuenta tiene una clave temporal emitida y ya venció.
+
+    La fecha se guarda UTC naive (mismo criterio que el resto de la base). Una
+    cuenta sin clave temporal emitida —incluidas las existentes, que quedan NULL
+    tras la migración— no se bloquea por un dato ausente.
+    """
+    expires_at = getattr(user, "temp_password_expires_at", None)
+    if not expires_at:
+        return False
+    now = utcnow_naive()
+    if getattr(expires_at, "tzinfo", None) is not None:
+        expires_at = expires_at.replace(tzinfo=None)
+    return now >= expires_at
 
 
 def get_current_user(
@@ -84,7 +107,7 @@ def get_current_user(
                     detail="La sesión ha sido revocada o cerrada. Inicia sesión nuevamente.",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-            now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+            now = utcnow_naive()
             last_seen = session.last_seen_at
             if isinstance(last_seen, str):
                 try:
@@ -107,14 +130,28 @@ def get_current_user(
     # contraseña temporal indefinidamente. Va acá, y no en cada router, porque esta
     # es la ÚNICA dependencia por la que pasan todos los endpoints autenticados:
     # `get_current_admin` cuelga de acá y cubre los endpoints de administración.
-    if user.must_change_password and not _password_change_pending_allowed(request):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Debes cambiar tu contraseña temporal antes de continuar. "
-                "Usa POST /api/v1/auth/change-password."
+    #
+    # Dos casos distintos, mismo corte:
+    #   - `must_change_password`: el admin reseteó la clave, cambio inmediato.
+    #   - clave temporal vencida: la cuenta nació con una clave del admin y el
+    #     usuario no la cambió en TEMP_PASSWORD_TTL_DAYS.
+    if not _password_change_pending_allowed(request):
+        if temporary_password_expired(user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Tu contraseña temporal venció. Debes cambiarla antes de continuar. "
+                    "Usa POST /api/v1/auth/change-password."
+                )
             )
-        )
+        if user.must_change_password:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Debes cambiar tu contraseña temporal antes de continuar. "
+                    "Usa POST /api/v1/auth/change-password."
+                )
+            )
 
     return user
 
@@ -158,13 +195,21 @@ def get_current_user_optional(
             # validar el token (eso es `decode_token_payload`, en core/security.py,
             # que ya usa `datetime.now(timezone.utc)`), asi que el valor es
             # bit-identico al de antes: ningun token emitido antes queda invalido.
-            now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+            now = utcnow_naive()
             if (now - session.last_seen_at).total_seconds() > (SESSION_LAST_SEEN_UPDATE_INTERVAL_MINUTES * 60):
                 session.last_seen_at = now
                 try:
                     db.commit()
                 except Exception:
                     db.rollback()
+
+    # Este dependency es el de los endpoints publicos que, si hay token, agregan
+    # contexto del rol (hoy solo /chat/suggestions). Una clave temporal vencida
+    # no puede seguir viendo sugerencias armadas con sus tablas autorizadas: se
+    # degrada a anonimo, igual que un token invalido. No se lanza 403 porque el
+    # endpoint sigue siendo publico por diseno.
+    if temporary_password_expired(user) or user.must_change_password:
+        return None
 
     return user
 

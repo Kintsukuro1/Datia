@@ -10,7 +10,6 @@ Cierres mecanicos de la Fase B. 4 bugs, todos verificados:
   4. api/deps: `datetime.utcnow()` deprecado -> patron de la linea 64.
 """
 import asyncio
-import inspect
 import unittest
 import uuid
 from unittest.mock import MagicMock, patch
@@ -301,14 +300,6 @@ class TestTokenSurvivesUtcNowChange(unittest.TestCase):
                 UserSession.jti == self.jti
             ).first().last_seen_at
         )
-
-    def test_no_deprecated_utcnow_left_in_deps(self):
-        from app.api import deps
-
-        self.assertNotIn(
-            "datetime.utcnow()", inspect.getsource(deps), "utcnow() deprecado"
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

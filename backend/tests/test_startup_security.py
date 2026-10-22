@@ -1,4 +1,6 @@
+import io
 import unittest
+from contextlib import redirect_stderr
 from unittest.mock import patch
 from app.core.config import settings
 from main import validate_startup_security
@@ -36,6 +38,24 @@ class TestStartupSecurity(unittest.TestCase):
         with patch.object(settings, "ENVIRONMENT", "development"):
             with patch.object(settings, "SECRET_KEY", settings.DEFAULT_SECRET_KEY):
                 validate_startup_security()
+
+    def test_production_wildcard_cors_warns_but_does_not_raise(self):
+        """Un `*` en CORS es riesgoso, pero el arranque no se detiene por eso.
+
+        El unico error fatal de produccion es la SECRET_KEY por defecto. CORS se
+        avisa en stderr para que quede en los logs del primer arranque. Antes de
+        este cambio no habia ningun aviso.
+        """
+        with patch.object(settings, "ENVIRONMENT", "production"), \
+             patch.object(settings, "SECRET_KEY", "clave-unica-de-prueba-para-produccion"), \
+             patch.object(settings, "CORS_ORIGINS", ["*"]), \
+             patch.object(settings, "DEMO_MODE", False), \
+             patch.object(settings, "FERNET_KEY", "clave-fernet-de-prueba"):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                validate_startup_security()
+
+            self.assertIn("CORS con origen '*'", stderr.getvalue())
 
 if __name__ == "__main__":
     unittest.main()

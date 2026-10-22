@@ -16,36 +16,58 @@ _IS_PROD = settings.ENVIRONMENT.lower() == "production"
 _DOCS_ENABLED = settings.ENABLE_API_DOCS if settings.ENABLE_API_DOCS is not None else not _IS_PROD
 
 def validate_startup_security():
-    """Enforces production environment security checks before starting."""
-    if settings.ENVIRONMENT.lower() == "production":
+    """Enforces production checks and warns about risky local configurations."""
+    import sys
+
+    def _warn(message: str) -> None:
+        # stderr y no logger: el nivel INFO/ERROR de core/logging.py puede tapar
+        # un warning que solo se lee una vez, al arrancar.
+        print(f"\n  [SEGURIDAD] {message}\n", file=sys.stderr, flush=True)
+
+    is_prod = settings.ENVIRONMENT.lower() == "production"
+
+    if is_prod:
         if settings.SECRET_KEY == settings.DEFAULT_SECRET_KEY:
             raise RuntimeError(
                 "SECRET_KEY no fue configurado para producción. Defina una clave única en su archivo .env antes de desplegar."
             )
         if "*" in settings.CORS_ORIGINS:
-            # `allow_credentials=True` con origen `*` hace que el middleware
-            # repita el origen de la petición, o sea que CUALQUIER sitio que el
-            # usuario visite puede llamar a la API con su sesion.
-            #
-            # No se detiene el arranque a proposito: casi toda instalacion local
-            # tiene ENVIRONMENT=production en su `.env` (asi se ejercita el guard
-            # de SECRET_KEY) y romperlas seria peor que avisar. Por eso va a
-            # stderr y no al log: un `logger.warning` queda tapado por el nivel de
-            # INFO de `core/logging.py` y nadie lo lee nunca.
-            import sys
-            aviso = (
-                "\n"
-                "  [SEGURIDAD] CORS con origen '*' y credenciales habilitadas.\n"
-                "  Cualquier sitio web que visite un usuario autenticado puede\n"
-                "  llamar a esta API con su sesion. Defina en su .env:\n"
-                "      CORS_ORIGINS=[\"http://<host-del-frontend>\"]\n"
-                "  y no '*'.\n"
+            # `allow_credentials=False` reduce el daño, pero un origen `*` sigue
+            # permitiendo que cualquier sitio haga peticiones a la API. No se
+            # detiene el arranque: es una advertencia, no una condición fatal
+            # como la SECRET_KEY por defecto.
+            _warn(
+                "CORS con origen '*' en producción. Cualquier sitio puede llamar "
+                "a los endpoints públicos; la sesión viaja en el header Bearer, "
+                "no en cookies, pero conviene restringir CORS_ORIGINS a los "
+                "orígenes reales."
             )
-            print(aviso, file=sys.stderr, flush=True)
             logger.error(
                 "CORS: origenes abiertos con '*' en produccion. "
                 "Defina CORS_ORIGINS con los origenes reales."
             )
+        if settings.ENABLE_API_DOCS:
+            _warn("/docs y OpenAPI están habilitados en producción sin autenticación.")
+        if settings.DEMO_MODE_EFFECTIVE:
+            _warn(
+                "DEMO_MODE está activo en producción: hay cuentas con contraseñas "
+                "conocidas (admin/admin123 y otras del README)."
+            )
+    elif settings.SECRET_KEY == settings.DEFAULT_SECRET_KEY:
+        _warn(
+            "SECRET_KEY por defecto en desarrollo. No use esta clave en una "
+            "instalación accesible por otra máquina."
+        )
+
+    if not settings.FERNET_KEY:
+        # No se genera una clave aleatoria: se deriva de SECRET_KEY con sha256
+        # (core/security.py). Por eso el riesgo no es "cada reinicio" sino
+        # rotar SECRET_KEY: ahi las credenciales guardadas dejan de abrirse.
+        _warn(
+            "FERNET_KEY no configurada: se deriva de SECRET_KEY. Si SECRET_KEY "
+            "cambia, las credenciales cifradas de los conectores dejarán de "
+            "descifrarse. Defina FERNET_KEY en .env (ver .env.example)."
+        )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -84,11 +106,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS configuration for Vite dev server & Electron desktop app
+# CORS configuration for Vite dev server & Electron desktop app.
+# La autenticacion va en el header Authorization, no en cookies: no hace falta
+# `allow_credentials=True`. Con `*` en CORS_ORIGINS, habilitarlo ademas haria
+# que el middleware refleje cualquier origen.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

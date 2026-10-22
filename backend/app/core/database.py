@@ -120,6 +120,11 @@ def ensure_schema_migrations(eng):
                 if "must_change_password" not in user_cols:
                     # Idem `is_uploaded`: `BOOLEAN DEFAULT 0` no existe en PostgreSQL.
                     pending.append("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT FALSE NOT NULL")
+                if "temp_password_issued_at" not in user_cols:
+                    # NULL = la cuenta no tiene una clave temporal emitida. Las
+                    # cuentas existentes quedan como estaban: no se les inventa
+                    # una fecha de emisión que nadie registró.
+                    pending.append("ALTER TABLE users ADD COLUMN temp_password_issued_at TIMESTAMP NULL")
                 if pending:
                     with eng.begin() as conn:
                         _safe_alter(conn, pending)

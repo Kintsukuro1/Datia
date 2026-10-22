@@ -54,9 +54,15 @@ class Settings(BaseSettings):
 
     # Secret Key for JWT Tokens and AES Encryption
     SECRET_KEY: str = "democratizacion_datos_super_secret_key_local_2026_aes256_change_in_prod"
-    FERNET_KEY: Optional[str] = None # Auto-generated if not set
+    FERNET_KEY: Optional[str] = None # Si falta, se deriva de SECRET_KEY (no es aleatoria)
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 # 24 hours local session
+
+    # Dias de validez de la clave temporal de una cuenta creada por un
+    # administrador. El cambio se exige en el primer login; si el usuario no
+    # alcanza a hacerlo dentro del plazo, la clave vence y `get_current_user`
+    # solo deja /auth/me, /auth/change-password y /auth/logout.
+    TEMP_PASSWORD_TTL_DAYS: int = 7
     
     # Internal Metadata Database (PostgreSQL)
     POSTGRES_SERVER: str = "localhost"

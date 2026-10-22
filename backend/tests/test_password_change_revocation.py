@@ -1,6 +1,7 @@
 """
-Bugs 5-6: change-password no revocaba las otras sesiones (la credencial robada
-sobrevivia al cambio) y /auth/register aceptaba una contraseña de 1 carácter.
+Bug 5: change-password no revocaba las otras sesiones (la credencial robada
+sobrevivia al cambio). El alta publica ya no existe: la cuenta y su clave
+temporal las crea un administrador.
 """
 import uuid
 import unittest
@@ -12,6 +13,8 @@ from app.db.init_db import init_db
 from app.modules.auth.models import User, UserSession
 from app.modules.auth.schemas import validate_password_strength, MIN_PASSWORD_LENGTH
 from app.core.security import create_access_token, get_password_hash
+
+from conftest import make_auth_headers
 
 
 class TestChangePasswordRevokesSessions(unittest.TestCase):
@@ -90,7 +93,7 @@ class TestChangePasswordRevokesSessions(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
 
 
-class TestRegisterPasswordStrength(unittest.TestCase):
+class TestAdminCreatePasswordStrength(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -103,34 +106,46 @@ class TestRegisterPasswordStrength(unittest.TestCase):
         self.db = SessionLocal()
 
     def tearDown(self):
-        u = self.db.query(User).filter(
-            User.username == "pwprobe_user").first()
-        if u:
-            self.db.delete(u)
-            self.db.commit()
-        self.db.close()
+        try:
+            from app.modules.auth.models import UserSession
+            ids = [
+                row.id for row in self.db.query(User.id)
+                .filter(User.username.like("pwprobe_%")).all()
+            ]
+            if ids:
+                self.db.query(UserSession).filter(UserSession.user_id.in_(ids)).delete(
+                    synchronize_session=False
+                )
+                self.db.query(User).filter(User.id.in_(ids)).delete(synchronize_session=False)
+                self.db.commit()
+        finally:
+            self.db.close()
 
-    def test_register_with_one_char_password_is_rejected(self):
-        """BUG 6: `password: str` sin constraint en UserSelfRegister. Con "a" la
-        API devolvía 201 y quedaba una credencial de 1 carácter que ni siquiera
-        podía normalizarse después (change-password exigía 6)."""
+    def test_public_register_is_gone(self):
         res = self.client.post("/api/v1/auth/register", json={
-            "username": "pwprobe_user",
-            "password": "a",
-        })
-        self.assertEqual(res.status_code, 400, res.text[:300])
-        self.assertIsNone(self.db.query(User).filter(User.username == "pwprobe_user").first())
-
-    def test_register_with_valid_password_is_accepted(self):
-        """El camino legítimo no se rompió."""
-        res = self.client.post("/api/v1/auth/register", json={
-            "username": "pwprobe_user",
+            "username": "pwprobe_public",
             "password": "claveValida123",
         })
-        self.assertEqual(res.status_code, 201, res.text[:300])
-        self.assertIsNotNone(self.db.query(User).filter(User.username == "pwprobe_user").first())
+        self.assertIn(res.status_code, (404, 405), res.text[:300])
+        self.assertIsNone(
+            self.db.query(User).filter(User.username == "pwprobe_public").first()
+        )
 
-    def test_register_and_change_password_share_one_rule(self):
+    def test_admin_create_ignores_a_weak_password_field(self):
+        """El cliente no elige la clave: `password: "a"` no crea una credencial de
+        1 carácter. El servidor genera una temporal de alta entropía."""
+        headers = make_auth_headers(self.db, "admin")
+        res = self.client.post("/api/v1/auth/users", json={
+            "username": "pwprobe_created",
+            "password": "a",
+        }, headers=headers)
+        self.assertEqual(res.status_code, 201, res.text[:300])
+        temp_password = res.json()["temporary_password"]
+        self.assertNotEqual(temp_password, "a")
+        self.assertGreaterEqual(len(temp_password), 24)
+        self.assertTrue(temp_password.startswith("Datia-"))
+
+    def test_password_rule_and_change_password_share_one_threshold(self):
         """Una sola regla, en un solo lugar."""
         for bad in ("", "a", "abc", "   ", "     "):
             with self.subTest(password=bad):

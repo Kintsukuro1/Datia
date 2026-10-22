@@ -189,11 +189,13 @@ def _reset_demo_accounts():
                 or user.failed_login_attempts
                 or user.locked_until is not None
                 or user.must_change_password
+                or user.temp_password_issued_at is not None
             ):
                 user.is_active = True
                 user.failed_login_attempts = 0
                 user.locked_until = None
                 user.must_change_password = False
+                user.temp_password_issued_at = None
                 dirty = True
 
             stored = user.hashed_password or ""

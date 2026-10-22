@@ -5,16 +5,22 @@ import uuid
 from typing import List, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
-from app.api.deps import get_db, get_current_user, get_current_admin, display_role_name, is_admin_user
+from app.api.deps import (
+    get_db, get_current_user, get_current_admin, display_role_name, is_admin_user,
+    _persist_audit_log,
+)
 from app.core.security import verify_password, get_password_hash, create_access_token, decode_token_payload
+from app.core.config import settings
+from app.core.time import utcnow_naive
 from app.modules.auth.models import User, Role, UserSession
 from app.core.constants import (
     MAX_FAILED_LOGIN_ATTEMPTS, ACCOUNT_LOCKOUT_DURATION_MINUTES, ADMIN_ROLES,
     DEFAULT_USER_ROLE,
 )
 from app.modules.auth.schemas import (
-    UserLogin, UserSelfRegister, UserOut, Token, PasswordChangeRequest,
-    PasswordResetResponse, SessionOut, UserRoleUpdate, validate_password_strength
+    UserLogin, UserAdminCreate, UserCreationResponse, UserOut, Token,
+    PasswordChangeRequest, PasswordResetResponse, SessionOut, UserRoleUpdate,
+    validate_password_strength
 )
 
 def _require_strong_password(raw: str) -> str:
@@ -23,6 +29,14 @@ def _require_strong_password(raw: str) -> str:
         return validate_password_strength(raw)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+def _generate_temp_password() -> str:
+    """Clave temporal de alta entropía, generada solo en el servidor.
+
+    `token_urlsafe(18)` son ~24 caracteres aleatorios (144 bits). No se guarda en
+    claro en ningún lado: la respuesta HTTP es la única vez que se muestra.
+    """
+    return f"Datia-{secrets.token_urlsafe(18)}"
 
 def _jti_from_request(request: Request) -> Optional[str]:
     """
@@ -38,18 +52,50 @@ def _jti_from_request(request: Request) -> Optional[str]:
     payload = decode_token_payload(header.split(" ", 1)[1].strip())
     return payload.get("jti") if payload else None
 
+def _audit_login_failure(db: Session, user: Optional[User], username: str, reason: str) -> None:
+    """Registra un login fallido SIN guardar la clave intentada.
+
+    `AuditLog.username` es de 50 caracteres y el body de login no valida largo:
+    el username se trunca acá para que un intento con un nombre gigante no haga
+    fallar la auditoría (que es best-effort y se tragaría el error).
+    """
+    safe_username = (username or "")[:50]
+    _persist_audit_log(
+        db=db,
+        user_id=user.id if user else None,
+        username=safe_username,
+        user_role=display_role_name(user) if user else None,
+        question_prompt=f"Intento de inicio de sesión fallido para '{safe_username}': {reason}.",
+        sql_generated=None,
+        validation_status="AUTH_LOGIN_FALLIDO",
+        target_database="metadata",
+        error_message=reason,
+    )
+
 router = APIRouter()
 
-@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-def register_user(
-    user_in: UserSelfRegister,
+@router.post("/users", response_model=UserCreationResponse, status_code=status.HTTP_201_CREATED)
+def create_user(
+    user_in: UserAdminCreate,
+    current_admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ) -> Any:
+    """Crea una cuenta (Admin only) con una clave temporal generada por el servidor.
+
+    No existe alta pública: el único camino para que nazca una cuenta es este.
+    La cuenta nace con `must_change_password=True`: la temporal sirve para entrar,
+    pero el resto de la API responde 403 hasta que la cambie. Además vence a los
+    `TEMP_PASSWORD_TTL_DAYS` días, así que una temporal que nunca se cambió no
+    queda viva para siempre.
     """
-    Registers a new user into the system.
-    By default, new users receive the 'Usuario' role pending administrator assignment.
-    """
-    existing_username = db.query(User).filter(User.username == user_in.username).first()
+    username = user_in.username.strip()
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El nombre de usuario no puede estar vacío."
+        )
+
+    existing_username = db.query(User).filter(User.username == username).first()
     if existing_username:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -65,30 +111,50 @@ def register_user(
             )
 
     default_role = db.query(Role).filter(Role.name == DEFAULT_USER_ROLE).first()
-
-    hashed_pwd = get_password_hash(_require_strong_password(user_in.password))
+    temporary_password = _generate_temp_password()
+    now = utcnow_naive()
 
     new_user = User(
-        username=user_in.username,
+        username=username,
         email=user_in.email,
-        hashed_password=hashed_pwd,
+        hashed_password=get_password_hash(temporary_password),
         is_admin=False,
         is_active=True,
         role_id=default_role.id if default_role else None,
         failed_login_attempts=0,
-        must_change_password=False
+        locked_until=None,
+        must_change_password=True,
+        temp_password_issued_at=now,
     )
 
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
 
-    # La etiqueta sale del registro, no del string que se busco: si el catalogo
-    # no tuviera el rol por defecto, `role_id` queda NULL y decir "Usuario
-    # Consultor" seria afirmar un perfil que la cuenta recien creada no tiene.
     user_out = UserOut.model_validate(new_user)
     user_out.role_name = display_role_name(new_user)
-    return user_out
+
+    _persist_audit_log(
+        db=db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=display_role_name(current_admin),
+        question_prompt=f"Alta de cuenta '{new_user.username}' por administrador.",
+        sql_generated=None,
+        validation_status="AUTH_ALTA_CUENTA",
+        target_database="metadata",
+    )
+
+    return UserCreationResponse(
+        message=(
+            f"Cuenta '{new_user.username}' creada. Entrega la contraseña temporal "
+            f"al usuario: solo se muestra esta vez. Debe cambiarla en su primer "
+            f"inicio de sesión; la temporal vence en "
+            f"{settings.TEMP_PASSWORD_TTL_DAYS} días."
+        ),
+        temporary_password=temporary_password,
+        user=user_out,
+    )
 
 @router.post("/login", response_model=Token)
 def login_user(
@@ -98,21 +164,26 @@ def login_user(
 ) -> Any:
     """
     Authenticates user, checks account lockout policy,
-    tracks failed attempts, and creates an active UserSession.
+    tracks failed attempts, creates an active UserSession and audits the result.
     """
     user = db.query(User).filter(User.username == login_data.username).first()
     if not user:
+        _audit_login_failure(db, None, login_data.username, "Usuario inexistente")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Usuario o contraseña incorrectos."
         )
 
-    now = datetime.datetime.utcnow()
+    now = utcnow_naive()
 
     # 1. Check lockout expiration or active lockout
     if user.locked_until:
         if user.locked_until > now:
             remaining_minutes = max(1, math.ceil((user.locked_until - now).total_seconds() / 60))
+            _audit_login_failure(
+                db, user, login_data.username,
+                f"Cuenta bloqueada temporalmente; intento rechazado ({remaining_minutes} min restantes)",
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Cuenta bloqueada temporalmente por {MAX_FAILED_LOGIN_ATTEMPTS} intentos fallidos. Intenta nuevamente en {remaining_minutes} minuto(s) o solicita a un Administrador que restablezca tu acceso."
@@ -130,12 +201,17 @@ def login_user(
             user.locked_until = now + datetime.timedelta(minutes=ACCOUNT_LOCKOUT_DURATION_MINUTES)
             user.failed_login_attempts = 0
             db.commit()
+            _audit_login_failure(
+                db, user, login_data.username,
+                f"Contraseña incorrecta; cuenta bloqueada por {ACCOUNT_LOCKOUT_DURATION_MINUTES} minutos",
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Has superado el límite de {MAX_FAILED_LOGIN_ATTEMPTS} intentos fallidos. Tu cuenta ha sido bloqueada por {ACCOUNT_LOCKOUT_DURATION_MINUTES} minutos."
             )
         db.commit()
         remaining_attempts = MAX_FAILED_LOGIN_ATTEMPTS - user.failed_login_attempts
+        _audit_login_failure(db, user, login_data.username, "Contraseña incorrecta")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Usuario o contraseña incorrectos. Te quedan {remaining_attempts} intento(s) antes del bloqueo."
@@ -143,6 +219,7 @@ def login_user(
 
     # 3. Account active check
     if not user.is_active:
+        _audit_login_failure(db, user, login_data.username, "Cuenta desactivada")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="La cuenta de usuario está desactivada."
@@ -172,6 +249,17 @@ def login_user(
     db.add(user_session)
     db.commit()
 
+    _persist_audit_log(
+        db=db,
+        user_id=user.id,
+        username=user.username,
+        user_role=display_role_name(user),
+        question_prompt=f"Inicio de sesión exitoso desde {client_ip}.",
+        sql_generated=None,
+        validation_status="AUTH_LOGIN_OK",
+        target_database="metadata",
+    )
+
     user_out = UserOut.model_validate(user)
     user_out.role_name = display_role_name(user)
 
@@ -190,6 +278,42 @@ def read_current_user_profile(
     user_out.role_name = display_role_name(current_user)
     return user_out
 
+@router.post("/logout")
+def logout(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> Any:
+    """Cierra la sesión actual revocando su JTI.
+
+    Antes el logout del frontend solo borraba el token del navegador: el JWT
+    seguía siendo válido hasta 24 h y un token copiado sobrevivía al cierre.
+    Ahora la sesión queda revocada en `user_sessions` y `get_current_user` la
+    rechaza en el siguiente request.
+    """
+    current_jti = _jti_from_request(request)
+    revoked = 0
+    if current_jti:
+        revoked = db.query(UserSession).filter(
+            UserSession.user_id == current_user.id,
+            UserSession.jti == current_jti,
+            UserSession.is_revoked == False,
+        ).update({"is_revoked": True})
+        db.commit()
+
+    _persist_audit_log(
+        db=db,
+        user_id=current_user.id,
+        username=current_user.username,
+        user_role=display_role_name(current_user),
+        question_prompt=f"Cierre de sesión: {revoked} sesión(es) revocada(s).",
+        sql_generated=None,
+        validation_status="AUTH_LOGOUT",
+        target_database="metadata",
+    )
+
+    return {"message": "Sesión cerrada exitosamente.", "revoked_sessions": revoked}
+
 @router.post("/change-password")
 def change_user_password(
     pwd_in: PasswordChangeRequest,
@@ -206,8 +330,18 @@ def change_user_password(
 
     new_password = _require_strong_password(pwd_in.new_password)
 
+    # Reutilizar la temporal dejaría la credencial que el admin conoce viva
+    # aunque el flag se haya limpiado. Se compara contra el hash actual para no
+    # necesitar guardar la clave en claro.
+    if verify_password(new_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La nueva contraseña debe ser diferente a la actual."
+        )
+
     current_user.hashed_password = get_password_hash(new_password)
     current_user.must_change_password = False
+    current_user.temp_password_issued_at = None
     current_user.failed_login_attempts = 0
     current_user.locked_until = None
 
@@ -226,6 +360,17 @@ def change_user_password(
     revoked = db.query(UserSession).filter(*revoke_filter).update({"is_revoked": True})
 
     db.commit()
+
+    _persist_audit_log(
+        db=db,
+        user_id=current_user.id,
+        username=current_user.username,
+        user_role=display_role_name(current_user),
+        question_prompt="Cambio de contraseña de la cuenta.",
+        sql_generated=None,
+        validation_status="AUTH_CAMBIO_CLAVE",
+        target_database="metadata",
+    )
 
     return {"message": "Contraseña actualizada exitosamente.", "revoked_sessions": revoked}
 
@@ -310,28 +455,30 @@ def admin_update_user(
     db: Session = Depends(get_db),
 ) -> Any:
     """
-    Actualiza rol y/o `is_admin` de un usuario (Admin only).
+    Actualiza rol, `is_admin` y/o `is_active` de un usuario (Admin only).
 
     Devuelve el `UserOut` ya releido de la base: la UI confirma contra esta
     respuesta, no contra un estado local.
 
-    Decisión de diseño — revoca las sesiones del usuario afectado: SÍ, y solo
-    cuando el cambio le QUITA permisos de administrador. El motivo es el mismo
-    que en `admin_reset_user_password`: el token es un JWT de 24h que no lleva
-    el rol adentro, así que un token emitido con `is_admin=True` sigue valiendo
-    hasta expirar aunque al usuario ya se le haya quitado. Bajar privilegios
-    tiene que cortar las sesiones abiertas, no esperar al vencimiento.
+    Decisión de diseño — revoca las sesiones del usuario afectado: SÍ, cuando el
+    cambio le QUITA acceso: pierde permisos de administrador o la cuenta se
+    desactiva. El motivo es el mismo que en `admin_reset_user_password`: el token
+    es un JWT de 24h que no lleva el rol ni el estado adentro, así que un token
+    emitido con `is_admin=True` (o con la cuenta activa) sigue valiendo hasta
+    expirar aunque ya no corresponda. Bajar privilegios o desactivar tiene que
+    cortar las sesiones abiertas, no esperar al vencimiento.
 
     En los demas casos NO se revoca. Subir privilegios no deja nada peligroso
     vivo (el token viejo no podia mas de lo que ya podia), y cambiar el rol sin
     tocar `is_admin` ya surte efecto en la siguiente llamada porque
     `get_current_admin` relee el rol de la base en cada request. Revocar ahi
-    botaria a usuarios a los que no se les cambio el acceso.
+    botaria a usuarios a los que no se les cambio el acceso. Reactivar tampoco
+    revive nada: las sesiones revocadas al desactivar siguen revocadas.
     """
-    if payload.role is None and payload.is_admin is None:
+    if payload.role is None and payload.is_admin is None and payload.is_active is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Indica al menos un campo a actualizar: 'role' y/o 'is_admin'.",
+            detail="Indica al menos un campo a actualizar: 'role', 'is_admin' y/o 'is_active'.",
         )
 
     user = db.query(User).filter(User.id == user_id).first()
@@ -340,6 +487,15 @@ def admin_update_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Usuario no encontrado."
         )
+
+    # Estado previo, para las salvaguardas y para la auditoría (antes/después).
+    # El rol del ACTOR se captura antes de aplicar cambios: si el admin se edita
+    # a sí mismo, `user` y `current_admin` son la misma instancia de SQLAlchemy y
+    # leerlo después registraría el rol nuevo, no el que autorizó la acción.
+    previous_role_name = user.role.name if user.role else None
+    previous_is_admin = bool(user.is_admin)
+    previous_is_active = bool(user.is_active)
+    actor_role_name = display_role_name(current_admin)
 
     new_role = None
     if payload.role is not None:
@@ -362,9 +518,15 @@ def admin_update_user(
     # solo sobre `is_admin`: un admin con rol de catálogo también administra.
     had_admin_rights = is_admin_user(user)
 
-    keeps_admin_rights = bool(payload.is_admin) if payload.is_admin is not None else user.is_admin
-    if new_role is not None:
-        keeps_admin_rights = keeps_admin_rights or new_role.name in ADMIN_ROLES
+    # El estado RESULTANTE usa el rol nuevo si viene, o el actual si no viene.
+    # Antes solo miraba `payload.is_admin`/`user.is_admin` y, cuando no se tocaba
+    # el rol, un admin que lo era por rol de catálogo (is_admin=False) parecia
+    # perder permisos aunque el PATCH solo cambiara is_active.
+    effective_is_admin = (
+        bool(payload.is_admin) if payload.is_admin is not None else previous_is_admin
+    )
+    effective_role_name = new_role.name if new_role is not None else previous_role_name
+    keeps_admin_rights = effective_is_admin or (effective_role_name in ADMIN_ROLES)
 
     losing_admin_rights = had_admin_rights and not keeps_admin_rights
 
@@ -385,13 +547,42 @@ def admin_update_user(
                 detail="No se puede quitar los permisos de administrador al último administrador del sistema."
             )
 
+    # --- Salvaguardas de desactivación ------------------------------------
+    # Solo se validan en la transición activo -> inactivo: repetir
+    # `is_active=False` sobre una cuenta ya inactiva no cambia nada y bloquearlo
+    # haría imposible editar el rol de una cuenta desactivada.
+    deactivating = payload.is_active is False and previous_is_active
+
+    if deactivating and user.id == current_admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No puedes desactivar tu propia cuenta. Pídele el cambio a otro administrador."
+        )
+
+    if deactivating and is_admin_user(user):
+        remaining_admins = [
+            u for u in db.query(User).filter(User.id != user.id).all()
+            if u.is_active and is_admin_user(u)
+        ]
+        if not remaining_admins:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No se puede desactivar al último administrador activo del sistema."
+            )
+
     # --- Aplicación --------------------------------------------------------
     if new_role is not None:
         user.role_id = new_role.id
     if payload.is_admin is not None:
         user.is_admin = payload.is_admin
+    if payload.is_active is not None:
+        user.is_active = payload.is_active
 
-    if losing_admin_rights:
+    # Desactivar corta el acceso igual que perder privilegios: un token vivo de
+    # una cuenta desactivada no puede seguir trabajando. Reactivar no revive
+    # ninguna sesión: las revocadas quedan revocadas y el usuario vuelve a
+    # loguearse.
+    if losing_admin_rights or deactivating:
         db.query(UserSession).filter(
             UserSession.user_id == user.id,
             UserSession.is_revoked == False
@@ -399,6 +590,31 @@ def admin_update_user(
 
     db.commit()
     db.refresh(user)
+
+    changes = []
+    if new_role is not None:
+        changes.append(f"rol: '{previous_role_name}' -> '{new_role.name}'")
+    if payload.is_admin is not None:
+        changes.append(f"is_admin: {previous_is_admin} -> {bool(payload.is_admin)}")
+    if payload.is_active is not None:
+        changes.append(f"is_active: {previous_is_active} -> {bool(payload.is_active)}")
+
+    # Sin secretos: solo estado de gobernanza (rol, flag de admin, alta/baja).
+    _persist_audit_log(
+        db=db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=actor_role_name,
+        question_prompt=(
+            f"Actualización de la cuenta '{user.username}' (id={user.id}) por "
+            f"administrador: {'; '.join(changes)}."
+        ),
+        sql_generated=None,
+        validation_status=(
+            "AUTH_DESACTIVACION_CUENTA" if deactivating else "AUTH_ACTUALIZACION_USUARIO"
+        ),
+        target_database="metadata",
+    )
 
     user_out = UserOut.model_validate(user)
     user_out.role_name = display_role_name(user)
@@ -443,9 +659,11 @@ def admin_reset_user_password(
             detail="Usuario no encontrado."
         )
 
-    temp_password = f"Datia-{secrets.token_urlsafe(6)}"
+    temp_password = _generate_temp_password()
+    now = utcnow_naive()
     user.hashed_password = get_password_hash(temp_password)
     user.must_change_password = True
+    user.temp_password_issued_at = now
     user.failed_login_attempts = 0
     user.locked_until = None
 
@@ -457,8 +675,20 @@ def admin_reset_user_password(
 
     db.commit()
 
+    _persist_audit_log(
+        db=db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=display_role_name(current_admin),
+        question_prompt=f"Reset de contraseña de la cuenta '{user.username}' por administrador.",
+        sql_generated=None,
+        validation_status="AUTH_RESET_CLAVE",
+        target_database="metadata",
+    )
+
     return PasswordResetResponse(
         message=f"Contraseña de '{user.username}' restablecida exitosamente. Comunica esta contraseña temporal al usuario.",
         username=user.username,
-        temporary_password=temp_password
+        temporary_password=temp_password,
+        temp_password_expires_at=user.temp_password_expires_at,
     )
