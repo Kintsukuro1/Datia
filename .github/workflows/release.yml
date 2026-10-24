@@ -119,7 +119,6 @@ jobs:
           files: datia-deploy-${{ github.ref_name }}.tar.gz
           generate_release_notes: true
           draft: false
-          # Un tag con guion (v1.0.0-rc.1) es prerelease: no debe quedar como
-          # "Latest" en GitHub mientras las imagenes tampoco llevan `latest`.
+          # Un tag con guion (v1.0.0-rc.1, -beta.2) es prerelease: no debe quedar
+          # como "Latest" en GitHub mientras las imagenes tampoco llevan `latest`.
           prerelease: ${{ contains(github.ref_name, '-') }}
-          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
