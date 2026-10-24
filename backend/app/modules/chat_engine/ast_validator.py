@@ -17,6 +17,18 @@ class ASTValidator:
 
     ALLOWED_DIALECTS = {"postgres", "tsql", "mysql", "oracle"}
 
+    # Esquema por defecto de cada dialecto. El producto solo conecta
+    # PostgreSQL (`DatabaseType.POSTGRESQL`), pero el parser acepta otros
+    # dialectos y el chequeo no puede asumir `public` para todos. MySQL y
+    # Oracle quedan sin calificador permitido: no hay un default seguro sin
+    # conocer la conexión.
+    DEFAULT_SCHEMAS = {
+        "postgres": {"public"},
+        "tsql": {"dbo"},
+        "mysql": set(),
+        "oracle": set(),
+    }
+
     # Allowlist de funciones SQL de negocio para los nodos que sqlglot no sabe
     # tipar y representa como `exp.Anonymous` (AGE, MAKE_DATE, SPLIT_PART, ...).
     # Es una allowlist y no una denylist: lo que no figura aca se rechaza.
@@ -126,7 +138,7 @@ class ASTValidator:
         )
 
         # Rule 4: Extract and Validate Tables against RBAC Whitelist
-        extracted_tables = set()
+        allowed_schemas = cls.DEFAULT_SCHEMAS.get(sqlglot_dialect, {"public"})
         for table_node in expression.find_all(exp.Table):
             table_name = table_node.name.lower()
             # Un Table sin nombre es una funcion en el FROM (generate_series, ...):
@@ -136,16 +148,20 @@ class ASTValidator:
                     f"Seguridad: No se permiten funciones en la cláusula FROM ('{table_node.sql()}')."
                 )
             schema = (table_node.db or "").lower()
-            if schema not in ("", "public"):
+            if schema and schema not in allowed_schemas:
+                allowed_text = (
+                    " o de los esquemas " + ", ".join(f"'{s}'" for s in sorted(allowed_schemas))
+                    if allowed_schemas
+                    else ""
+                )
                 raise ASTValidationError(
                     f"Seguridad: Acceso a esquemas no autorizado ('{table_node.sql()}'). "
-                    f"Solo se permiten tablas sin esquema o del esquema 'public'."
+                    f"Para el dialecto '{sqlglot_dialect}' solo se permiten tablas sin esquema{allowed_text}."
                 )
             if table_node.catalog:
                 raise ASTValidationError(
                     f"Seguridad: No se permiten referencias calificadas con catálogo ('{table_node.sql()}')."
                 )
-            extracted_tables.add(table_name)
 
         # Una CTE puede llamarse igual que una tabla fisica: restar todos los
         # nombres de CTE permitia que una CTE ocultara una tabla prohibida.
@@ -163,9 +179,7 @@ class ASTValidator:
                 )
 
         # Rule 4.5: Expand SELECT * / table.* to explicit allowed columns
-        cls._expand_projection_stars(
-            expression, table_columns, blocked_columns, extracted_tables
-        )
+        cls._expand_projection_stars(expression, table_columns, blocked_columns)
 
         # Rule 4.6: Reject whole-row references anywhere in the query.
         cls._reject_whole_row_references(expression, cte_names)
@@ -366,7 +380,78 @@ class ASTValidator:
                 )
 
     @staticmethod
-    def _resolve_physical_tables(expression) -> Tuple[Set[str], Set[str]]:
+    def _walk_parents(node):
+        parent = node.parent
+        while parent is not None:
+            yield parent
+            parent = parent.parent
+
+    @classmethod
+    def _is_ancestor(cls, ancestor, node) -> bool:
+        return any(parent is ancestor for parent in cls._walk_parents(node))
+
+    @classmethod
+    def _nearest_cte(cls, node):
+        for parent in cls._walk_parents(node):
+            if isinstance(parent, exp.CTE):
+                return parent
+        return None
+
+    @classmethod
+    def _nearest_select(cls, node):
+        for parent in cls._walk_parents(node):
+            if isinstance(parent, exp.Select):
+                return parent
+        return None
+
+    @classmethod
+    def _is_cte_reference(cls, table_node, cte) -> bool:
+        """True si `table_node` referencia esta CTE y no una tabla fisica."""
+        # Una referencia calificada con esquema va directo a la tabla fisica.
+        if table_node.db or table_node.catalog:
+            return False
+        with_node = cte.parent
+        if not isinstance(with_node, exp.With):
+            return False
+        scope = with_node.parent
+        if scope is None or not cls._is_ancestor(scope, table_node):
+            return False
+        # Una CTE no se ve a si misma (salvo WITH RECURSIVE; fail-closed).
+        if cte.this is table_node or (
+            cte.this is not None and cls._is_ancestor(cte.this, table_node)
+        ):
+            return False
+        nearest = cls._nearest_cte(table_node)
+        if nearest is None:
+            return True
+        nearest_with = nearest.parent
+        nearest_scope = nearest_with.parent if isinstance(nearest_with, exp.With) else None
+        if nearest_scope is not scope:
+            # Una CTE externa sigue visible desde una CTE anidada, y una
+            # interna con el mismo nombre la sombrea: en ambos casos la
+            # referencia es a una CTE, no a una tabla fisica.
+            return True
+        siblings = list(with_node.expressions)
+        try:
+            return siblings.index(cte) < siblings.index(nearest)
+        except ValueError:
+            return False
+
+    @classmethod
+    def _visible_cte(cls, table_node, ctes_by_name: Dict[str, List[Any]]):
+        """(es_referencia_a_cte, cte). Si hay ambiguedad, cte=None."""
+        table_name = (table_node.name or "").lower()
+        matches = [
+            cte
+            for cte in ctes_by_name.get(table_name, ())
+            if cls._is_cte_reference(table_node, cte)
+        ]
+        if not matches:
+            return False, None
+        return True, matches[0] if len(matches) == 1 else None
+
+    @classmethod
+    def _resolve_physical_tables(cls, expression) -> Tuple[Set[str], Set[str]]:
         """
         Resuelve cada referencia de tabla contra las CTE visibles en ese punto.
 
@@ -386,52 +471,6 @@ class ASTValidator:
             if cte.alias_or_name
         }
 
-        def _walk_parents(node):
-            parent = node.parent
-            while parent is not None:
-                yield parent
-                parent = parent.parent
-
-        def _is_ancestor(ancestor, node) -> bool:
-            return any(parent is ancestor for parent in _walk_parents(node))
-
-        def _nearest_cte(node):
-            for parent in _walk_parents(node):
-                if isinstance(parent, exp.CTE):
-                    return parent
-            return None
-
-        def _is_cte_reference(table_node, cte) -> bool:
-            # Una referencia calificada con esquema va directo a la tabla fisica.
-            if table_node.db or table_node.catalog:
-                return False
-            with_node = cte.parent
-            if not isinstance(with_node, exp.With):
-                return False
-            scope = with_node.parent
-            if scope is None or not _is_ancestor(scope, table_node):
-                return False
-            # Una CTE no se ve a si misma (salvo WITH RECURSIVE; fail-closed).
-            if cte.this is table_node or (
-                cte.this is not None and _is_ancestor(cte.this, table_node)
-            ):
-                return False
-            nearest = _nearest_cte(table_node)
-            if nearest is None:
-                return True
-            nearest_with = nearest.parent
-            nearest_scope = nearest_with.parent if isinstance(nearest_with, exp.With) else None
-            if nearest_scope is not scope:
-                # Una CTE externa sigue visible desde una CTE anidada, y una
-                # interna con el mismo nombre la sombrea: en ambos casos la
-                # referencia es a una CTE, no a una tabla fisica.
-                return True
-            siblings = list(with_node.expressions)
-            try:
-                return siblings.index(cte) < siblings.index(nearest)
-            except ValueError:
-                return False
-
         ctes_by_name: Dict[str, List[Any]] = {}
         for cte in expression.find_all(exp.CTE):
             cte_name = (cte.alias_or_name or "").lower()
@@ -443,23 +482,223 @@ class ASTValidator:
             table_name = (table_node.name or "").lower()
             if not table_name:
                 continue
-            if any(
-                _is_cte_reference(table_node, cte)
-                for cte in ctes_by_name.get(table_name, ())
-            ):
+            is_cte, _ = cls._visible_cte(table_node, ctes_by_name)
+            if is_cte:
                 continue
             physical_extracted.add(table_name)
 
         return cte_names, physical_extracted
 
     @staticmethod
+    def _direct_sources(select_node) -> List[Any]:
+        """Fuentes del FROM/JOIN de ESTE SELECT, sin bajar a subconsultas.
+
+        `select_node.find_all(exp.Table)` atraviesa los ámbitos internos: en
+        `WITH x AS (SELECT id FROM empleados) SELECT * FROM x` devolvía también
+        `empleados` y expandía el `*` externo con columnas que la CTE no expone.
+        """
+        sources: List[Any] = []
+        from_node = select_node.args.get("from_") or select_node.args.get("from")
+        if from_node is not None:
+            if isinstance(from_node, exp.From):
+                if from_node.this is not None:
+                    sources.append(from_node.this)
+                sources.extend(from_node.expressions or [])
+            else:
+                sources.append(from_node)
+        for join in select_node.args.get("joins") or []:
+            if join.this is not None:
+                sources.append(join.this)
+        return sources
+
+    @staticmethod
+    def _leftmost_select(node):
+        """SELECT que define los nombres de salida de un cuerpo (o de su UNION)."""
+        while isinstance(node, exp.Union):
+            node = node.this
+        return node if isinstance(node, exp.Select) else None
+
+    @staticmethod
+    def _source_qualifier(source) -> Optional[str]:
+        if isinstance(source, exp.Table):
+            return (source.alias or source.name or "").lower() or None
+        if isinstance(source, exp.Subquery):
+            return (source.alias or "").lower() or None
+        return None
+
+    @classmethod
+    def _source_columns(
+        cls,
+        source,
+        physical_columns: Dict[str, List[str]],
+        ctes_by_name: Dict[str, List[Any]],
+        cte_outputs: Dict[int, List[str]],
+        blocked_set: Set[str],
+        seen: Set[int],
+    ) -> Optional[List[str]]:
+        """Columnas visibles de una fuente, o None si no se pueden resolver."""
+        if isinstance(source, exp.Table):
+            name = (source.name or "").lower()
+            if not name:
+                return None
+            is_cte, cte = cls._visible_cte(source, ctes_by_name)
+            if is_cte:
+                if cte is None:
+                    return None
+                columns = cte_outputs.get(id(cte))
+                return list(columns) if columns is not None else None
+            physical = physical_columns.get(name)
+            if physical is None:
+                return None
+            return [c for c in physical if c.lower() not in blocked_set]
+        if isinstance(source, exp.Subquery):
+            if not source.alias:
+                return None
+            select_node = cls._leftmost_select(source.this)
+            if select_node is None:
+                return None
+            return cls._select_output_columns(
+                select_node,
+                physical_columns,
+                ctes_by_name,
+                cte_outputs,
+                blocked_set,
+                seen,
+            )
+        return None
+
+    @classmethod
+    def _select_output_columns(
+        cls,
+        select_node,
+        physical_columns: Dict[str, List[str]],
+        ctes_by_name: Dict[str, List[Any]],
+        cte_outputs: Dict[int, List[str]],
+        blocked_set: Set[str],
+        seen: Set[int],
+    ) -> Optional[List[str]]:
+        """Nombres de salida de un SELECT, o None si alguno no es estable."""
+        if id(select_node) in seen:
+            return None
+        seen = seen | {id(select_node)}
+        sources = cls._direct_sources(select_node)
+        outputs: List[str] = []
+        for projection in select_node.expressions:
+            if isinstance(projection, exp.Star):
+                if not sources:
+                    return None
+                for source in sources:
+                    columns = cls._source_columns(
+                        source,
+                        physical_columns,
+                        ctes_by_name,
+                        cte_outputs,
+                        blocked_set,
+                        seen,
+                    )
+                    if columns is None:
+                        return None
+                    outputs.extend(columns)
+            elif isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star):
+                target = (projection.table or "").lower()
+                match = next(
+                    (s for s in sources if cls._source_qualifier(s) == target),
+                    None,
+                )
+                if match is None:
+                    return None
+                columns = cls._source_columns(
+                    match,
+                    physical_columns,
+                    ctes_by_name,
+                    cte_outputs,
+                    blocked_set,
+                    seen,
+                )
+                if columns is None:
+                    return None
+                outputs.extend(columns)
+            elif isinstance(projection, exp.Alias):
+                name = (projection.alias or "").strip()
+                if not name:
+                    return None
+                outputs.append(name)
+            elif isinstance(projection, exp.Column):
+                name = (projection.name or "").strip()
+                if not name:
+                    return None
+                outputs.append(name)
+            else:
+                # Sin alias estable (p. ej. COUNT(*) o una expresión) el driver
+                # decide el nombre; no se puede expandir con seguridad.
+                return None
+        return outputs
+
+    @classmethod
+    def _build_cte_outputs(
+        cls,
+        expression,
+        physical_columns: Dict[str, List[str]],
+        blocked_set: Set[str],
+    ) -> Tuple[Dict[int, List[str]], Dict[str, List[Any]]]:
+        """Columnas de salida de cada CTE, resueltas antes de mutar el AST.
+
+        Se indexan por `id(cte)`, no por nombre: dos CTE con el mismo nombre en
+        ámbitos distintos pueden tener columnas distintas, y confundirlas
+        expandiría un `*` físico con las columnas de una CTE que no está en su
+        alcance.
+        """
+        ctes = list(expression.find_all(exp.CTE))
+        ctes_by_name: Dict[str, List[Any]] = {}
+        for cte in ctes:
+            name = (cte.alias_or_name or "").lower()
+            if name:
+                ctes_by_name.setdefault(name, []).append(cte)
+        outputs: Dict[int, List[str]] = {}
+        # Punto fijo: `b` puede leer de `a` sin importar el orden del WITH.
+        for _ in range(len(ctes) + 1):
+            progressed = False
+            for cte in ctes:
+                if id(cte) in outputs:
+                    continue
+                select_node = cls._leftmost_select(cte.this)
+                if select_node is None:
+                    continue
+                columns = cls._select_output_columns(
+                    select_node,
+                    physical_columns,
+                    ctes_by_name,
+                    outputs,
+                    blocked_set,
+                    set(),
+                )
+                if columns is None:
+                    continue
+                aliases = list(getattr(cte, "alias_column_names", None) or [])
+                if aliases:
+                    if len(aliases) > len(columns):
+                        continue
+                    columns = [str(a) for a in aliases] + columns[len(aliases):]
+                outputs[id(cte)] = columns
+                progressed = True
+            if not progressed:
+                break
+        return outputs, ctes_by_name
+
+    @classmethod
     def _expand_projection_stars(
+        cls,
         expression,
         table_columns: Optional[Dict[str, List[str]]],
         blocked_columns: Optional[Set[str]],
-        extracted_tables: Set[str],
     ) -> None:
-        """Rule 4.5: expand SELECT * / table.* to explicit allowed columns."""
+        """Rule 4.5: expand SELECT * / table.* to explicit allowed columns.
+
+        La expansión se hace por ámbito: cada SELECT usa solo sus fuentes
+        directas (FROM/JOIN) y resuelve CTEs y subconsultas por sus columnas de
+        salida. Así `SELECT * FROM x` no puede tomar columnas de una tabla
+        física escondida dentro de la CTE.
+        """
         # A projection star (SELECT * / tabla.*) cannot be filtered without column metadata,
         # so without table_columns we fail CLOSED instead of letting the star through untouched.
         # COUNT(*) is an aggregate, not a projection star, and reveals no column.
@@ -476,105 +715,100 @@ class ASTValidator:
                 "(ej. SELECT id, monto FROM fact_ventas) o pide al administrador que publique el catálogo."
             )
 
-        has_star = expression.find(exp.Star) is not None
-        if has_star:
-            if table_columns:
-                norm_table_cols: Dict[str, List[str]] = {
-                    t.lower(): [str(c) for c in cols]
-                    for t, cols in table_columns.items()
-                }
-                blocked_set = {c.lower() for c in blocked_columns} if blocked_columns else set()
+        if expression.find(exp.Star) is None:
+            return
+        if not table_columns:
+            logger.warning("CLS: SELECT * validado sin expansión de esquema, no se puede garantizar bloqueo de columnas")
+            return
 
-                for select_node in expression.find_all(exp.Select):
-                    table_nodes = list(select_node.find_all(exp.Table))
-                    alias_to_table: Dict[str, str] = {}
-                    table_list: List[Tuple[str, str]] = []
+        norm_table_cols: Dict[str, List[str]] = {
+            t.lower(): [str(c) for c in cols]
+            for t, cols in table_columns.items()
+        }
+        blocked_set = {c.lower() for c in blocked_columns} if blocked_columns else set()
+        cte_outputs, ctes_by_name = cls._build_cte_outputs(
+            expression, norm_table_cols, blocked_set
+        )
+        unresolved_error = (
+            "Gobernanza RBAC: Acceso denegado. No tienes columnas autorizadas para visualizar en la consulta."
+        )
 
-                    for t_node in table_nodes:
-                        t_name = t_node.name.lower() if t_node.name else ""
-                        if t_name:
-                            t_alias = t_node.alias.lower() if t_node.alias else ""
-                            table_list.append((t_name, t_node.alias or ""))
-                            if t_alias:
-                                alias_to_table[t_alias] = t_name
-                            alias_to_table[t_name] = t_name
+        for select_node in expression.find_all(exp.Select):
+            sources = cls._direct_sources(select_node)
+            resolved: List[Tuple[Optional[str], Optional[List[str]]]] = []
+            for source in sources:
+                resolved.append(
+                    (
+                        cls._source_qualifier(source),
+                        cls._source_columns(
+                            source,
+                            norm_table_cols,
+                            ctes_by_name,
+                            cte_outputs,
+                            blocked_set,
+                            set(),
+                        ),
+                    )
+                )
 
-                    new_expressions = []
-                    expanded_any_star = False
+            new_expressions = []
+            expanded_any_star = False
 
-                    for expr_item in select_node.expressions:
-                        is_simple_star = isinstance(expr_item, exp.Star)
-                        is_col_star = (
-                            isinstance(expr_item, exp.Column)
-                            and isinstance(expr_item.this, exp.Star)
+            for expr_item in select_node.expressions:
+                is_simple_star = isinstance(expr_item, exp.Star)
+                is_col_star = (
+                    isinstance(expr_item, exp.Column)
+                    and isinstance(expr_item.this, exp.Star)
+                )
+
+                if is_simple_star:
+                    expanded_any_star = True
+                    if not resolved:
+                        raise ASTValidationError(unresolved_error)
+                    for qualifier, columns in resolved:
+                        if not columns:
+                            raise ASTValidationError(unresolved_error)
+                        for column in columns:
+                            if len(resolved) > 1 and qualifier:
+                                new_expressions.append(
+                                    exp.Column(
+                                        this=exp.to_identifier(column),
+                                        table=exp.to_identifier(qualifier),
+                                    )
+                                )
+                            else:
+                                new_expressions.append(
+                                    exp.Column(this=exp.to_identifier(column))
+                                )
+
+                elif is_col_star:
+                    expanded_any_star = True
+                    target_ref = (expr_item.table or "").lower()
+                    target_columns = next(
+                        (cols for qualifier, cols in resolved if qualifier == target_ref),
+                        None,
+                    )
+                    if not target_columns:
+                        raise ASTValidationError(unresolved_error)
+                    for column in target_columns:
+                        new_expressions.append(
+                            exp.Column(
+                                this=exp.to_identifier(column),
+                                table=exp.to_identifier(expr_item.table),
+                            )
                         )
 
-                        if is_simple_star:
-                            expanded_any_star = True
-                            if not table_list:
-                                target_tables = sorted(list(extracted_tables))
-                                for t_name in target_tables:
-                                    phys_cols = norm_table_cols.get(t_name, [])
-                                    vis_cols = [c for c in phys_cols if c.lower() not in blocked_set]
-                                    if not vis_cols and phys_cols:
-                                        raise ASTValidationError(
-                                            f"Gobernanza RBAC: Acceso denegado. No tienes columnas autorizadas para visualizar en la tabla '{t_name}'."
-                                        )
-                                    for c in vis_cols:
-                                        new_expressions.append(exp.Column(this=exp.to_identifier(c)))
-                            else:
-                                for t_name, t_alias in table_list:
-                                    phys_cols = norm_table_cols.get(t_name, [])
-                                    vis_cols = [c for c in phys_cols if c.lower() not in blocked_set]
-                                    if not vis_cols and phys_cols:
-                                        raise ASTValidationError(
-                                            f"Gobernanza RBAC: Acceso denegado. No tienes columnas autorizadas para visualizar en la tabla '{t_name}'."
-                                        )
-                                    for c in vis_cols:
-                                        if len(table_list) > 1 and t_alias:
-                                            new_expressions.append(
-                                                exp.Column(this=exp.to_identifier(c), table=exp.to_identifier(t_alias))
-                                            )
-                                        elif len(table_list) > 1:
-                                            new_expressions.append(
-                                                exp.Column(this=exp.to_identifier(c), table=exp.to_identifier(t_name))
-                                            )
-                                        else:
-                                            new_expressions.append(exp.Column(this=exp.to_identifier(c)))
+                else:
+                    new_expressions.append(expr_item)
 
-                        elif is_col_star:
-                            expanded_any_star = True
-                            target_ref = expr_item.table.lower() if expr_item.table else ""
-                            target_table = alias_to_table.get(target_ref, target_ref)
-                            phys_cols = norm_table_cols.get(target_table, [])
-                            vis_cols = [c for c in phys_cols if c.lower() not in blocked_set]
-                            if not vis_cols and phys_cols:
-                                raise ASTValidationError(
-                                    f"Gobernanza RBAC: Acceso denegado. No tienes columnas autorizadas para visualizar en la tabla '{target_table}'."
-                                )
-                            for c in vis_cols:
-                                if expr_item.table:
-                                    new_expressions.append(
-                                        exp.Column(this=exp.to_identifier(c), table=exp.to_identifier(expr_item.table))
-                                    )
-                                else:
-                                    new_expressions.append(exp.Column(this=exp.to_identifier(c)))
-
-                        else:
-                            new_expressions.append(expr_item)
-
-                    if expanded_any_star:
-                        if not new_expressions:
-                            raise ASTValidationError(
-                                "Gobernanza RBAC: Acceso denegado. No tienes columnas autorizadas para visualizar en la consulta."
-                            )
-                        select_node.set("expressions", new_expressions)
-            else:
-                logger.warning("CLS: SELECT * validado sin expansión de esquema, no se puede garantizar bloqueo de columnas")
+            if expanded_any_star:
+                if not new_expressions:
+                    raise ASTValidationError(unresolved_error)
+                select_node.set("expressions", new_expressions)
 
 
-    @staticmethod
-    def _reject_whole_row_references(expression, cte_names: Set[str]) -> None:
+    @classmethod
+    def _reject_whole_row_references(cls, expression, cte_names: Set[str]) -> None:
         """
         Rule 4.6: reject whole-row references anywhere in the query.
 
@@ -594,6 +828,29 @@ class ASTValidator:
         row_reference_names = set(cte_names)
         alias_to_table: Dict[str, str] = {}
         schema_tables: Set[Tuple[str, str]] = set()
+        # Una tabla derivada (`FROM (SELECT ...) d`) tambien es una referencia
+        # de fila completa valida: `SELECT d` devuelve todas las columnas que
+        # proyecta la subconsulta. No es un exp.Table, asi que sin esto se
+        # escapaba del chequeo. El alias solo existe fuera de la subconsulta;
+        # un `d` interno puede ser una columna normal y no se rechaza.
+        # LATERAL deja la subquery colgando de `exp.Lateral`, no de Join.
+        derived_aliases: Dict[str, List[Any]] = {}
+        for subquery_node in expression.find_all(exp.Subquery):
+            if not isinstance(subquery_node.parent, (exp.From, exp.Join)):
+                continue
+            derived_alias = (subquery_node.alias or "").lower()
+            if derived_alias:
+                derived_aliases.setdefault(derived_alias, []).append(subquery_node)
+        for lateral_node in expression.find_all(exp.Lateral):
+            derived_alias = (lateral_node.alias or "").lower()
+            if derived_alias:
+                derived_aliases.setdefault(derived_alias, []).append(lateral_node)
+        # `FROM (VALUES ...) d` no es Subquery ni Table; `SELECT d` devuelve
+        # la fila completa (un tuple) y se escapaba del chequeo.
+        for values_node in expression.find_all(exp.Values):
+            derived_alias = (values_node.alias or "").lower()
+            if derived_alias:
+                derived_aliases.setdefault(derived_alias, []).append(values_node)
         for table_node in expression.find_all(exp.Table):
             table_name = (table_node.name or "").lower()
             if table_name:
@@ -614,6 +871,24 @@ class ASTValidator:
             qualifier = (column_node.table or "").lower()
             if not qualifier:
                 is_whole_row = column_name in row_reference_names
+                if not is_whole_row:
+                    for derived in derived_aliases.get(column_name, ()):
+                        owner_select = cls._nearest_select(derived)
+                        # El alias solo es visible en el SELECT que lo declara
+                        # (o en sus subconsultas correlacionadas). Un alias
+                        # homonimo en un subquery hermano no aplica.
+                        if owner_select is None or not cls._is_ancestor(owner_select, column_node):
+                            continue
+                        # Dentro del cuerpo de la derivada, `d` no es el alias.
+                        if cls._is_ancestor(derived, column_node):
+                            continue
+                        output_names = cls._derived_output_names(derived)
+                        # Si la derivada proyecta una columna con ese nombre,
+                        # `SELECT d` es esa columna, no la fila completa.
+                        if output_names is not None and column_name in output_names:
+                            continue
+                        is_whole_row = True
+                        break
             else:
                 is_whole_row = (
                     qualifier == column_name
@@ -625,6 +900,43 @@ class ASTValidator:
                     f"Seguridad: Referencia a fila completa no permitida ('{column_node.sql()}'). "
                     f"Selecciona las columnas explícitas."
                 )
+
+    @staticmethod
+    def _derived_output_names(node) -> Optional[Set[str]]:
+        """Nombres de salida estables de una derivada; None si no se pueden afirmar.
+
+        La lista de alias (`(...) d(x, y)`) renombra posicionalmente la salida:
+        los nombres efectivos son `x, y`, no los del cuerpo. Ignorarla dejaba
+        pasar `SELECT d` como si `d` fuera una columna cuando en realidad era
+        la fila completa.
+        """
+        owner = node
+        while isinstance(node, (exp.Lateral, exp.Subquery, exp.Union, exp.Paren)):
+            node = node.this
+        if isinstance(node, exp.Values):
+            # VALUES no tiene nombres de columna estables; solo la lista de
+            # alias declara la salida. Sin lista se falla cerrado.
+            aliases = list(getattr(owner, "alias_column_names", None) or [])
+            return {str(alias).lower() for alias in aliases} or None
+        if not isinstance(node, exp.Select):
+            return None
+        names: List[str] = []
+        for projection in node.expressions:
+            if isinstance(projection, exp.Alias):
+                name = (projection.alias or "").strip()
+            elif isinstance(projection, exp.Column) and not isinstance(projection.this, exp.Star):
+                name = (projection.name or "").strip()
+            else:
+                return None
+            if not name:
+                return None
+            names.append(name)
+        aliases = list(getattr(owner, "alias_column_names", None) or [])
+        if aliases:
+            if len(aliases) > len(names):
+                return None
+            names = [str(alias) for alias in aliases] + names[len(aliases):]
+        return {name.lower() for name in names} or None
 
     @classmethod
     def extract_tables_from_query(cls, sql: str, dialect: str = "postgres") -> Set[str]:

@@ -272,18 +272,33 @@ class ProjectionExportStep(BaseModel):
     reliable: bool = False
     extrapolated: bool = False
 
+class ProjectionExportTotal(BaseModel):
+    point: Optional[float] = None
+    lower: Optional[float] = None
+    upper: Optional[float] = None
+    band_pct: Optional[float] = None
+    mape: Optional[float] = None
+    n_backtests: int = 0
+    reliable: bool = False
+    extrapolated: bool = False
+    measured_steps: Optional[int] = None
+
 class ProjectionExportData(BaseModel):
     available: bool = False
     reason: Optional[str] = None
     horizon: int = 0
+    horizon_source: Optional[str] = None
     series: List[Dict[str, Any]] = []
     steps: List[ProjectionExportStep] = []
+    total: Optional[ProjectionExportTotal] = None
     method: Optional[str] = None
     beats_naive: Optional[bool] = None
     mape: Optional[float] = None
     mape_by_method: Dict[str, Optional[float]] = {}
     n_periods: int = 0
     has_gaps: bool = False
+    partial_period_excluded: Optional[str] = None
+    future_periods_excluded: List[str] = []
     income_only: bool = True
     table: Optional[str] = None
     metric_column: Optional[str] = None

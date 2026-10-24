@@ -236,6 +236,84 @@ def _masked_output_keys(sql: str, masked_lower: set, dialect: str = "postgres"):
                 # `?column?`). No hay forma segura de saber cual es, asi que el
                 # llamador enmascara todos los valores de esa fila.
                 mask_all = True
+
+        # `WITH x (a) AS (...)`, `FROM (SELECT ...) d(a)` y `LATERAL (...) d(a)`
+        # renombran columnas fuera de la proyeccion: el nombre MASKED original
+        # ya no aparece en la consulta externa. Sin propagar la lista de alias,
+        # un string compuesto sobre `a` quedaba en claro.
+        alias_sources = []
+        for cte in expression.find_all(exp.CTE):
+            alias_sources.append((cte, cte.this))
+        for subquery in expression.find_all(exp.Subquery):
+            alias_sources.append((subquery, subquery.this))
+        for lateral in expression.find_all(exp.Lateral):
+            body = lateral.this
+            if isinstance(body, exp.Subquery):
+                body = body.this
+            alias_sources.append((lateral, body))
+        for owner, body in alias_sources:
+            aliases = list(getattr(owner, "alias_column_names", None) or [])
+            while isinstance(body, (exp.Subquery, exp.Union, exp.Paren)):
+                body = body.this
+            if not aliases or not isinstance(body, exp.Select):
+                continue
+            for index, projection in enumerate(body.expressions):
+                if index >= len(aliases):
+                    break
+                columns = list(projection.find_all(exp.Column))
+                if isinstance(projection, exp.Column) and projection not in columns:
+                    columns.append(projection)
+                if not any((col.name or "").lower() in masked_names for col in columns):
+                    continue
+                alias = (aliases[index] or "").strip()
+                if alias and alias.lower() not in masked_names:
+                    masked_names.add(alias.lower())
+                    changed = True
+
+        # `FROM tabla c(x)` renombra columnas fisicas sin dejar rastro del
+        # nombre MASKED. Sin metadata del orden de columnas no se puede saber
+        # cual alias corresponde a cual; enmascarar todos es fail-closed.
+        for table in expression.find_all(exp.Table):
+            for alias in list(getattr(table, "alias_column_names", None) or []):
+                alias_lower = (alias or "").strip().lower()
+                if alias_lower and alias_lower not in masked_names:
+                    masked_names.add(alias_lower)
+                    changed = True
+
+        # `UNION`/`EXCEPT`/`INTERSECT` con lista de alias: la salida no se
+        # puede mapear de forma segura solo con la rama izquierda (UNION puede
+        # traer la columna MASKED por la derecha; EXCEPT/INTERSECT no son
+        # exp.Union). Si cualquier rama usa una columna MASKED, se enmascara
+        # toda la fila.
+        for set_operation in expression.find_all(exp.SetOperation):
+            if any(
+                (col.name or "").lower() in masked_names
+                for col in set_operation.find_all(exp.Column)
+            ):
+                mask_all = True
+                break
+
+        # Una tabla `VALUES` puede llevar una columna MASKED (p. ej. un
+        # subselect o una referencia LATERAL). Sus nombres de salida son
+        # posicionales y no hay un mapeo seguro sin metadata; enmascarar toda
+        # la fila es fail-closed y cubre `v(x)` y `SELECT v`.
+        for values in expression.find_all(exp.Values):
+            if any(
+                (col.name or "").lower() in masked_names
+                for col in values.find_all(exp.Column)
+            ):
+                mask_all = True
+                break
+
+        # `UNNEST(columna_masked)` expande el array en filas con un alias que
+        # tampoco deja rastro del nombre original. Mismo criterio fail-closed.
+        for unnest in expression.find_all(exp.Unnest):
+            if any(
+                (col.name or "").lower() in masked_names
+                for col in unnest.find_all(exp.Column)
+            ):
+                mask_all = True
+                break
     return masked_names - masked_lower, mask_all
 
 
@@ -265,6 +343,19 @@ def _mask_masked_json(value, lowered):
             value[index], nested = _mask_masked_json(item, lowered)
             touched += nested
         return value, touched
+
+    if isinstance(value, tuple):
+        # Un SELECT de una fila compuesta (o VALUES) llega como tuple. Sin
+        # recorrerlo, un JSON con una clave MASKED adentro salia en claro.
+        touched = 0
+        items = []
+        for item in value:
+            item, nested = _mask_masked_json(item, lowered)
+            items.append(item)
+            touched += nested
+        if touched:
+            return tuple(items), touched
+        return value, 0
 
     if isinstance(value, str):
         # Solo se intenta parsear lo que parece un objeto/array JSON. Un string

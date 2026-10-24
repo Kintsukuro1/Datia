@@ -114,6 +114,165 @@ class TestMaskQueryRows(unittest.TestCase):
                 if other_key:
                     self.assertEqual(rows[0][other_key], "Ana Perez")
 
+    def test_cte_column_alias_list_propagates_to_composite_string(self):
+        """`WITH x (a) AS (...)` renombra la columna MASKED; `a` sigue siendo MASKED."""
+        cases = (
+            (
+                "alias_lista_simple",
+                "WITH x (a) AS (SELECT rut_dni_cliente FROM dim_clientes) "
+                "SELECT a AS compuesto FROM x",
+            ),
+            (
+                "alias_lista_compuesta",
+                "WITH x (a) AS (SELECT rut_dni_cliente FROM dim_clientes) "
+                "SELECT a || ' Ana' AS compuesto FROM x",
+            ),
+        )
+        for name, sql in cases:
+            with self.subTest(case=name):
+                rows = [{"compuesto": "12.345.678-9 Ana"}]
+                mask_query_rows(rows, {"rut_dni_cliente"}, sql)
+                self.assertNotIn("12.345.678-9", rows[0]["compuesto"])
+                self.assertTrue(rows[0]["compuesto"].endswith("678-9 Ana"))
+                self.assertIn("*", rows[0]["compuesto"])
+
+    def test_derived_and_table_alias_lists_mask_the_renamed_column(self):
+        """`d(x)`, `LATERAL d(x)` y `tabla c(x)` renombran una columna MASKED."""
+        cases = (
+            (
+                "derivada",
+                "SELECT x FROM (SELECT rut_dni_cliente FROM dim_clientes) d(x)",
+                "x",
+            ),
+            (
+                "derivada_compuesta",
+                "SELECT x || ' Ana' AS compuesto "
+                "FROM (SELECT rut_dni_cliente FROM dim_clientes) d(x)",
+                "compuesto",
+            ),
+            (
+                "lateral",
+                "SELECT x FROM dim_clientes c, "
+                "LATERAL (SELECT rut_dni_cliente FROM dim_clientes) d(x)",
+                "x",
+            ),
+            (
+                "tabla",
+                "SELECT x FROM dim_clientes c(x)",
+                "x",
+            ),
+            (
+                "derivada_parentesis",
+                "SELECT x FROM ((SELECT rut_dni_cliente FROM dim_clientes)) d(x)",
+                "x",
+            ),
+            (
+                "derivada_tres_parentesis",
+                "SELECT x FROM (((SELECT rut_dni_cliente FROM dim_clientes))) d(x)",
+                "x",
+            ),
+            (
+                "lateral_parentesis",
+                "SELECT x FROM dim_clientes c, "
+                "LATERAL ((SELECT rut_dni_cliente FROM dim_clientes)) d(x)",
+                "x",
+            ),
+            (
+                "cte_parentesis",
+                "WITH c(x) AS ((SELECT rut_dni_cliente FROM dim_clientes)) "
+                "SELECT x FROM c",
+                "x",
+            ),
+        )
+        for name, sql, key in cases:
+            with self.subTest(case=name):
+                raw = "12.345.678-9 Ana" if key == "compuesto" else "12.345.678-9"
+                rows = [{key: raw}]
+                mask_query_rows(rows, {"rut_dni_cliente"}, sql)
+                self.assertIn("*", rows[0][key])
+                self.assertNotIn("12.345.678-9", rows[0][key])
+
+    def test_values_source_with_masked_column_masks_whole_row(self):
+        """`VALUES` posicional no tiene mapeo seguro de alias: se enmascara todo."""
+        cases = (
+            (
+                "values_subquery",
+                "SELECT x FROM (VALUES ((SELECT rut_dni_cliente "
+                "FROM dim_clientes))) v(x)",
+            ),
+            (
+                "values_lateral",
+                "SELECT x FROM dim_clientes c, "
+                "LATERAL (VALUES (c.rut_dni_cliente)) v(x)",
+            ),
+        )
+        for name, sql in cases:
+            with self.subTest(case=name):
+                rows = [{"x": "12.345.678-9"}]
+                mask_query_rows(rows, {"rut_dni_cliente"}, sql)
+                self.assertIn("*", rows[0]["x"])
+                self.assertNotIn("12.345.678-9", rows[0]["x"])
+
+    def test_tuple_with_nested_json_masks_embedded_key(self):
+        """Una fila compuesta no puede esquivar el masking del JSON interno."""
+        rows = [{"d": ('{"rut_dni_cliente": "12.345.678-9"}', "Ana")}]
+        mask_query_rows(
+            rows,
+            {"rut_dni_cliente"},
+            "SELECT (perfil, nombre) AS d FROM dim_clientes",
+        )
+        self.assertIsInstance(rows[0]["d"], tuple)
+        self.assertIn("*", str(rows[0]["d"]))
+        self.assertNotIn("12.345.678-9", str(rows[0]["d"]))
+
+    def test_unnest_of_masked_column_masks_whole_row(self):
+        """`UNNEST(columna_masked)` no expone el nombre original en la clave."""
+        rows = [{"x": "12.345.678-9"}]
+        mask_query_rows(
+            rows,
+            {"perfil"},
+            "SELECT x FROM dim_clientes c, UNNEST(c.perfil) AS x",
+        )
+        self.assertIn("*", rows[0]["x"])
+        self.assertNotIn("12.345.678-9", rows[0]["x"])
+
+    def test_unnest_of_unmasked_json_masks_nested_key(self):
+        """Unnest de una columna no MASKED puede traer JSON con clave MASKED."""
+        rows = [{"x": '{"rut_dni_cliente": "12.345.678-9"}'}]
+        mask_query_rows(
+            rows,
+            {"rut_dni_cliente"},
+            "SELECT x FROM dim_clientes c, UNNEST(c.datos) AS x",
+        )
+        self.assertIn("*", rows[0]["x"])
+        self.assertNotIn("12.345.678-9", rows[0]["x"])
+
+    def test_set_operations_with_alias_list_mask_the_output(self):
+        """UNION por la derecha y EXCEPT/INTERSECT no pueden saltarse el masking."""
+        cases = (
+            (
+                "except",
+                "WITH c(x) AS (SELECT rut_dni_cliente FROM dim_clientes "
+                "EXCEPT SELECT 'n/a') SELECT x FROM c",
+            ),
+            (
+                "union_derecha",
+                "WITH c(x) AS (SELECT 'n/a' UNION ALL "
+                "SELECT rut_dni_cliente FROM dim_clientes) SELECT x FROM c",
+            ),
+            (
+                "intersect",
+                "SELECT x FROM (SELECT rut_dni_cliente FROM dim_clientes "
+                "INTERSECT SELECT rut_dni_cliente FROM dim_clientes) d(x)",
+            ),
+        )
+        for name, sql in cases:
+            with self.subTest(case=name):
+                rows = [{"x": "12.345.678-9"}]
+                mask_query_rows(rows, {"rut_dni_cliente"}, sql)
+                self.assertIn("*", rows[0]["x"])
+                self.assertNotIn("12.345.678-9", rows[0]["x"])
+
     def test_unaliased_expression_and_json_subscript_mask_the_whole_row(self):
         # Sin alias la clave la decide el driver; con `perfil['rut']` es un
         # subscript JSONB, no JSONExtract. En ambos casos no hay una clave

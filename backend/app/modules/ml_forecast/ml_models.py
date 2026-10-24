@@ -21,11 +21,12 @@ Las dos reglas que sostienen el numero
    mejora, es mas superficie donde fallar. `beats_naive` lo declara para que la
    UI pueda decir "se probo y no mejoro" en vez de mostrar un metodo nuevo sin
    contexto.
-2. La banda es por PASO y sale de los residuos de ESE paso, con la misma regla
-   que el forecast existente (cuantil 80 con piso en el peor residuo). Un paso
+2. La banda es por PASO y sale de los residuos de ESE paso: el peor error
+   observado, que es la misma regla conservadora del forecast existente. Un paso
    sin backtest posible no inventa banda: hereda la del ultimo paso medido y
    sale marcado `extrapolated`, porque una banda heredada no es una medicion de
-   ese paso.
+   ese paso. El total del horizonte usa la misma regla sobre los residuos
+   ACUMULADOS, no sobre la suma de las bandas por paso.
 
 Sin DB, sin LLM, sin I/O: entra una serie de numeros y salen numeros. Todo lo
 que no se puede calcular es None, nunca un 0 que el lector tomaria por un dato.
@@ -39,22 +40,17 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy
 
-# Los helpers privados se importan A PROPOSITO, no se copian: la regla de banda
-# (`max(cuantil 80, peor residuo)`) y la normalizacion numerica tienen que ser
-# UNA sola implementacion. Dos copias divergen en el primer arreglo y la misma
-# serie termina con dos bandas distintas segun por que camino se calculo. El
-# unico bug que un forecast no puede tener es que el mismo dato de dos numeros.
-from ..chat_engine.forecast_calculator import (
-    BAND_COVERAGE,
-    MIN_PERIODS,
-    _as_number,
-    _quantile,
-)
+# Los helpers privados se importan A PROPOSITO, no se copian: la normalizacion
+# numerica tiene que ser UNA sola implementacion. Dos copias divergen en el
+# primer arreglo y la misma serie termina con dos numeros distintos segun por
+# que camino se calculo. El unico bug que un forecast no puede tener es que el
+# mismo dato de dos numeros.
+from ..chat_engine.forecast_calculator import MIN_PERIODS, _as_number
 
 # Backtests por paso a partir de los cuales la banda de ese paso se declara
 # confiable. 4 es el mismo piso que ya usa `forecast_next_period`: con 3 residuos
-# el cuantil 80 es practicamente el maximo, o sea la banda mide el ruido de la
-# serie y no su error. Se publica igual, con `reliable: False`.
+# el maximo observado es demasiado sensible a un unico caso raro, o sea la banda
+# mide el ruido de la serie y no su error. Se publica igual, con `reliable: False`.
 MIN_BACKTESTS_RELIABLE = 4
 
 # Orden = desempate por simplicidad. Con dos MAPE iguales gana el primero, y el
@@ -129,6 +125,7 @@ def _unavailable(reason: str, n_periods: int) -> Dict[str, Any]:
         "mape_by_method": {method: None for method in METHODS},
         "n_periods": n_periods,
         "steps": [],
+        "total": None,
     }
 
 
@@ -175,26 +172,35 @@ def _fit_predict(method: str, history: Sequence[float], horizon: int) -> List[Op
 # Backtest
 # ----------------------------------------------------------------------------
 
-def walk_forward(values: Sequence[float], horizon: int) -> Dict[str, List[List[float]]]:
-    """Residuos porcentuales absolutos POR PASO, por método.
+def _walk_residuals(
+    values: Sequence[float], horizon: int
+) -> Tuple[Dict[str, List[List[float]]], Dict[str, List[List[float]]]]:
+    """Residuos por paso y acumulados del walk-forward, en UNA pasada.
 
-    Orígenes t = MIN_PERIODS .. len(values)-1 (un ajuste nunca ve menos de
+    La primera tabla es la de siempre (`walk_forward`): el error porcentual de
+    cada paso contra su actual. La segunda mide el error del TOTAL: para un
+    origen t y un prefijo j, compara la suma de las predicciones 1..j contra la
+    suma de los actuales 1..j. Esa es la distribucion que sostiene la banda del
+    total y se calcula en la misma pasada para no ajustar cada metodo dos veces.
+
+    Un prefijo con un paso no computable (actual <= 0 o prediccion None) no
+    aporta residuo acumulado: sumar los pasos restantes seria medir un total
+    distinto del que se publica.
+
+    Origenes t = MIN_PERIODS .. len(values)-1 (un ajuste nunca ve menos de
     MIN_PERIODS puntos). Para cada origen: ajusta con values[:t], predice pasos
     1..h; el actual del paso j es values[t+j-1] si existe y es > 0 (si no, ese
-    paso no aporta residuo).
-
-    Devuelve {method: [[residuos del paso 1], [paso 2], ...]} — exactamente
-    `horizon` listas por método, posiblemente vacías.
-
-    Residuo = |pred - actual| / actual * 100 (porcentaje, como
-    `forecast_calculator`).
+    paso no aporta residuo). Residuo = |pred - actual| / actual * 100.
 
     Caminar hacia adelante en vez de ajustar una sola vez sobre toda la serie:
     con un solo ajuste el error medido incluiria los puntos que el modelo ya vio,
     que es la forma clasica de publicar una precision que no existe.
     """
     n = len(values)
-    residuals: Dict[str, List[List[float]]] = {
+    steps: Dict[str, List[List[float]]] = {
+        method: [[] for _ in range(max(horizon, 0))] for method in METHODS
+    }
+    cumulative: Dict[str, List[List[float]]] = {
         method: [[] for _ in range(max(horizon, 0))] for method in METHODS
     }
 
@@ -202,6 +208,9 @@ def walk_forward(values: Sequence[float], horizon: int) -> Dict[str, List[List[f
         history = values[:t]
         for method in METHODS:
             predicted = _fit_predict(method, history, horizon)
+            cum_pred = 0.0
+            cum_actual = 0.0
+            broken = False
             for j in range(min(horizon, len(predicted))):
                 index = t + j
                 if index >= n:
@@ -213,21 +222,41 @@ def walk_forward(values: Sequence[float], horizon: int) -> Dict[str, List[List[f
                     # Denominador no positivo: el error relativo no es
                     # expresable. Ese paso no aporta residuo, y no se sustituye
                     # por 0, que seria declarar error nulo.
+                    broken = True
                     continue
                 residual = abs(point - float(actual)) / float(actual) * 100.0
                 if math.isfinite(residual):
-                    residuals[method][j].append(residual)
+                    steps[method][j].append(residual)
+                if broken:
+                    # El total de 1..j ya no es el publicado: falta un sumando.
+                    continue
+                cum_pred += float(point)
+                cum_actual += float(actual)
+                if cum_actual > 0:
+                    total_residual = abs(cum_pred - cum_actual) / cum_actual * 100.0
+                    if math.isfinite(total_residual):
+                        cumulative[method][j].append(total_residual)
 
-    return residuals
+    return steps, cumulative
+
+
+def walk_forward(values: Sequence[float], horizon: int) -> Dict[str, List[List[float]]]:
+    """Residuos porcentuales absolutos POR PASO, por método.
+
+    Atajo de `_walk_residuals` para los llamadores que no publican el total (y
+    para los tests del backtest): mismos origenes, misma regla, misma forma de
+    salida `{method: [[paso 1], [paso 2], ...]}`.
+    """
+    return _walk_residuals(values, horizon)[0]
 
 
 def _select_from_residuals(residuals: Dict[str, List[List[float]]]) -> Dict[str, Any]:
-    """Ganador del backtest. Existe para no ajustar Holt dos veces.
+    """Ganador del backtest. Existe para no ajustar dos veces.
 
     `select_model` y `build_projection` necesitan exactamente los mismos
-    residuos por paso. El backtest es la parte cara del modulo (un ajuste de Holt
-    por origen) y hacerlo dos veces sobre la misma serie no agrega informacion,
-    agrega tiempo de respuesta en el endpoint.
+    residuos por paso. El backtest es la parte cara del modulo (un ajuste por
+    origen para cada metodo) y hacerlo dos veces sobre la misma serie no agrega
+    informacion, agrega tiempo de respuesta en el endpoint.
     """
     mape_by_method: Dict[str, Optional[float]] = {}
     for method in METHODS:
@@ -281,17 +310,84 @@ def select_model(values: Sequence[float], horizon: int) -> Dict[str, Any]:
     return _select_from_residuals(walk_forward(values, horizon))
 
 
+def _build_total(
+    points: Sequence[Optional[float]],
+    cumulative: List[List[float]],
+    horizon: int,
+    has_gaps: bool,
+) -> Optional[Dict[str, Any]]:
+    """Total del horizonte y su banda, o None si falta algun punto.
+
+    La banda sale de los residuos ACUMULADOS: el error de la suma de los pasos
+    1..j, no la suma de las bandas por paso (que seria una cota mas ancha y no el
+    error que el backtest midio). Si el horizonte completo no tiene residuos, se
+    hereda el prefijo medido mas largo y se declara `extrapolated`; el MAPE del
+    total solo se publica cuando la banda cubre el horizonte completo.
+    """
+    if any(point is None for point in points):
+        return None
+    total_point = _finite(sum(float(point) for point in points if point is not None))
+    if total_point is None:
+        return None
+
+    measured_steps: Optional[int] = None
+    residuals: Optional[List[float]] = None
+    for j in range(horizon, 0, -1):
+        if j - 1 < len(cumulative) and cumulative[j - 1]:
+            residuals = cumulative[j - 1]
+            measured_steps = j
+            break
+
+    if residuals is None:
+        return {
+            "point": total_point,
+            "lower": None,
+            "upper": None,
+            "band_pct": None,
+            "mape": None,
+            "n_backtests": 0,
+            "reliable": False,
+            "extrapolated": False,
+            "measured_steps": None,
+        }
+
+    band = max(residuals)
+    lower, upper = _bounds(total_point, band)
+    full = measured_steps == horizon
+    return {
+        "point": total_point,
+        "lower": lower,
+        "upper": upper,
+        "band_pct": round(band, 1),
+        "mape": round(statistics.mean(residuals), 1) if full else None,
+        "n_backtests": len(residuals),
+        "reliable": bool(full and len(residuals) >= MIN_BACKTESTS_RELIABLE and not has_gaps),
+        "extrapolated": not full,
+        "measured_steps": measured_steps,
+    }
+
+
 # ----------------------------------------------------------------------------
 # Payload de la proyeccion
 # ----------------------------------------------------------------------------
 
-def build_projection(values: Sequence[float], horizon: int) -> Dict[str, Any]:
-    """Payload completo de la proyeccion: metodo publicado, pasos y banda por paso.
+def build_projection(
+    values: Sequence[float], horizon: int, has_gaps: bool = False
+) -> Dict[str, Any]:
+    """Payload completo: metodo, pasos con banda, total del horizonte y su evidencia.
 
     Devuelve `available: False` con `reason` cuando la serie no alcanza
     `MIN_PERIODS`, cuando algun valor no es numerico o no es finito, o cuando no
     quedo ni un residuo medible. `available: True` significa que el punto, la
     banda y el error publicado salen de numeros observados en esta serie.
+
+    `has_gaps` lo calcula el servicio sobre el eje de periodos (aqui no hay
+    periodos, solo valores): si la serie tiene huecos, ni los pasos ni el total
+    se declaran confiables, aunque el backtest tenga residuos.
+
+    El total es la suma de los puntos publicados, con banda de los residuos
+    acumulados. Si el horizonte completo no se midio, hereda el prefijo medido
+    mas largo y sale `extrapolated`; nunca se presenta como medido.
 
     `horizon < 1` es ValueError y no `available: False`: un horizonte de 0 pasos
     no es una proyeccion que no se pudo calcular, es una llamada mal hecha, y se
@@ -325,7 +421,7 @@ def build_projection(values: Sequence[float], horizon: int) -> Dict[str, Any]:
             f"Se necesitan al menos {MIN_PERIODS} periodos para proyectar y hay {n}.", n
         )
 
-    residuals = walk_forward(clean, horizon)
+    residuals, cumulative = _walk_residuals(clean, horizon)
     selection = _select_from_residuals(residuals)
     method = selection["method"]
     points = _fit_predict(method, clean, horizon)
@@ -337,19 +433,14 @@ def build_projection(values: Sequence[float], horizon: int) -> Dict[str, Any]:
             f"El metodo '{method}' no pudo ajustar la serie completa de {n} periodos.", n
         )
 
-    # Banda por paso, con la MISMA regla de `forecast_next_period`: cuantil 80 de
-    # los residuos de ese paso, con piso en el peor residuo observado. La banda no
-    # es un parametro elegido: es lo que la serie hizo antes de que se le pidiera
-    # predecir.
-    band_by_step: List[Optional[float]] = []
-    for step_residuals in residuals[method]:
-        if step_residuals:
-            ordered = sorted(step_residuals)
-            band_by_step.append(
-                max(_quantile(ordered, BAND_COVERAGE) or 0.0, max(step_residuals))
-            )
-        else:
-            band_by_step.append(None)
+    # Banda por paso: el peor error observado de ESE paso. La banda no es un
+    # parametro elegido: es lo que la serie hizo antes de que se le pidiera
+    # predecir. No se usa un cuantil: con 3 residuos es casi el maximo, y con
+    # muchos recorta justo la cola que un limite conservador tiene que mostrar.
+    band_by_step: List[Optional[float]] = [
+        max(step_residuals) if step_residuals else None
+        for step_residuals in residuals[method]
+    ]
 
     # Un paso sin backtest propio no puede tener banda medida. Hereda la del
     # ultimo paso anterior que SI se midio, y sale marcado `extrapolated`: una
@@ -387,7 +478,7 @@ def build_projection(values: Sequence[float], horizon: int) -> Dict[str, Any]:
             "band_pct": round(band, 1) if band is not None else None,
             "mape": round(statistics.mean(step_residuals), 1) if measured else None,
             "n_backtests": len(step_residuals),
-            "reliable": len(step_residuals) >= MIN_BACKTESTS_RELIABLE,
+            "reliable": bool(len(step_residuals) >= MIN_BACKTESTS_RELIABLE and not has_gaps),
             "extrapolated": not measured,
         })
 
@@ -400,6 +491,7 @@ def build_projection(values: Sequence[float], horizon: int) -> Dict[str, Any]:
         "mape_by_method": selection["mape_by_method"],
         "n_periods": n,
         "steps": steps,
+        "total": _build_total(points, cumulative[method], horizon, has_gaps),
     }
 
 
@@ -429,6 +521,12 @@ def _self_check() -> None:
     for step in projection["steps"]:
         assert step["lower"] <= step["point"] <= step["upper"], step
         assert step["band_pct"] >= 0.0
+    total = projection["total"]
+    assert total is not None, projection
+    assert total["point"] == sum(step["point"] for step in projection["steps"]), total
+    if total["lower"] is not None:
+        assert total["lower"] <= total["point"] <= total["upper"], total
+    assert 1 <= total["measured_steps"] <= 3, total
     assert build_projection(recta, 3) == projection, "la proyeccion no es determinista"
 
     # Serie plana: todos los metodos empatan en 0, se publica el mas simple y
@@ -451,9 +549,13 @@ def _self_check() -> None:
     assert ultimo_medido["step"] <= 3, ultimo_medido
     for step in larga["steps"][ultimo_medido["step"]:]:
         assert step["band_pct"] == ultimo_medido["band_pct"], step
+    assert larga["total"]["measured_steps"] == 3, larga["total"]
+    assert larga["total"]["extrapolated"] is True, larga["total"]
+    assert larga["total"]["mape"] is None, larga["total"]
 
     corta = build_projection(recta[:5], 3)
     assert corta["available"] is False and corta["steps"] == [], corta
+    assert corta["total"] is None, corta
     assert corta["reason"] and "hay 5" in corta["reason"], corta["reason"]
 
     # El error relativo necesita denominador positivo: sin el, se declara y no se
@@ -473,6 +575,10 @@ def _self_check() -> None:
     for step in negativos:
         assert step["band_pct"] > 0.0, step
         assert step["lower"] <= step["point"] <= step["upper"], step
+    total_cayendo = cayendo["total"]
+    assert total_cayendo is not None, cayendo
+    if total_cayendo["lower"] is not None:
+        assert total_cayendo["lower"] <= total_cayendo["point"] <= total_cayendo["upper"], total_cayendo
 
     for bad in (0, -1):
         try:

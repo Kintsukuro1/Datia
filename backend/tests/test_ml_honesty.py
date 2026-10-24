@@ -12,16 +12,17 @@ capa de SERVICIO que lo publica por HTTP, sin base de datos:
    (`extrapolated=True`), con el periodo futuro calculado por la calculadora.
 3. El analisis solo puede elegir columnas REALES: un nombre inventado, un tipo
    equivocado, un horizonte fuera de la lista o un JSON roto caen a la
-   heuristica declarada (`analysis_source="heuristica"`). La unica parte de la
-   respuesta que sobrevive a una columna rechazada es el horizonte: el modelo
-   puede haber leido bien "los proximos 12 meses" aunque su nombre de fecha no
-   sirva.
+   heuristica declarada (`analysis_source="heuristica"`). El horizonte sigue
+   reglas propias: un 3/6/12 explicito manda siempre; con Auto (`None`) se
+   acepta el del LLM si es valido; sin ninguno queda el default 6 declarado
+   como `default`.
 4. La narrativa tiene contrato y respaldo: sin LLM se publica la plantilla
-   determinista, que dice los mismos hechos (metodo, periodos, MAPE, pasos sin
-   evidencia) y nunca queda vacia.
+   determinista, que dice los mismos hechos (metodo, periodos, MAPE, total,
+   pasos sin evidencia) y nunca queda vacia.
 5. La estimacion es instantanea y honesta: reusa la velocidad YA medida por el
    wizard (`medido`, con piso), y sin medicion declara 60 s `fallback` en vez de
-   un numero con formato de medicion que nadie midio.
+   un numero con formato de medicion que nadie midio. Con Auto asume 12 pasos y
+   publica `horizon_used`.
 
 El contrapunto end-to-end (RBAC, enmascarado, gates) vive en
 `test_ml_service_rbac.py`.
@@ -29,13 +30,22 @@ El contrapunto end-to-end (RBAC, enmascarado, gates) vive en
 
 import asyncio
 import time
+from datetime import date
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import ValidationError
 
+from app.modules.chat_engine.ast_validator import ASTValidator
 from app.modules.chat_engine.forecast_calculator import normalize_period
-from app.modules.chat_engine.forecast_service import resolve_columns
+from app.modules.chat_engine.forecast_service import (
+    ForecastUnavailable,
+    _is_dimension_col,
+    build_group_series_sql,
+    build_group_totals_sql,
+    build_series_sql,
+    resolve_columns,
+)
 from app.modules.ml_forecast import ml_service
 from app.modules.ml_forecast.ml_models import build_projection
 from app.modules.ml_forecast.schemas import ProjectionEstimateRequest, ProjectionRequest
@@ -107,9 +117,110 @@ def test_has_gaps_detecta_hueco_y_eje_ilegible():
     assert ml_service._has_gaps([]) is False  # una serie vacia no tiene eje, no huecos
 
 
+def _fila(periodo, dias, ultima=None):
+    return {
+        "periodo": periodo,
+        "valor": 100,
+        "ultima_fecha": ultima or f"{periodo}-28",
+        "dias_con_datos": dias,
+    }
+
+
+class TestPeriodosExcluidos:
+    """El mes en curso a medias y el futuro no entran al backtest."""
+
+    def test_excluye_el_mes_en_curso_incompleto_y_declara_cual(self):
+        filas = [_fila(f"2026-{mes:02d}", 20) for mes in range(6, 10)]
+        filas.append(_fila("2026-10", 5, "2026-10-05"))
+        out = ml_service._prepare_period_rows(filas, today=date(2026, 10, 15))
+        assert [r["periodo"] for r in out["rows"]] == [
+            "2026-06", "2026-07", "2026-08", "2026-09",
+        ]
+        assert out["partial_period_excluded"] == "2026-10"
+        assert out["future_periods_excluded"] == []
+
+    def test_include_partial_period_es_el_escape_hatch(self):
+        filas = [_fila(f"2026-{mes:02d}", 20) for mes in range(6, 10)]
+        filas.append(_fila("2026-10", 5, "2026-10-05"))
+        out = ml_service._prepare_period_rows(
+            filas, include_partial_period=True, today=date(2026, 10, 15)
+        )
+        assert len(out["rows"]) == 5
+        assert out["partial_period_excluded"] is None
+
+    def test_el_futuro_se_excluye_siempre(self):
+        filas = [_fila(f"2026-{mes:02d}", 20) for mes in range(9, 11)]
+        filas.append(_fila("2026-11", 20, "2026-11-15"))
+        out = ml_service._prepare_period_rows(
+            filas, include_partial_period=True, today=date(2026, 10, 15)
+        )
+        assert [r["periodo"] for r in out["rows"]] == ["2026-09", "2026-10"]
+        assert out["future_periods_excluded"] == ["2026-11"]
+
+    def test_una_foto_mensual_no_se_confunde_con_un_mes_parcial(self):
+        """Con 1 dia por periodo, el mes en curso no esta \"a medias\": es la granularidad."""
+        filas = [_fila(f"2026-{mes:02d}", 1) for mes in range(1, 10)]
+        filas.append(_fila("2026-10", 1, "2026-10-01"))
+        out = ml_service._prepare_period_rows(filas, today=date(2026, 10, 15))
+        assert len(out["rows"]) == 10
+        assert out["partial_period_excluded"] is None
+
+    def test_cerca_del_cierre_el_mes_ya_es_historia(self):
+        filas = [_fila(f"2026-{mes:02d}", 20) for mes in range(6, 10)]
+        filas.append(_fila("2026-10", 5, "2026-10-28"))
+        out = ml_service._prepare_period_rows(filas, today=date(2026, 10, 28))
+        assert len(out["rows"]) == 5
+        assert out["partial_period_excluded"] is None
+
+
+def test_el_sql_de_diagnostico_pasa_el_ast_y_pide_dias():
+    sql = build_series_sql(
+        "movimientos", "fecha", "valor", "postgres", diagnostic_periods=True
+    )
+    assert "MAX(" in sql and "COUNT(DISTINCT" in sql
+    assert "YYYY-MM-DD" in sql, "contar timestamps no es contar dias con datos"
+    ok, secured, meta = ASTValidator.validate_and_secure_sql(
+        sql,
+        dialect="postgres",
+        allowed_tables={"movimientos"},
+        blocked_columns=set(),
+        table_columns={"movimientos": ["fecha", "valor"]},
+        max_limit=1000,
+        is_admin=True,
+    )
+    assert ok is True, meta
+    assert "dias_con_datos" in secured and "ultima_fecha" in secured
+
+
+def test_el_sql_de_grupos_pasa_el_ast_y_escapa_comillas():
+    cols = ["fecha", "valor", "complemento"]
+    totals = build_group_totals_sql("movimientos", "fecha", "valor", "complemento")
+    series = build_group_series_sql(
+        "movimientos", "fecha", "valor", "complemento", "O'Higgins"
+    )
+    assert "'O''Higgins'" in series
+    for sql in (totals, series):
+        ok, secured, meta = ASTValidator.validate_and_secure_sql(
+            sql,
+            dialect="postgres",
+            allowed_tables={"movimientos"},
+            blocked_columns=set(),
+            table_columns={"movimientos": cols},
+            max_limit=1000,
+            is_admin=True,
+        )
+        assert ok is True, meta
+        assert "complemento" in secured
+
+    assert _is_dimension_col({"name": "complemento", "type": "text"}) is True
+    assert _is_dimension_col({"name": "id_cliente", "type": "text"}) is False
+    assert _is_dimension_col({"name": "valor", "type": "numeric"}) is False
+
+
 # --- 3: las columnas las elige el backend, no el texto del LLM ----------------
 
 def _analizar(respuesta_o_excepcion, horizonte=6, cols=COLS):
+    """`horizonte=None` es Auto; un 3/6/12 es un pedido explicito."""
     if isinstance(respuesta_o_excepcion, Exception):
         mock = AsyncMock(side_effect=respuesta_o_excepcion)
     else:
@@ -164,14 +275,37 @@ def test_el_horizonte_del_llm_sobrevive_a_una_columna_de_fecha_rechazada():
     """
     out = _analizar(
         '{"metric_column": "monto", "date_column": "periodo", "horizon": 12}',
-        cols=COLS_TEXTO)
+        horizonte=None, cols=COLS_TEXTO)
     assert out["source"] == "heuristica"
     assert (out["metric_column"], out["date_column"]) == ("monto", "fecha")
     assert out["horizon"] == 12
+    assert out["horizon_source"] == "llm"
 
-    # Sin horizonte valido del modelo, sigue mandando el del pedido.
-    out = _analizar('{"metric_column": "monto", "date_column": "periodo"}', cols=COLS_TEXTO)
+    # Sin horizonte valido del modelo, Auto cae al default declarado.
+    out = _analizar(
+        '{"metric_column": "monto", "date_column": "periodo"}',
+        horizonte=None, cols=COLS_TEXTO)
     assert out["horizon"] == 6
+    assert out["horizon_source"] == "default"
+
+
+def test_el_horizonte_explicito_manda_sobre_el_del_llm():
+    """El usuario pidio 3: el modelo puede leer \"12 meses\", pero se publican 3."""
+    out = _analizar(
+        '{"metric_column": "valor", "date_column": "fecha", "horizon": 12}',
+        horizonte=3)
+    assert out["source"] == "llm"
+    assert out["horizon"] == 3
+    assert out["horizon_source"] == "pedido"
+
+
+def test_el_horizonte_explicito_sobrevive_a_columnas_rechazadas():
+    out = _analizar(
+        '{"metric_column": "monto", "date_column": "periodo", "horizon": 12}',
+        horizonte=6, cols=COLS_TEXTO)
+    assert out["source"] == "heuristica"
+    assert out["horizon"] == 6
+    assert out["horizon_source"] == "pedido"
 
 
 def test_el_analisis_inventado_cae_a_heuristica_declarada():
@@ -180,24 +314,98 @@ def test_el_analisis_inventado_cae_a_heuristica_declarada():
     assert (out["metric_column"], out["date_column"]) == ("valor", "fecha")
     assert out["table"] == "movimientos"
     assert out["horizon"] == 6
+    assert out["horizon_source"] == "pedido"
 
 
 def test_el_analisis_valido_se_publica_como_llm():
-    out = _analizar('{"metric_column": "valor", "date_column": "fecha", "horizon": 3}')
+    out = _analizar(
+        '{"metric_column": "valor", "date_column": "fecha", "horizon": 3}',
+        horizonte=None)
     assert out["source"] == "llm"
     assert out["horizon"] == 3  # la lista cerrada lo permite
+    assert out["horizon_source"] == "llm"
 
 
-def test_el_analisis_con_horizonte_invalido_conserva_el_del_pedido():
-    out = _analizar('{"metric_column": "valor", "date_column": "fecha", "horizon": 18}')
+def test_el_analisis_con_horizonte_invalido_cae_al_default_de_auto():
+    out = _analizar(
+        '{"metric_column": "valor", "date_column": "fecha", "horizon": 18}',
+        horizonte=None)
     assert out["source"] == "llm"
     assert out["horizon"] == 6
+    assert out["horizon_source"] == "default"
 
 
 def test_el_analisis_con_json_roto_o_sin_llm_cae_a_heuristica():
     assert _analizar("```json\n{roto\n```")["source"] == "heuristica"
     assert _analizar("")["source"] == "heuristica"
     assert _analizar(RuntimeError("servidor apagado"))["source"] == "heuristica"
+
+
+def test_override_manual_con_horizonte_explicito_no_llama_al_llm():
+    with patch(
+        "app.modules.ml_forecast.ml_service._ask_llm_for_columns",
+        new=AsyncMock(side_effect=AssertionError("no debe llamar al LLM")),
+    ) as mock:
+        out = asyncio.run(ml_service.analyze_question(
+            "proyecta los ingresos", "movimientos", COLS, resolve_columns(COLS),
+            3, "VALOR", "FECHA",
+        ))
+
+    assert out == {
+        "table": "movimientos",
+        "metric_column": "valor",
+        "date_column": "fecha",
+        "horizon": 3,
+        "horizon_source": "pedido",
+        "source": "manual",
+    }
+    mock.assert_not_called()
+
+
+def test_override_manual_con_auto_solo_pide_el_horizonte():
+    mock = AsyncMock(return_value={
+        "metric_column": "descripcion", "date_column": "descripcion", "horizon": 12,
+    })
+    with patch(
+        "app.modules.ml_forecast.ml_service._ask_llm_for_columns", new=mock
+    ):
+        out = asyncio.run(ml_service.analyze_question(
+            "proyecta los ingresos", "movimientos", COLS, resolve_columns(COLS),
+            None, "valor", "fecha",
+        ))
+
+    assert out["source"] == "manual"
+    assert (out["metric_column"], out["date_column"]) == ("valor", "fecha")
+    assert out["horizon"] == 12
+    assert out["horizon_source"] == "llm"
+    mock.assert_called_once()
+
+
+def test_un_override_invalido_corta_antes_de_tocar_el_sql():
+    with pytest.raises(ForecastUnavailable) as exc:
+        asyncio.run(ml_service.analyze_question(
+            "proyecta los ingresos", "movimientos", COLS, resolve_columns(COLS),
+            6, "no_existe", "fecha",
+        ))
+    assert "no es una metrica numerica permitida" in str(exc.value)
+
+
+def test_un_override_manual_sobrevive_a_la_fecha_invalida_del_llm():
+    mock = AsyncMock(return_value={
+        "metric_column": "valor", "date_column": "descripcion", "horizon": 3,
+    })
+    with patch(
+        "app.modules.ml_forecast.ml_service._ask_llm_for_columns", new=mock
+    ):
+        out = asyncio.run(ml_service.analyze_question(
+            "proyecta los ingresos", "movimientos", COLS, resolve_columns(COLS),
+            6, "valor", None,
+        ))
+
+    assert out["source"] == "manual"
+    assert out["metric_column"] == "valor"
+    assert out["date_column"] == "fecha"  # heuristica, no la eleccion invalida
+    assert out["horizon"] == 6
 
 
 # --- 4: la narrativa tiene contrato y respaldo --------------------------------
@@ -210,6 +418,8 @@ def test_la_plantilla_dice_los_mismos_hechos_que_el_llm_podria_citar():
     assert "9.0%" in texto
     assert "pasos 4, 5, 6" in texto   # extrapolados: banda heredada, no medida
     assert "pasos 1, 2, 3" in texto   # evidencia escasa: reliable=False
+    assert "El total de los 6 pasos" in texto
+    assert "se hereda del total de 3 pasos" in texto
     assert "no es una promesa de precision futura" in texto
 
 
@@ -255,7 +465,18 @@ def test_estimate_sin_medicion_declara_fallback():
         assert ml_service.estimate_seconds("proyecta los ingresos", 6) == {
             "estimated_seconds": 60.0,
             "source": "fallback",
+            "horizon_used": 6,
         }
+
+
+def test_estimate_auto_asume_el_horizonte_mas_largo():
+    """Auto estima con 12 pasos: el LLM todavia no eligio y no se subestima."""
+    from app.modules.catalog.services import enrich_estimator
+
+    with patch.dict(enrich_estimator._SPEED_CACHE, {}, clear=True):
+        out = ml_service.estimate_seconds("proyecta los ingresos", None)
+    assert out["source"] == "fallback"
+    assert out["horizon_used"] == 12
 
 
 def test_estimate_con_medicion_no_llama_al_llm():
@@ -269,6 +490,7 @@ def test_estimate_con_medicion_no_llama_al_llm():
         out = ml_service.estimate_seconds("proyecta los ingresos", 6)
 
     assert out["source"] == "medido"
+    assert out["horizon_used"] == 6
     assert 5.0 <= out["estimated_seconds"] < 60.0
 
 
@@ -282,10 +504,15 @@ def test_estimate_ignora_una_medicion_vencida():
 
 # --- el borde del contrato ----------------------------------------------------
 
-def test_horizonte_solo_3_6_12():
+def test_horizonte_solo_3_6_12_o_auto():
     for valido in (3, 6, 12):
         assert ProjectionRequest(question="proyecta", horizon=valido).horizon == valido
         assert ProjectionEstimateRequest(question="proyecta", horizon=valido).horizon == valido
+    # `None` es Auto; el default del campo sigue siendo 6.
+    assert ProjectionRequest(question="proyecta", horizon=None).horizon is None
+    assert ProjectionEstimateRequest(question="proyecta", horizon=None).horizon is None
+    assert ProjectionRequest(question="proyecta").horizon == 6
+    assert ProjectionEstimateRequest(question="proyecta").horizon == 6
     for invalido in (0, 5, 13):
         with pytest.raises(ValidationError):
             ProjectionRequest(question="proyecta", horizon=invalido)

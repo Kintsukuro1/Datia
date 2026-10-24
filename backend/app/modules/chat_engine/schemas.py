@@ -136,7 +136,10 @@ class TraceabilityAudit(BaseModel):
     sql_executed: str
     execution_time_ms: int
     rows_returned: int
-    validation_status: str
+    # NULL = no hay un estado de validacion que afirmar. No es "APROBADO":
+    # el fallback conversacional no puede inventar una aprobacion cuando el
+    # grounding query fue rechazado o no se ejecuto.
+    validation_status: Optional[str] = None
     schema_tables_used: List[str]
     explanation: str
     audit_log_id: Optional[int] = None

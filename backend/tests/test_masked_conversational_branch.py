@@ -27,6 +27,7 @@ from conftest import (
 from main import app  # noqa: F401  registra los mappers de SQLAlchemy
 
 from app.modules.chat_engine.engine import QueryEngine
+from app.modules.chat_engine.ast_validator import ASTValidationError, ASTValidator
 from app.modules.chat_engine.intent_classifier import IntentClassifier
 
 
@@ -122,6 +123,20 @@ class TestMaskedConversationalBranch(unittest.TestCase):
 
         # Enmascarar no rompe el resto de la fila.
         self.assertEqual(rows[0]["nombre"], "Ana Perez")
+        self.assertEqual(response.traceability.validation_status, "APROBADO")
+
+    def test_rejected_grounding_query_is_not_reported_as_approved(self):
+        """Un grounding rechazado no puede salir con un estado que empiece APROBADO."""
+        with patch.object(
+            ASTValidator,
+            "validate_and_secure_sql",
+            side_effect=ASTValidationError("bloqueado para el rol"),
+        ):
+            response = self._run()
+
+        status = response.traceability.validation_status
+        self.assertEqual(status, "RECHAZADO_RBAC")
+        self.assertFalse(str(status).startswith("APROBADO"))
 
     def test_rows_pass_untouched_when_there_are_no_masked_columns(self):
         """Caso normal: sin columnas MASKED la fila debe salir intacta."""

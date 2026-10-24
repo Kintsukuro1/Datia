@@ -3,7 +3,7 @@ Predicciones sobre series cortas: forecast del proximo periodo y score de
 retencion por recurrencia.
 
 Solo stdlib (`statistics`). Sin pandas, sin sklearn: el repo no los tiene
-instalados y la aritmetica que hace falta son conteos y un par de cuantiles. Un
+instalados y la aritmetica que hace falta son conteos y estadisticos simples. Un
 modelo de ML tampoco tendria nada que aprender sobre 9 periodos, asi que la
 mejor honestidad aqui es el numero observable mas simple que supera su propio
 backtest, con el error historico pegado al resultado.
@@ -48,12 +48,6 @@ MIN_PERIODS = 6
 # la proporcion es ruido con decimales: "12,5%" sobre 8 casos no es una
 # estimacion, es un resto. Se reporta None y la UI dice "sin evidencia".
 MIN_EVIDENCE = 20
-
-# Fraccion de los backtests historicos que la banda busca cubrir. 0.80 con 4-8
-# residuos medidos: es el unico numero que se puede sostener sin inventar la
-# forma de la distribucion.
-BAND_COVERAGE = 0.80
-
 
 # ----------------------------------------------------------------------------
 # Utilidades de periodo
@@ -123,24 +117,6 @@ def parse_month_list(raw: Any) -> List[str]:
         if p:
             unique.add(p)
     return sorted(unique)
-
-
-def _quantile(sorted_vals: Sequence[float], q: float) -> Optional[float]:
-    """Cuantil con interpolacion lineal. `sorted_vals` debe venir ordenado.
-
-    Devuelve None si no hay datos: un cuantil de una lista vacia no es 0, es "no
-    hay nada que cuantificar", y confundirlos produce bandas de ancho cero que
-    se leen como una certeza que el dato no sostiene.
-    """
-    if not sorted_vals:
-        return None
-    if len(sorted_vals) == 1:
-        return float(sorted_vals[0])
-    pos = (len(sorted_vals) - 1) * q
-    lo = int(pos)
-    hi = min(lo + 1, len(sorted_vals) - 1)
-    frac = pos - lo
-    return float(sorted_vals[lo]) * (1 - frac) + float(sorted_vals[hi]) * frac
 
 
 def _pick_column(rows: List[Dict[str, Any]], candidates: Sequence[str]) -> Optional[str]:
@@ -219,10 +195,11 @@ def forecast_next_period(
     Metodo: naive (el valor del ultimo periodo). No por falta de alternativas —
     gano el backtest contra regresion lineal y media movil sobre esta serie.
 
-    La banda NO es un parametro ajustado a mano: sale del cuantil 80 de los
-    errores de backtest reales, con un piso en el peor error observado. Si el
-    ultimo mes cae un 33%, la banda es de 33% porque eso es lo que la serie hizo
-    antes, y por eso no puede prometer mas precision de la que tiene.
+    La banda NO es un parametro ajustado a mano: es el peor error observado en
+    los backtests reales. Si el ultimo mes cae un 33%, la banda es de 33% porque
+    eso es lo que la serie hizo antes, y por eso no puede prometer mas precision
+    de la que tiene. No se usa un cuantil: con pocos residuos es casi el maximo,
+    y con muchos recorta justo la cola que un limite conservador debe mostrar.
 
     Devuelve None si la serie no alcanza `MIN_PERIODS`, si el ultimo valor no es
     positivo o si el backtest no deja errores comparables. Un None aqui
@@ -260,7 +237,7 @@ def forecast_next_period(
         return None
 
     mape = statistics.mean(errors_pct)
-    band = max(_quantile(sorted(errors_pct), BAND_COVERAGE) or 0.0, max(errors_pct))
+    band = max(errors_pct)
 
     return {
         "period": next_period(series[-1][0]),

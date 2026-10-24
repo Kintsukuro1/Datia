@@ -58,6 +58,37 @@ def _is_num_col(col: Dict[str, Any]) -> bool:
     return any(t in str(col.get("type", "")).lower() for t in _NUM_TYPES)
 
 
+_TEXT_TYPES = ("char", "text", "string", "enum")
+# Nombres que identifican una fila, no un grupo de negocio. Se excluyen de las
+# dimensiones por la misma razon que `looks_like_metric` excluye IDs: agrupar
+# por un folio produce un top de grupos de tamano uno.
+_NON_DIMENSION_MARKERS = (
+    "folio", "codigo", "cod_", "numero_documento", "documento",
+)
+
+
+def _is_dimension_col(col: Dict[str, Any]) -> bool:
+    """Columna de texto agrupable, sin IDs ni codigos unicos."""
+    if _is_date_col(col) or _is_num_col(col):
+        return False
+    name = str(col.get("name", "")).lower()
+    if not name:
+        return False
+    if name == "id" or name.startswith("id_") or name.endswith("_id"):
+        return False
+    if any(marker in name for marker in _NON_DIMENSION_MARKERS):
+        return False
+    return any(t in str(col.get("type", "")).lower() for t in _TEXT_TYPES)
+
+
+def looks_like_metric(col: Dict[str, Any]) -> bool:
+    """Descarta codigos, folios e IDs antes de tratar una numerica como metrica."""
+    name = str(col.get("name", "")).lower()
+    if name == "id" or name.startswith("id_") or name.endswith("_id"):
+        return False
+    return not any(marker in name for marker in _NON_DIMENSION_MARKERS)
+
+
 def _match_name(cols: Sequence[Dict[str, Any]], candidates: Sequence[str], predicate) -> Optional[str]:
     """Primer candidato presente como columna y que pase `predicate`."""
     by_lower = {str(c.get("name", "")).lower(): c for c in cols}
@@ -81,12 +112,6 @@ def resolve_columns(cols: List[Dict[str, Any]]) -> Dict[str, Optional[str]]:
 
     # Excluye las columnas que `NON_METRIC_KEYWORDS` de kpi_calculator marca como
     # no-metricas (codigos, folios, ids) para no predecir sobre un correlativo.
-    def looks_like_metric(c: Dict[str, Any]) -> bool:
-        name = str(c.get("name", "")).lower()
-        if name == "id" or name.startswith("id_") or name.endswith("_id"):
-            return False
-        return not any(k in name for k in ("folio", "codigo", "cod_", "numero_documento", "documento"))
-
     value_col = _match_name(cols, VALUE_CANDIDATES, lambda c: _is_num_col(c) and looks_like_metric(c)) or next(
         (str(c["name"]) for c in cols if _is_num_col(c) and looks_like_metric(c)), None
     )
@@ -111,7 +136,13 @@ def _quote(identifier: str, dialect: str = "postgres") -> str:
     return f'"{safe}"'
 
 
-def build_series_sql(table: str, date_col: str, value_col: str, dialect: str = "postgres") -> str:
+def build_series_sql(
+    table: str,
+    date_col: str,
+    value_col: str,
+    dialect: str = "postgres",
+    diagnostic_periods: bool = False,
+) -> str:
     """Serie mensual del valor. Solo montos positivos: es una serie de ingresos.
 
     El filtro `> 0` es una decision, no un detalle. Una serie que mezcla ingresos
@@ -119,12 +150,84 @@ def build_series_sql(table: str, date_col: str, value_col: str, dialect: str = "
     error relativo de esa serie no es interpretable. Se filtra y se declara en
     la respuesta (`income_only: True`) para que quien lee sepa que la vista es
     "ingresos", no "neto".
+
+    `diagnostic_periods=True` agrega `MAX(fecha)` y `COUNT(DISTINCT fecha)` por
+    periodo, y descarta fechas nulas. Lo usa la proyeccion para saber si el mes
+    en curso esta incompleto; el forecast del chat lo deja apagado para no
+    cambiar su contrato. El SQL lo valida igual el ASTValidator.
     """
     t, d, v = _quote(table, dialect), _quote(date_col, dialect), _quote(value_col, dialect)
     period_expr = f"TO_CHAR({d}, 'YYYY-MM')"
+    diagnostics = ""
+    where = f"WHERE {v} > 0"
+    if diagnostic_periods:
+        # `TO_CHAR(fecha, 'YYYY-MM-DD')` y no `fecha` a secas: si la columna de
+        # fecha es un timestamp, COUNT(DISTINCT fecha) cuenta transacciones, no
+        # dias, y el mes en curso nunca pareceria incompleto.
+        diagnostics = (
+            f", MAX({d}) AS ultima_fecha, "
+            f"COUNT(DISTINCT TO_CHAR({d}, 'YYYY-MM-DD')) AS dias_con_datos"
+        )
+        # Una fecha nula no es un periodo: agruparla como NULL dejaria una fila
+        # que no se puede fechar y que ademas rompe el diagnostico del mes.
+        where += f" AND {d} IS NOT NULL"
     return (
-        f"SELECT {period_expr} AS periodo, SUM({v}) AS valor "
-        f"FROM {t} WHERE {v} > 0 GROUP BY 1 ORDER BY 1 LIMIT {settings.DEFAULT_ROW_LIMIT}"
+        f"SELECT {period_expr} AS periodo, SUM({v}) AS valor{diagnostics} "
+        f"FROM {t} {where} GROUP BY 1 ORDER BY 1 LIMIT {settings.DEFAULT_ROW_LIMIT}"
+    )
+
+
+def _sql_literal(value: Any) -> str:
+    """Literal de texto para el filtro de un grupo. Se escapa la comilla simple."""
+    text = str(value)
+    if "\x00" in text:
+        raise ForecastUnavailable("El valor de la dimension contiene un caracter nulo.")
+    return "'" + text.replace("'", "''") + "'"
+
+
+def build_group_totals_sql(
+    table: str,
+    date_col: str,
+    value_col: str,
+    dimension_col: str,
+    dialect: str = "postgres",
+    top_n: int = 5,
+) -> str:
+    """Top de grupos por volumen historico, con el MISMO filtro de ingresos.
+
+    El top se elige por historia observada, no por la proyeccion: ordenar por un
+    valor proyectado elegiria los grupos que mas crecieron en el modelo, que es
+    justo el sesgo que el desglose intenta evitar.
+    """
+    t, d, v, g = (
+        _quote(table, dialect), _quote(date_col, dialect),
+        _quote(value_col, dialect), _quote(dimension_col, dialect),
+    )
+    return (
+        f"SELECT {g} AS grupo, SUM({v}) AS total FROM {t} "
+        f"WHERE {v} > 0 AND {d} IS NOT NULL AND {g} IS NOT NULL "
+        f"GROUP BY 1 ORDER BY total DESC LIMIT {int(top_n)}"
+    )
+
+
+def build_group_series_sql(
+    table: str,
+    date_col: str,
+    value_col: str,
+    dimension_col: str,
+    group_value: Any,
+    dialect: str = "postgres",
+) -> str:
+    """Serie mensual de UN grupo, con el literal escapado y el mismo AST."""
+    t, d, v, g = (
+        _quote(table, dialect), _quote(date_col, dialect),
+        _quote(value_col, dialect), _quote(dimension_col, dialect),
+    )
+    period_expr = f"TO_CHAR({d}, 'YYYY-MM')"
+    return (
+        f"SELECT {period_expr} AS periodo, SUM({v}) AS valor FROM {t} "
+        f"WHERE {v} > 0 AND {d} IS NOT NULL AND {g} = {_sql_literal(group_value)} "
+        f"GROUP BY 1 ORDER BY 1 LIMIT {settings.DEFAULT_ROW_LIMIT}"
     )
 
 
@@ -202,9 +305,13 @@ def _run_guarded_sql(
         )
         if budget is not None:
             budget["allowed_tables"] = allowed
-    blocked = GovernanceGuard.get_blocked_columns_for_role(
-        user_role=user_role, is_admin=is_admin, db=db, role_id=role_id, connection_id=connection_id
-    )
+    blocked = (budget or {}).get("blocked_columns")
+    if blocked is None:
+        blocked = GovernanceGuard.get_blocked_columns_for_role(
+            user_role=user_role, is_admin=is_admin, db=db, role_id=role_id, connection_id=connection_id
+        )
+        if budget is not None:
+            budget["blocked_columns"] = blocked
     table_columns = {table.lower(): [str(c["name"]) for c in cols if c.get("name")]}
 
     ok, secured, _ = ASTValidator.validate_and_secure_sql(
@@ -225,9 +332,13 @@ def _run_guarded_sql(
 
     # El enmascarado ocurre antes de que las filas salgan de esta capa, igual
     # que en el motor de chat: una prediccion no es una exencion del RBAC.
-    masked = GovernanceGuard.get_masked_columns_for_role(
-        user_role=user_role, is_admin=is_admin, db=db, role_id=role_id, connection_id=connection_id
-    )
+    masked = (budget or {}).get("masked_columns")
+    if masked is None:
+        masked = GovernanceGuard.get_masked_columns_for_role(
+            user_role=user_role, is_admin=is_admin, db=db, role_id=role_id, connection_id=connection_id
+        )
+        if budget is not None:
+            budget["masked_columns"] = masked
     if masked:
         # `mask_rows` enmascara IN-PLACE y devuelve CUANTAS celdas toco (int).
         # Asignar el retorno aca pisaba las filas con ese contador: cualquier rol

@@ -217,6 +217,82 @@ class TestWholeRowReferencesAreRejected(unittest.TestCase):
                     )
                 self.assertIn("fila completa", str(ctx.exception).lower())
 
+    def test_whole_row_reference_over_derived_table_is_rejected(self):
+        """`FROM (SELECT ...) d` también es una fila completa y no es exp.Table."""
+        cases = (
+            "SELECT d FROM (SELECT id FROM empleados) d",
+            # Columna MASKED, no bloqueada: el dato saldría compuesto y sin
+            # pasar por mask_query_rows porque la clave externa es `d`.
+            "SELECT d FROM (SELECT rut_dni_cliente FROM dim_clientes) d",
+            # La lista de alias renombra la salida a x, y; `d` ya no es una
+            # columna de la derivada y vuelve a ser la fila completa.
+            "SELECT d FROM (SELECT nombre AS d, rut_dni_cliente FROM dim_clientes) d(x, y)",
+            # VALUES directo: `d` es el tuple de la fila, no una columna.
+            "SELECT d FROM (VALUES ((SELECT perfil, nombre FROM dim_clientes LIMIT 1))) d",
+        )
+        for sql in cases:
+            with self.subTest(sql=sql):
+                with self.assertRaises(ASTValidationError) as ctx:
+                    ASTValidator.validate_and_secure_sql(
+                        sql,
+                        allowed_tables={"empleados", "dim_clientes"},
+                        blocked_columns=set(),
+                        table_columns=COLUMNS,
+                    )
+                self.assertIn("fila completa", str(ctx.exception).lower())
+
+    def test_derived_alias_list_column_is_not_whole_row(self):
+        """Si `d` está en la lista de alias, es una columna, no la fila entera."""
+        ok, _, _ = ASTValidator.validate_and_secure_sql(
+            "SELECT d FROM (SELECT nombre AS d, rut_dni_cliente "
+            "FROM dim_clientes) d(d, y)",
+            allowed_tables={"dim_clientes"},
+            blocked_columns=set(),
+        )
+        self.assertTrue(ok)
+
+    def test_explicit_columns_from_derived_table_are_allowed(self):
+        ok, secured, _ = ASTValidator.validate_and_secure_sql(
+            "SELECT d.id FROM (SELECT id FROM empleados) d",
+            allowed_tables=EMPLOYEES,
+            blocked_columns=BLOCKED,
+        )
+        self.assertTrue(ok)
+        self.assertIn("d.id", secured)
+
+    def test_whole_row_reference_over_lateral_is_rejected(self):
+        """LATERAL deja la subquery bajo exp.Lateral, no bajo Join."""
+        with self.assertRaises(ASTValidationError) as ctx:
+            ASTValidator.validate_and_secure_sql(
+                "SELECT d FROM empleados e, "
+                "LATERAL (SELECT rut_dni_cliente FROM dim_clientes) d",
+                allowed_tables={"empleados", "dim_clientes"},
+                blocked_columns=set(),
+            )
+        self.assertIn("fila completa", str(ctx.exception).lower())
+
+    def test_derived_column_with_same_name_as_alias_is_not_whole_row(self):
+        """`SELECT *` expande `id AS d`; ese `d` es columna, no la fila entera."""
+        ok, secured, _ = ASTValidator.validate_and_secure_sql(
+            "SELECT * FROM (SELECT id AS d FROM empleados) d",
+            allowed_tables=EMPLOYEES,
+            blocked_columns=BLOCKED,
+            table_columns=COLUMNS,
+        )
+        self.assertTrue(ok)
+        self.assertTrue(secured.lower().startswith("select d"))
+
+    def test_derived_alias_in_another_subquery_does_not_reject_outer_column(self):
+        """Un alias `d` dentro del WHERE no es visible en el SELECT externo."""
+        ok, _, _ = ASTValidator.validate_and_secure_sql(
+            "SELECT d FROM tabla1 WHERE id IN "
+            "(SELECT id FROM (SELECT id FROM tabla2) d)",
+            allowed_tables={"tabla1", "tabla2"},
+            blocked_columns=set(),
+            table_columns={"tabla1": ["id", "d"], "tabla2": ["id"]},
+        )
+        self.assertTrue(ok)
+
 
 class TestCteCannotShadowPhysicalTables(unittest.TestCase):
     """Una CTE con el nombre de una tabla prohibida no la vuelve invisible.
@@ -280,6 +356,94 @@ class TestNestedStarIsRejected(unittest.TestCase):
         self.assertNotIn("sueldo", secured.lower())
 
 
+class TestStarExpansionStaysInScope(unittest.TestCase):
+    """`*` solo puede expandir las columnas de SU propio FROM/JOIN."""
+
+    def test_star_over_derived_table_uses_only_derived_columns(self):
+        ok, secured, _ = ASTValidator.validate_and_secure_sql(
+            "SELECT * FROM (SELECT id FROM empleados) d",
+            allowed_tables=EMPLOYEES,
+            blocked_columns=BLOCKED,
+            table_columns=COLUMNS,
+        )
+        self.assertTrue(ok)
+        self.assertIn("id", secured.lower())
+        self.assertNotIn("nombre", secured.lower())
+
+    def test_qualified_star_over_derived_table_is_allowed(self):
+        ok, secured, _ = ASTValidator.validate_and_secure_sql(
+            "SELECT d.* FROM (SELECT id FROM empleados) d",
+            allowed_tables=EMPLOYEES,
+            blocked_columns=BLOCKED,
+            table_columns=COLUMNS,
+        )
+        self.assertTrue(ok)
+        self.assertIn("d.id", secured.lower())
+        self.assertNotIn("nombre", secured.lower())
+
+    def test_star_over_cte_does_not_take_columns_from_its_body(self):
+        cases = (
+            "WITH x AS (SELECT id FROM empleados) SELECT * FROM x",
+            "WITH x AS (SELECT id FROM empleados) SELECT x.* FROM x",
+            "WITH a AS (SELECT id FROM empleados), "
+            "b AS (SELECT id FROM a) SELECT b.* FROM b",
+        )
+        for sql in cases:
+            with self.subTest(sql=sql):
+                ok, secured, _ = ASTValidator.validate_and_secure_sql(
+                    sql,
+                    allowed_tables=EMPLOYEES,
+                    blocked_columns=BLOCKED,
+                    table_columns=COLUMNS,
+                )
+                self.assertTrue(ok)
+                self.assertNotIn("nombre", secured.lower())
+                self.assertNotIn("empleados.nombre", secured.lower())
+
+    def test_star_over_join_does_not_duplicate_inner_physical_columns(self):
+        ok, secured, _ = ASTValidator.validate_and_secure_sql(
+            "SELECT * FROM (SELECT id FROM empleados) d "
+            "JOIN empleados e ON d.id = e.id",
+            allowed_tables=EMPLOYEES,
+            blocked_columns=BLOCKED,
+            table_columns=COLUMNS,
+        )
+        self.assertTrue(ok)
+        self.assertIn("d.id", secured.lower())
+        self.assertIn("e.id", secured.lower())
+        self.assertIn("e.nombre", secured.lower())
+        self.assertNotIn("empleados.id", secured.lower())
+        self.assertNotIn("sueldo", secured.lower())
+
+    def test_inner_cte_with_same_name_does_not_expand_outer_physical_table(self):
+        """La CTE `empleados` de la subconsulta no es visible en el JOIN externo.
+
+        Un mapa de CTEs por nombre expandía el `*` de la tabla física externa
+        con las columnas de la CTE interna (aquí solo `nombre`), perdiendo
+        `id` y cualquier otra columna real.
+        """
+        sql = (
+            "SELECT * FROM ("
+            "WITH empleados AS (SELECT id AS nombre FROM dim_clientes) "
+            "SELECT * FROM empleados"
+            ") sub JOIN empleados e ON sub.nombre = e.id"
+        )
+        ok, secured, _ = ASTValidator.validate_and_secure_sql(
+            sql,
+            allowed_tables={"empleados", "dim_clientes"},
+            blocked_columns={"sueldo"},
+            table_columns={
+                "empleados": ["id", "nombre", "sueldo"],
+                "dim_clientes": ["id"],
+            },
+        )
+        self.assertTrue(ok)
+        self.assertIn("sub.nombre", secured.lower())
+        self.assertIn("e.id", secured.lower())
+        self.assertIn("e.nombre", secured.lower())
+        self.assertNotIn("sueldo", secured.lower())
+
+
 class TestMutatingSelectFormsAreRejected(unittest.TestCase):
 
     def test_mutating_select_forms_are_rejected(self):
@@ -296,6 +460,47 @@ class TestMutatingSelectFormsAreRejected(unittest.TestCase):
                         f"SELECT id FROM empleados {clause}",
                         allowed_tables=EMPLOYEES,
                     )
+
+
+class TestSchemaAllowlistByDialect(unittest.TestCase):
+    """El esquema por defecto no es `public` en todos los dialectos."""
+
+    def test_tsql_allows_dbo(self):
+        ok, secured, _ = ASTValidator.validate_and_secure_sql(
+            "SELECT e.id FROM dbo.empleados e",
+            dialect="tsql",
+            allowed_tables=EMPLOYEES,
+            blocked_columns=BLOCKED,
+        )
+        self.assertTrue(ok)
+        self.assertIn("dbo.empleados", secured.lower())
+
+    def test_postgres_still_rejects_dbo(self):
+        with self.assertRaises(ASTValidationError):
+            ASTValidator.validate_and_secure_sql(
+                "SELECT e.id FROM dbo.empleados e",
+                dialect="postgres",
+                allowed_tables=EMPLOYEES,
+                blocked_columns=BLOCKED,
+            )
+
+    def test_mysql_rejects_database_qualifier(self):
+        with self.assertRaises(ASTValidationError):
+            ASTValidator.validate_and_secure_sql(
+                "SELECT e.id FROM midb.empleados e",
+                dialect="mysql",
+                allowed_tables=EMPLOYEES,
+                blocked_columns=BLOCKED,
+            )
+
+    def test_mysql_without_schema_still_passes(self):
+        ok, _, _ = ASTValidator.validate_and_secure_sql(
+            "SELECT e.id FROM empleados e",
+            dialect="mysql",
+            allowed_tables=EMPLOYEES,
+            blocked_columns=BLOCKED,
+        )
+        self.assertTrue(ok)
 
 
 class TestLegitimateBusinessQueriesStillPass(unittest.TestCase):

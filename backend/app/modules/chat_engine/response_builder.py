@@ -392,7 +392,8 @@ class ResponseBuilder:
         suggested_questions: Optional[List[str]] = None,
         clarification_options: Optional[List[str]] = None,
         anomalies_detected: Optional[List[Dict[str, Any]]] = None,
-        sql_explanation: Optional[str] = None
+        sql_explanation: Optional[str] = None,
+        validation_status: Optional[str] = None
     ) -> QueryResponse:
         return QueryResponse(
             question=question,
@@ -421,7 +422,9 @@ class ResponseBuilder:
                 sql_executed=secured_sql,
                 execution_time_ms=exec_time_ms,
                 rows_returned=len(rows),
-                validation_status="APROBADO (Contexto Asistente)",
+                # Lo decide el llamador: el builder no puede afirmar que el
+                # grounding query paso el AST cuando pudo haber sido rechazado.
+                validation_status=validation_status,
                 schema_tables_used=list(meta.get("tables_used", list(allowed_tables))),
                 target_database=meta.get("target_database"),
                 explanation=f"Respuesta de Asistente generada con IA Local. Datos de respaldo consultados de: {', '.join(meta.get('tables_used', []))}."

@@ -137,6 +137,11 @@ class ReportDataCompiler:
             ("MAPE del método publicado", cls.fmt_pct(p.mape)),
             ("Periodos históricos analizados", str(p.n_periods)),
             ("Horizonte publicado", f"{p.horizon} pasos"),
+            ("Origen del horizonte", {
+                "pedido": "elegido en el pedido",
+                "llm": "ajustado por el modelo local (Auto)",
+                "default": "valor por defecto de Auto",
+            }.get(p.horizon_source or "", p.horizon_source or cls.SIN_DATO)),
             ("Serie económica", "solo ingresos (montos positivos)" if p.income_only
              else "montos netos (incluye valores negativos)"),
             ("Continuidad de la serie", "Sin huecos en el eje temporal." if not p.has_gaps
@@ -144,6 +149,37 @@ class ReportDataCompiler:
             ("Serie analizada", eje),
             ("Elección del análisis", origen),
         ]
+        if p.partial_period_excluded:
+            facts.append(("Periodo en curso excluido", p.partial_period_excluded))
+        if p.future_periods_excluded:
+            facts.append(("Periodos futuros excluidos", ", ".join(p.future_periods_excluded)))
+        if p.total is None:
+            facts.append(("Total del horizonte", cls.SIN_DATO))
+        else:
+            t = p.total
+            facts.append(("Total del horizonte", cls.fmt_number(t.point)))
+            if t.lower is None or t.upper is None:
+                facts.append(("Rango del total", cls.SIN_DATO))
+            else:
+                facts.append((
+                    "Rango del total",
+                    f"{cls.fmt_number(t.lower)} – {cls.fmt_number(t.upper)}",
+                ))
+            if t.measured_steps is None:
+                evidencia = "Sin banda medida para el total."
+            elif t.extrapolated:
+                evidencia = (
+                    f"Banda heredada del total de {t.measured_steps} pasos; "
+                    f"no es una medición de los {p.horizon} pasos."
+                )
+            elif t.reliable:
+                evidencia = f"Medido con {t.n_backtests} backtests sobre el horizonte completo."
+            else:
+                evidencia = (
+                    f"Medido con {t.n_backtests} backtests; evidencia escasa para "
+                    f"{p.horizon} pasos."
+                )
+            facts.append(("Evidencia del total", evidencia))
         if p.mape_by_method:
             candidatos = ", ".join(
                 f"{metodo}: {cls.fmt_pct(valor)}" for metodo, valor in p.mape_by_method.items()

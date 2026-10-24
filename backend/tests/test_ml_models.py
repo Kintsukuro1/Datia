@@ -142,11 +142,10 @@ class TestBandaPorPaso:
     def test_banda_por_paso_con_la_cuenta_a_mano(self):
         """9 puntos y 12 pasos: 3 medidos y 9 heredados.
 
-        Cuenta a mano de la banda del naive sobre SERIE_9 (la misma que hace
-        `forecast_next_period`: cuantil 80 con piso en el peor residuo):
-          paso 1: residuos 13,7% / 15,5% / 10,2% -> cuantil 80 = 14,8%, piso = el
-                  peor = 15,5%
-          paso 2: residuos 0,3% / 3,7% -> cuantil 80 = 3,0%, piso = 3,7%
+        Cuenta a mano de la banda del naive sobre SERIE_9 (la misma regla que
+        `forecast_next_period`: el peor residuo observado):
+          paso 1: residuos 13,7% / 15,5% / 10,2% -> banda = 15,5%
+          paso 2: residuos 0,3% / 3,7% -> banda = 3,7%
           paso 3: un solo residuo, 10,5% -> la banda ES ese residuo
         """
         out = build_projection([float(v) for v in SERIE_9], 12)
@@ -189,10 +188,55 @@ class TestBandaPorPaso:
             assert step["band_pct"] == ultimo_medido["band_pct"] == 10.5
 
     def test_la_confiabilidad_pide_cuatro_backtests(self):
-        """Con 3 residuos el cuantil 80 es practicamente el maximo: se publica, no se declara confiable."""
+        """Con 3 residuos el maximo es demasiado sensible a un caso raro: se publica, no se declara confiable."""
         out = build_projection([float(v) for v in SERIE_9], 12)
         assert max(s["n_backtests"] for s in out["steps"]) < MIN_BACKTESTS_RELIABLE
         assert all(s["reliable"] is False for s in out["steps"])
+
+
+class TestTotalDelHorizonte:
+    """El total es la suma de los puntos, con la banda del error ACUMULADO."""
+
+    def test_total_hereda_el_prefijo_medido_si_el_horizonte_es_mas_largo(self):
+        """h=6 con 9 puntos: solo el prefijo de 3 pasos tiene actual.
+
+        La banda del total no es la suma de las bandas por paso: se mide contra
+        la suma de los actuales. Con h=6 se hereda el prefijo de 3 y se declara.
+        """
+        out = build_projection([float(v) for v in SERIE_9], 6)
+        total = out["total"]
+        assert total is not None
+        assert total["point"] == sum(step["point"] for step in out["steps"])
+        assert total["measured_steps"] == 3
+        assert total["extrapolated"] is True
+        assert total["band_pct"] == 8.5
+        assert total["n_backtests"] == 1
+        assert total["mape"] is None, "un prefijo no es el horizonte completo"
+        assert total["reliable"] is False
+        assert total["lower"] <= total["point"] <= total["upper"]
+
+    def test_total_con_horizonte_completo_publica_su_mape(self):
+        out = build_projection([float(v) for v in SERIE_9], 3)
+        total = out["total"]
+        assert total is not None
+        assert total["measured_steps"] == 3
+        assert total["extrapolated"] is False
+        assert total["band_pct"] == 8.5
+        assert total["mape"] == 8.5
+        assert total["reliable"] is False, "un solo backtest no alcanza para confiable"
+
+    def test_total_no_se_declara_confiable_si_la_serie_tiene_huecos(self):
+        """Con 10 puntos y h=1 hay 4 backtests; el hueco igual invalida la confianza."""
+        limpio = build_projection([100.0] * 10, 1)
+        assert limpio["steps"][0]["reliable"] is True
+        assert limpio["total"]["reliable"] is True
+
+        hueco = build_projection([100.0] * 10, 1, has_gaps=True)
+        assert hueco["steps"][0]["reliable"] is False
+        assert hueco["total"]["reliable"] is False
+
+    def test_sin_proyeccion_no_hay_total(self):
+        assert build_projection([0.0] * 9, 3)["total"] is None
 
 
 class TestMapePorPaso:

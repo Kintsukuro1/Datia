@@ -147,7 +147,7 @@ El sistema se ha diseñado bajo la premisa no negociable de **operación 100% of
 - **¿Por qué se eligieron?:** El módulo `ml_forecast` necesita ajustar suavizado exponencial (Holt amortiguado) y operar numéricamente sobre la serie sin depender de servicios externos, GPU ni internet.
 - **¿Para qué se usan en el proyecto?:**
   - `statsmodels` (`ExponentialSmoothing`): método Holt amortiguado de `ml_models.py`, uno de los candidatos del backtest walk-forward junto a naive, media y tendencia OLS (estos últimos con `numpy` y stdlib).
-  - `numpy`: conversión numérica de la serie y estabilidad de los cálculos de banda al 80% y MAPE por paso.
+  - `numpy`: conversión numérica de la serie y estabilidad de los cálculos de banda de error y MAPE por paso.
   - La banda y el error **no** salen de estas librerías por sí mismas: salen del error medido por backtest sobre la serie real (ver Documento 01 §6.1).
 
 ---

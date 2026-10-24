@@ -16,15 +16,13 @@ docstring:
     en vez de en el que calculo.
   - AVAILABLE: `available: False` es una afirmacion ("no se"), y no puede salir
     junto a un paso publicado que la contradiga.
+  - TOTAL: la suma de los puntos publicados, y su banda no es mas ajustada que
+    el peor error acumulado del prefijo que declara haber medido.
 
-No se repiten las propiedades de `_quantile` (monotonia, extremos, convexidad,
-tipo): ya estan en `test_forecast_properties.py:62-126` y son de la funcion
-compartida, no de este modulo.
-
-`deadline=None` porque un ajuste de Holt sobre una serie patologica puede tardar
-mas que el plazo por defecto, y ese flake termina con el test borrado. Los
-ejemplos estan contados para que el archivo entero corra en menos de 30 segundos:
-cada `build_projection` ajusta Holt una vez por origen (hasta 18 por serie).
+`deadline=None` porque el backtest sobre una serie patologica puede tardar mas
+que el plazo por defecto, y ese flake termina con el test borrado. Los ejemplos
+estan contados para que el archivo entero corra en pocos segundos: cada
+`build_projection` ajusta los metodos una vez por origen (hasta 18 por serie).
 """
 
 import math
@@ -36,6 +34,7 @@ from app.modules.ml_forecast.ml_models import (
     METHODS,
     MIN_BACKTESTS_RELIABLE,
     MIN_PERIODS,
+    _walk_residuals,
     build_projection,
     walk_forward,
 )
@@ -129,6 +128,57 @@ class TestBandasDeLaProyeccion:
             assert step["extrapolated"] is False, step
             assert step["reliable"] == (len(propios) >= MIN_BACKTESTS_RELIABLE), step
 
+    @given(series, horizontes)
+    @settings(max_examples=POCOS, deadline=None)
+    def test_el_total_es_la_suma_de_los_puntos(self, valores, horizonte):
+        """El total publicado es exactamente la suma de los puntos publicados."""
+        out = build_projection(valores, horizonte)
+        if not out["available"]:
+            assert out["total"] is None, out
+            return
+        if any(step["point"] is None for step in out["steps"]):
+            assert out["total"] is None, out
+            return
+        assert out["total"] is not None, out
+        assert out["total"]["point"] == sum(step["point"] for step in out["steps"]), out
+
+    @given(series, horizontes)
+    @settings(max_examples=POCOS, deadline=None)
+    def test_la_banda_del_total_cubre_el_prefijo_que_declara(self, valores, horizonte):
+        """La banda del total es el peor error ACUMULADO del prefijo medido.
+
+        No es la suma de las bandas por paso: si el total dice
+        `measured_steps=j`, su ancho tiene que cubrir el error del total de 1..j
+        que el backtest observo. Y si j < horizonte, no puede publicar MAPE del
+        total ni presentarse como medido.
+        """
+        out = build_projection(valores, horizonte)
+        total = out["total"]
+        if total is None or total["band_pct"] is None:
+            return
+        _, acumulados = _walk_residuals(valores, horizonte)
+        medidos = total["measured_steps"]
+        assert medidos is not None and 1 <= medidos <= horizonte, total
+        propios = acumulados[out["method"]][medidos - 1]
+        assert propios, total
+        assert total["band_pct"] >= max(propios) - 0.05, (total, max(propios))
+        assert total["n_backtests"] == len(propios), total
+        if medidos < horizonte:
+            assert total["extrapolated"] is True and total["mape"] is None, total
+        else:
+            assert total["extrapolated"] is False, total
+            assert total["mape"] is not None, total
+
+    @given(series, horizontes)
+    @settings(max_examples=POCOS, deadline=None)
+    def test_un_hueco_nunca_se_declara_confiable(self, valores, horizonte):
+        """Un hueco en el eje temporal invalida la confianza, aunque haya residuos."""
+        out = build_projection(valores, horizonte, has_gaps=True)
+        for step in out["steps"]:
+            assert step["reliable"] is False, step
+        if out["total"] is not None:
+            assert out["total"]["reliable"] is False, out["total"]
+
 
 class TestDeterminismo:
 
@@ -143,6 +193,7 @@ class TestDeterminismo:
         assert primera["beats_naive"] == segunda["beats_naive"]
         assert [s["point"] for s in primera["steps"]] == [s["point"] for s in segunda["steps"]]
         assert [s["band_pct"] for s in primera["steps"]] == [s["band_pct"] for s in segunda["steps"]]
+        assert primera["total"] == segunda["total"]
 
 
 class TestAvailableYSinNan:
@@ -164,15 +215,21 @@ class TestAvailableYSinNan:
         if len(valores) < MIN_PERIODS:
             assert out["available"] is False
             assert out["reason"] and out["steps"] == [], out
+            assert out["total"] is None, out
             return
 
         if not out["available"]:
             assert out["reason"] and out["steps"] == [], out
+            assert out["total"] is None, out
             return
 
         assert any(step["n_backtests"] > 0 for step in out["steps"]), (
             "sin un solo residuo medible no se puede publicar una banda"
         )
+        if any(step["point"] is None for step in out["steps"]):
+            assert out["total"] is None, out
+        else:
+            assert out["total"] is not None, out
         for step in out["steps"]:
             assert step["band_pct"] is not None, step
             if step["point"] is None:

@@ -227,6 +227,7 @@ class QueryEngine:
         # BRANCH A: Conversational Assistant
         if response_type == "conversational" and not remediation_action:
             grounding_sql = SQLExecutor.get_grounding_query(effective_question, user_role, allowed_tables)
+            validation_status = "APROBADO"
             try:
                 _, secured_sql, meta = ASTValidator.validate_and_secure_sql(
                     grounding_sql,
@@ -241,10 +242,12 @@ class QueryEngine:
                 secured_sql = "-- CONSULTA NO AUTORIZADA POR GOBERNANZA RBAC"
                 meta = {"tables_used": []}
                 rows = []
+                validation_status = "RECHAZADO_RBAC"
             except Exception:
                 secured_sql = "-- CONSULTA NO EJECUTADA POR ERROR TÉCNICO"
                 meta = {"tables_used": []}
                 rows = []
+                validation_status = "ERROR_EJECUCION"
 
             # Enmascarado de columnas MASKED, identico al de la rama analitica mas
             # abajo. Esta rama estaba fuera del:`mask_rows` solo se aplicaba en
@@ -282,7 +285,8 @@ class QueryEngine:
                 suggested_questions=suggested_questions,
                 clarification_options=clarification_opts,
                 anomalies_detected=anomalies_detected,
-                sql_explanation=sql_explanation
+                sql_explanation=sql_explanation,
+                validation_status=validation_status
             )
 
 
