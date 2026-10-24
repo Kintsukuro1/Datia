@@ -1,7 +1,8 @@
 import React, { useRef, useState } from 'react';
 import { AlertTriangle, FileSpreadsheet, FileText, Info, Loader2, Sparkles, TrendingUp } from 'lucide-react';
 import { ProjectionChart } from './ProjectionChart';
-import type { ProjectionResult } from '../services/projection_service';
+import type { ProjectionGroupSummary, ProjectionResult } from '../services/projection_service';
+import { sumLastPeriods, variationPct } from '../services/projection_metrics';
 import { reportService } from '../../dashboard/services/report_service';
 import { useNotifications } from '../../../context/NotificationContext';
 
@@ -28,10 +29,16 @@ const METHOD_LABELS: Record<string, string> = {
   naive: 'Naive (último valor)',
   mean: 'Media histórica',
   ols_trend: 'Tendencia lineal (OLS)',
-  holt_damped: 'Holt amortiguado',
 };
 
 const methodLabel = (m?: string | null): string => (m ? METHOD_LABELS[m] ?? m : '—');
+
+const horizonSourceLabel = (source?: string | null): string | null => {
+  if (source === 'pedido') return 'elegido en el pedido';
+  if (source === 'llm') return 'ajustado por la IA (Auto)';
+  if (source === 'default') return 'valor por defecto de Auto';
+  return null;
+};
 
 /**
  * Exportar el Informe (PDF/Excel) de la corrida auditada.
@@ -115,6 +122,31 @@ const ExportToolbar: React.FC<{
   );
 };
 
+/** Periodos que el backend descarto antes de calcular, con su motivo. */
+const ExclusionNotes: React.FC<{ result: ProjectionResult }> = ({ result }) => {
+  const futuros = result.future_periods_excluded ?? [];
+  if (!result.partial_period_excluded && futuros.length === 0) return null;
+
+  return (
+    <div className="mt-3 flex items-start gap-1.5 rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs leading-relaxed text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+      <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+      <span>
+        {result.partial_period_excluded && (
+          <>
+            Se excluyó <strong>{result.partial_period_excluded}</strong> por ser un periodo en
+            curso incompleto.{' '}
+          </>
+        )}
+        {futuros.length > 0 && (
+          <>
+            También se descartaron periodos futuros: {futuros.join(', ')}.{' '}
+          </>
+        )}
+      </span>
+    </div>
+  );
+};
+
 /**
  * Proyeccion no disponible: es una respuesta, no un error.
  *
@@ -161,6 +193,8 @@ const UnavailableBlock: React.FC<{ result: ProjectionResult }> = ({ result }) =>
       </p>
     )}
 
+    <ExclusionNotes result={result} />
+
     <div className="mt-4">
       <ExportToolbar result={result} />
     </div>
@@ -195,12 +229,247 @@ const EvidenceChip: React.FC<{ step: ProjectionResult['steps'][number] }> = ({ s
   );
 };
 
+const TotalCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
+  const total = result.total;
+  if (!total || total.point === null) {
+    return (
+      <section className="rounded-2xl border border-app-border bg-app-card p-4 shadow-xs">
+        <h3 className="text-sm font-bold text-app-text">Total del horizonte</h3>
+        <p className="mt-2 text-xs leading-relaxed text-app-muted">
+          No se pudo sumar el total porque falta el punto de algún paso. Los pasos publicados
+          siguen en la tabla, cada uno con su evidencia.
+        </p>
+      </section>
+    );
+  }
+
+  const rango =
+    total.lower !== null && total.upper !== null
+      ? `${money(total.lower)} – ${money(total.upper)}`
+      : 'Sin banda medida';
+  const evidencia =
+    total.measured_steps === null
+      ? 'No hubo un prefijo medible: el total viaja sin banda.'
+      : total.extrapolated
+        ? `Banda heredada del total de ${total.measured_steps} ${
+            total.measured_steps === 1 ? 'paso' : 'pasos'
+          }; no cubre los ${result.horizon} pasos.`
+        : total.reliable
+          ? `Banda medida con ${total.n_backtests} backtests sobre el horizonte completo.`
+          : `Banda medida con ${total.n_backtests} backtests: evidencia escasa.`;
+
+  // Contexto, no error: se compara el total proyectado con la suma de los
+  // mismos periodos inmediatamente anteriores. Con huecos no se muestra, porque
+  // una suma sobre una serie incompleta no es comparable.
+  const previous = result.has_gaps ? null : sumLastPeriods(result.series, result.horizon);
+  const variation = previous === null ? null : variationPct(previous, total.point);
+  const historyText =
+    previous !== null
+      ? `Contexto histórico: los ${result.horizon} periodos previos suman ${money(previous)}${
+          variation !== null
+            ? ` (${variation >= 0 ? '+' : ''}${pct(variation)})`
+            : ''
+        }. No es una medida de error de la proyección.`
+      : result.has_gaps
+        ? 'Sin comparación histórica: la serie tiene periodos faltantes.'
+        : result.series.length > 0 && result.series.length < result.horizon
+          ? `Sin comparación histórica: hay ${result.series.length} periodos previos y se necesitan ${result.horizon}.`
+          : null;
+
+  return (
+    <section className="rounded-2xl border border-app-border bg-app-card p-4 shadow-xs">
+      <header className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-bold text-app-text">Total del horizonte</h3>
+          <p className="mt-0.5 text-xs text-app-muted">
+            Suma de los {result.horizon} pasos publicados.
+          </p>
+        </div>
+        <span
+          className={
+            total.extrapolated || !total.reliable
+              ? 'inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+              : 'inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+          }
+        >
+          {total.extrapolated ? 'medición parcial' : total.reliable ? 'medida' : 'poca evidencia'}
+        </span>
+      </header>
+
+      <dl className="mt-3 grid grid-cols-2 gap-3 text-xs lg:grid-cols-4">
+        <div>
+          <dt className="text-app-muted">Total</dt>
+          <dd className="mt-0.5 text-lg font-bold tabular-nums text-app-text">{money(total.point)}</dd>
+        </div>
+        <div>
+          <dt className="text-app-muted">Rango</dt>
+          <dd className="mt-0.5 font-semibold tabular-nums text-app-text">{rango}</dd>
+        </div>
+        <div>
+          <dt className="text-app-muted">Banda</dt>
+          <dd className="mt-0.5 font-semibold tabular-nums text-app-text">
+            {total.band_pct === null ? '—' : `±${pct(total.band_pct)}`}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-app-muted">MAPE del total</dt>
+          <dd className="mt-0.5 font-semibold tabular-nums text-app-text">{pct(total.mape)}</dd>
+        </div>
+      </dl>
+
+      <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-app-muted">
+        <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+        {evidencia}
+      </p>
+      {historyText && (
+        <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-app-muted">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+          {historyText}
+        </p>
+      )}
+    </section>
+  );
+};
+
+const GroupEvidence: React.FC<{ group: ProjectionGroupSummary }> = ({ group }) => {
+  if (!group.available) {
+    return (
+      <span
+        className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+        title={group.reason ?? 'El grupo no tiene una proyección publicable.'}
+      >
+        sin proyección
+      </span>
+    );
+  }
+  if (group.has_gaps) {
+    return (
+      <span
+        className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+        title="La serie del grupo tiene periodos faltantes."
+      >
+        serie con huecos
+      </span>
+    );
+  }
+  if (group.total?.extrapolated || (group.total && !group.total.reliable)) {
+    return (
+      <span className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+        {group.total?.extrapolated ? 'medición parcial' : 'poca evidencia'}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
+      medida
+    </span>
+  );
+};
+
+const BreakdownCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
+  const breakdown = result.breakdown;
+  if (!breakdown) return null;
+
+  if (!breakdown.available) {
+    return (
+      <section className="rounded-2xl border border-app-border bg-app-card p-4 shadow-xs">
+        <h3 className="text-sm font-bold text-app-text">Desglose por dimensión</h3>
+        <p className="mt-2 flex items-start gap-1.5 text-xs leading-relaxed text-app-muted">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+          {breakdown.reason || 'No se pudo desglosar esta proyección.'}
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-app-border bg-app-card shadow-xs">
+      <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-app-border/80 px-4 py-3">
+        <h3 className="text-sm font-bold text-app-text">
+          Desglose por {breakdown.dimension_column ?? 'dimensión'}
+        </h3>
+        <span className="text-[11px] text-app-muted">
+          Top {breakdown.top_n} por volumen histórico
+        </span>
+      </header>
+
+      {breakdown.groups.length === 0 ? (
+        <p className="px-4 py-4 text-xs text-app-muted">
+          No hay grupos con historia suficiente para desglosar.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-xs">
+            <caption className="sr-only">
+              Total proyectado por grupo, con su evidencia y sus periodos históricos
+            </caption>
+            <thead>
+              <tr className="border-b border-app-border text-left text-app-muted">
+                <th scope="col" className="px-4 py-2 font-medium">Grupo</th>
+                <th scope="col" className="px-4 py-2 text-right font-medium">Total proyectado</th>
+                <th scope="col" className="px-4 py-2 text-right font-medium">Rango</th>
+                <th scope="col" className="px-4 py-2 text-right font-medium">MAPE</th>
+                <th scope="col" className="px-4 py-2 text-right font-medium">Periodos</th>
+                <th scope="col" className="px-4 py-2 font-medium">Evidencia</th>
+              </tr>
+            </thead>
+            <tbody>
+              {breakdown.groups.map((group) => {
+                const total = group.total;
+                const rango =
+                  total && total.lower !== null && total.upper !== null
+                    ? `${money(total.lower)} – ${money(total.upper)}`
+                    : '—';
+                return (
+                  <tr key={group.value} className="border-b border-app-border/50 last:border-0">
+                    <td className="px-4 py-2 font-medium text-app-text">{group.value}</td>
+                    {group.available ? (
+                      <>
+                        <td className="px-4 py-2 text-right font-semibold tabular-nums text-app-text">
+                          {money(total?.point)}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums text-app-text">{rango}</td>
+                        <td className="px-4 py-2 text-right tabular-nums text-app-text">
+                          {pct(group.mape)}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums text-app-muted">
+                          {group.n_periods}
+                        </td>
+                        <td className="px-4 py-2">
+                          <GroupEvidence group={group} />
+                        </td>
+                      </>
+                    ) : (
+                      <td colSpan={5} className="px-4 py-2 text-xs text-app-muted">
+                        {group.reason || 'Sin proyección publicable para este grupo.'}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="border-t border-app-border/60 px-4 py-2.5 text-[11px] leading-relaxed text-app-muted">
+        Cada grupo se proyecta con su propia serie histórica. El top se eligió por volumen
+        observado, no por el resultado del modelo; no incluye una categoría «Otros» y no
+        reemplaza el total general.
+      </p>
+    </section>
+  );
+};
+
 const StepsTable: React.FC<{ result: ProjectionResult }> = ({ result }) => (
   <section className="overflow-hidden rounded-2xl border border-app-border bg-app-card shadow-xs">
     <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-app-border/80 px-4 py-3">
       <h3 className="text-sm font-bold text-app-text">Error y evidencia por paso</h3>
       <span className="text-[11px] text-app-muted">
         Horizonte publicado: {result.horizon} {result.horizon === 1 ? 'paso' : 'pasos'}
+        {horizonSourceLabel(result.horizon_source)
+          ? ` · ${horizonSourceLabel(result.horizon_source)}`
+          : ''}
       </span>
     </header>
     <div className="overflow-x-auto">
@@ -319,11 +588,13 @@ const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
           Serie: {result.income_only ? 'solo ingresos (montos positivos por periodo)' : 'montos netos (incluye valores negativos)'}.
         </span>
         <span>
-          {result.analysis_source === 'llm'
-            ? 'Métrica y eje elegidos por la IA local.'
-            : result.analysis_source === 'heuristica'
-              ? 'Métrica y eje elegidos por heurística: el modelo local no respondió.'
-              : 'Métrica y eje elegidos en el servidor.'}
+          {result.analysis_source === 'manual'
+            ? 'Métrica y eje elegidos manualmente por el usuario.'
+            : result.analysis_source === 'llm'
+              ? 'Métrica y eje elegidos por la IA local.'
+              : result.analysis_source === 'heuristica'
+                ? 'Métrica y eje elegidos por heurística: el modelo local no respondió.'
+                : 'Métrica y eje elegidos en el servidor.'}
         </span>
       </p>
 
@@ -334,6 +605,7 @@ const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
           comportamiento completo y la proyección pierde precisión.
         </p>
       )}
+      <ExclusionNotes result={result} />
     </section>
   );
 };
@@ -372,11 +644,13 @@ export const ProjectionResults: React.FC<{ result: ProjectionResult }> = ({ resu
         </div>
         <p className="text-[11px] leading-relaxed text-app-muted">
           Línea gris: la serie histórica real. Línea violeta discontinua: los pasos
-          proyectados. Zona violeta: la banda al 80% medida por backtest para cada paso —
+          proyectados. Zona violeta: la banda de error medida por backtest para cada paso —
           se ensancha con el horizonte porque el error crece.
         </p>
       </section>
 
+      <TotalCard result={result} />
+      <BreakdownCard result={result} />
       <StepsTable result={result} />
       <MethodCard result={result} />
 

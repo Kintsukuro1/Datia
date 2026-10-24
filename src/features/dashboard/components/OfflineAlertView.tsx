@@ -15,8 +15,9 @@ export const OfflineAlertView: React.FC<OfflineAlertViewProps> = ({
 
   // Classify from the backend enum only. Values produced by
   // chat_engine/response_builder.py: "RECHAZADO (IA Local No Disponible)",
-  // "RECHAZADO_RBAC", "ERROR_EJECUCION", "APROBADO_CONVERSACIONAL",
-  // "FUERA_DE_ALCANCE", "APROBADO (Contexto Asistente)".
+  // "RECHAZADO_RBAC", "ERROR_EJECUCION", "APROBADO",
+  // "APROBADO_CONVERSACIONAL", "FUERA_DE_ALCANCE". Un estado null significa
+  // "sin registro", no aprobacion.
   //
   // The previous check matched generated prose (summary_text), so any
   // rewording by the model downgraded a governance block to "no rows found";

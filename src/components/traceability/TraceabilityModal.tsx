@@ -26,6 +26,13 @@ export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceabili
     void copy(payload);
   };
 
+  // Un estado null o rechazado no puede llevar el mismo check verde que una
+  // aprobacion: el color y el icono tambien son parte de la trazabilidad.
+  const validationStatus = traceability.validation_status;
+  const isApproved = !!validationStatus && validationStatus.toUpperCase().startsWith('APROBADO');
+  const validationTone = isApproved ? 'text-emerald-400' : 'text-amber-400';
+  const ValidationIcon = isApproved ? CheckCircle2 : Info;
+
   return (
     <div ref={modalRef} role="dialog" aria-modal="true" aria-label="Panel de trazabilidad y auditoría" tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-sm animate-fadeIn">
       <div className="glass-panel w-full max-w-3xl rounded-2xl sm:rounded-3xl border border-white/10 shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
@@ -54,10 +61,12 @@ export const TraceabilityModal: React.FC<TraceabilityModalProps> = ({ traceabili
           {/* Status Bar Badges */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
             <div className="bg-app-bg/60 p-2.5 sm:p-3 rounded-xl border border-app-border flex items-center space-x-2.5 sm:space-x-3">
-              <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400 shrink-0" />
+              <ValidationIcon className={`w-4 h-4 sm:w-5 sm:h-5 ${validationTone} shrink-0`} />
               <div className="truncate">
                 <div className="text-[9px] sm:text-[10px] text-gray-400 uppercase">Validación AST</div>
-                <div className="text-xs font-semibold text-emerald-400 truncate">{traceability.validation_status}</div>
+                <div className={`text-xs font-semibold ${validationTone} truncate`}>
+                  {validationStatus || 'Sin registro'}
+                </div>
               </div>
             </div>
 

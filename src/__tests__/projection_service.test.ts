@@ -49,6 +49,20 @@ describe('estimate: la estimacion es barata y su fallo no se disimula', () => {
     expect(est).toEqual({ estimated_seconds: 25, source: 'medido' });
   });
 
+  it('manda horizon null para Auto y conserva el horizonte asumido', async () => {
+    apiClient.post.mockResolvedValue({
+      data: { estimated_seconds: 60, source: 'fallback', horizon_used: 12 },
+    });
+
+    const est = await projectionService.estimate('p', null);
+
+    expect(apiClient.post).toHaveBeenCalledWith('/ml/projections/estimate', {
+      question: 'p',
+      horizon: null,
+    });
+    expect(est.horizon_used).toBe(12);
+  });
+
   it('propaga el fallo en vez de devolver una estimacion inventada', async () => {
     apiClient.post.mockRejectedValue(httpError(500, 'Fallo interno'));
 
@@ -78,6 +92,18 @@ describe('run: contrato del pedido', () => {
     expect(url).toBe('/ml/projections/run');
     expect(payload).toEqual({ question: 'proyectá ventas', horizon: 12 });
     expect('connection_id' in payload).toBe(false);
+  });
+
+  it('manda horizon null explicito cuando el usuario elige Auto', async () => {
+    apiClient.post.mockResolvedValue({ data: { available: true } });
+
+    await projectionService.run('proyectá ventas', 9, null);
+
+    expect(apiClient.post).toHaveBeenCalledWith('/ml/projections/run', {
+      question: 'proyectá ventas',
+      horizon: null,
+      connection_id: 9,
+    });
   });
 });
 

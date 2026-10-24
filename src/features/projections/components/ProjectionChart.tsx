@@ -28,7 +28,7 @@ import type { ProjectionResult } from '../services/projection_service';
 const PROJECTED_COLOR = '#7C3AED'; // violeta IA, el mismo del port de Proyecciones
 const HISTORY_COLOR = '#94A3B8';
 const BAND_FILL = 'rgba(124, 58, 237, 0.16)';
-const BAND_NAME = 'Banda 80%';
+const BAND_NAME = 'Banda de error';
 
 const moneyOrDash = (n: number | null): string => (n === null ? '—' : formatMetricNumber(n, true));
 

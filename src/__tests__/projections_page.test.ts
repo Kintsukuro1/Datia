@@ -62,6 +62,7 @@ const availableFixture: ProjectionResult = {
   available: true,
   question: QUESTION,
   horizon: 6,
+  horizon_source: 'pedido',
   series: [
     { periodo: '2026-08', valor: 100 },
     { periodo: '2026-09', valor: 120 },
@@ -98,6 +99,8 @@ const availableFixture: ProjectionResult = {
   mape_by_method: { naive: 8.1, mean: 12.3, ols_trend: null, holt_damped: null },
   n_periods: 9,
   has_gaps: false,
+  partial_period_excluded: '2026-10',
+  future_periods_excluded: ['2026-11'],
   income_only: true,
   table: 'movimientos',
   metric_column: 'monto',
@@ -106,6 +109,39 @@ const availableFixture: ProjectionResult = {
   narration: 'La serie sube de forma sostenida; el paso 2 no dejó residuos que medir.',
   narration_source: 'plantilla',
   audit_log_id: 55,
+};
+
+const totalFixture: ProjectionResult = {
+  ...availableFixture,
+  horizon: 3,
+  horizon_source: 'llm',
+  partial_period_excluded: null,
+  future_periods_excluded: [],
+  steps: [
+    {
+      step: 1, period: '2026-10', point: 110, lower: 100, upper: 120,
+      band_pct: 9.1, mape: 5.0, n_backtests: 4, reliable: true, extrapolated: false,
+    },
+    {
+      step: 2, period: '2026-11', point: 120, lower: 105, upper: 135,
+      band_pct: 12.5, mape: 6.0, n_backtests: 3, reliable: false, extrapolated: false,
+    },
+    {
+      step: 3, period: '2026-12', point: 130, lower: 110, upper: 150,
+      band_pct: 15.4, mape: null, n_backtests: 0, reliable: false, extrapolated: true,
+    },
+  ],
+  total: {
+    point: 360,
+    lower: 330,
+    upper: 390,
+    band_pct: 10.2,
+    mape: null,
+    n_backtests: 1,
+    reliable: false,
+    extrapolated: true,
+    measured_steps: 1,
+  },
 };
 
 describe('ProjectionsPage', () => {
@@ -185,7 +221,7 @@ describe('ProjectionsPage', () => {
     await pressEnter();
 
     expect(projectionService.estimate).toHaveBeenCalledWith(QUESTION, 6);
-    expect(projectionService.run).toHaveBeenCalledWith(QUESTION, 9, 6);
+    expect(projectionService.run).toHaveBeenCalledWith(QUESTION, 9, 6, undefined);
 
     const text = container.textContent ?? '';
     // Metodo y honestidad del backtest.
@@ -201,6 +237,61 @@ describe('ProjectionsPage', () => {
     // Narrativa con su origen.
     expect(text).toContain('La serie sube de forma sostenida');
     expect(text).toContain('Plantilla determinista');
+    // Horizonte resuelto y su origen, no solo el numero.
+    expect(text).toContain('elegido en el pedido');
+    // Periodos descartados por el backend, con su motivo.
+    expect(text).toContain('Se excluyó');
+    expect(text).toContain('2026-10');
+    expect(text).toContain('2026-11');
+    // La banda ya no se presenta como un "80%" fijo.
+    expect(text).toContain('banda de error');
+    expect(text).not.toContain('80%');
+  });
+
+  it('Auto manda horizon null y publica el horizonte ajustado por la IA', async () => {
+    projectionService.estimate.mockResolvedValue({
+      estimated_seconds: 25, source: 'medido', horizon_used: 12,
+    });
+    projectionService.run.mockResolvedValue({
+      ...availableFixture, horizon: 12, horizon_source: 'llm',
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    const select = container.querySelector<HTMLSelectElement>('#projections-horizon-select')!;
+    act(() => {
+      select.value = 'auto';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await pressEnter();
+
+    expect(select.value).toBe('auto');
+    expect(projectionService.estimate).toHaveBeenCalledWith(QUESTION, null);
+    expect(projectionService.run).toHaveBeenCalledWith(QUESTION, 9, null, undefined);
+    const text = container.textContent ?? '';
+    expect(text).toContain('Horizonte publicado: 12 pasos');
+    expect(text).toContain('ajustado por la IA (Auto)');
+  });
+
+  it('publica el total del horizonte con su banda y su evidencia parcial', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue(totalFixture);
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('Total del horizonte');
+    expect(text).toContain('$360');
+    expect(text).toContain('$330 – $390');
+    expect(text).toContain('medición parcial');
+    expect(text).toContain('Banda heredada del total de 1 paso');
+    // El MAPE del total no se inventa cuando la banda es de un prefijo.
+    expect(text).toContain('MAPE del total');
+    expect(text).not.toContain('$0');
   });
 
   it('el export manda el audit_log_id de la corrida y captura ESTE gráfico', async () => {

@@ -9,8 +9,8 @@ interface AuditInspectorModalProps {
   onClose: () => void;
 }
 
-export const AuditStatusBadge: React.FC<{ status: string }> = ({ status }) => {
-  const s = status.toUpperCase();
+export const AuditStatusBadge: React.FC<{ status?: string | null }> = ({ status }) => {
+  const s = (status || '').toUpperCase();
   if (s.includes('APROBADO')) {
     return (
       <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20">
@@ -38,7 +38,8 @@ export const AuditStatusBadge: React.FC<{ status: string }> = ({ status }) => {
   return (
     <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-500/20">
       <AlertTriangle className="w-3.5 h-3.5" />
-      <span>{status}</span>
+      {/* Un log sin estado no es un bloqueo: es "sin registro". */}
+      <span>{status || 'Sin registro'}</span>
     </span>
   );
 };

@@ -45,7 +45,8 @@ export interface AuditLog {
   user_role?: string | null;
   question_prompt: string;
   sql_generated?: string | null;
-  validation_status: string;
+  // NULL en audit_logs significa "sin registro", no "APROBADO".
+  validation_status: string | null;
   target_database?: string | null;
   execution_time_ms: number;
   rows_returned: number;
@@ -97,7 +98,8 @@ export interface TraceabilityAudit {
   sql_executed: string;
   execution_time_ms: number;
   rows_returned: number;
-  validation_status: string;
+  // null = no hay un estado de validacion que afirmar.
+  validation_status?: string | null;
   schema_tables_used: string[];
   explanation: string;
   audit_log_id?: number;

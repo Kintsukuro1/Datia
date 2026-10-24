@@ -2,8 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Database, Loader2, TrendingUp } from 'lucide-react';
 import { useChatEngine } from '../features/chat/hooks/useChatEngine';
-import { projectionService, type ProjectionResult } from '../features/projections/services/projection_service';
+import {
+  projectionService,
+  type ProjectionContext,
+  type ProjectionResult,
+} from '../features/projections/services/projection_service';
 import { ProjectionResults } from '../features/projections/components/ProjectionResults';
+import { ProjectionHistory } from '../features/projections/components/ProjectionHistory';
 import { getApiErrorMessage } from '../shared/api/api_client';
 
 /**
@@ -40,13 +45,22 @@ export const ProjectionsPage: React.FC = () => {
   const [question, setQuestion] = useState<string>(
     () => (location.state as { question?: string } | null)?.question ?? ''
   );
-  const [horizon, setHorizon] = useState<number>(6);
+  // 6 explicito por compatibilidad; `null` es Auto (la IA puede ajustarlo).
+  const [horizon, setHorizon] = useState<number | null>(6);
+  // Selector manual: vacio es "Automatico" y NO viaja al backend.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [columnContext, setColumnContext] = useState<ProjectionContext | null>(null);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [contextError, setContextError] = useState<string | null>(null);
+  const [metricOverride, setMetricOverride] = useState('');
+  const [dateOverride, setDateOverride] = useState('');
+  const [dimensionOverride, setDimensionOverride] = useState('');
   const [phase, setPhase] = useState<'idle' | 'running' | 'done'>('idle');
   const [result, setResult] = useState<ProjectionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Foto del pedido al lanzar: la pantalla de generacion tiene que mostrar lo
   // que corre de verdad, aunque el textarea o el selector cambien despues.
-  const [runInfo, setRunInfo] = useState<{ question: string; horizon: number } | null>(null);
+  const [runInfo, setRunInfo] = useState<{ question: string; horizon: number | null } | null>(null);
   const [elapsed, setElapsed] = useState(0);
   // Referencia nominal de 60s mientras no llegue la estimacion (mismo criterio
   // que el wizard): un numero conservador declarado, no una medicion fingida.
@@ -65,6 +79,32 @@ export const ProjectionsPage: React.FC = () => {
     }, 1000);
     return () => clearInterval(id);
   }, [phase]);
+
+  // Cambiar de conexion invalida las listas y los overrides: un nombre de la
+  // base anterior no existe en la nueva y el backend lo rechazaria.
+  useEffect(() => {
+    setColumnContext(null);
+    setContextError(null);
+    setMetricOverride('');
+    setDateOverride('');
+    setDimensionOverride('');
+  }, [activeConnectionId]);
+
+  const loadContext = async () => {
+    if (contextLoading) return;
+    setContextLoading(true);
+    setContextError(null);
+    try {
+      const data = await projectionService.context(activeConnectionId ?? null);
+      setColumnContext(data);
+    } catch (err: any) {
+      setContextError(
+        getApiErrorMessage(err, 'No se pudieron cargar las columnas para elegir.', true)
+      );
+    } finally {
+      setContextLoading(false);
+    }
+  };
 
   const isRunning = phase === 'running';
   const canRun = question.trim().length > 0 && !isRunning;
@@ -93,7 +133,20 @@ export const ProjectionsPage: React.FC = () => {
         /* referencia nominal de 60s */
       }
 
-      const response = await projectionService.run(prompt, activeConnectionId ?? null, horizon);
+      const overrides =
+        metricOverride || dateOverride || dimensionOverride
+          ? {
+              metricColumn: metricOverride || null,
+              dateColumn: dateOverride || null,
+              dimensionColumn: dimensionOverride || null,
+            }
+          : undefined;
+      const response = await projectionService.run(
+        prompt,
+        activeConnectionId ?? null,
+        horizon,
+        overrides
+      );
       setResult(response);
     } catch (err: any) {
       setError(
@@ -164,10 +217,14 @@ export const ProjectionsPage: React.FC = () => {
               </label>
               <select
                 id="projections-horizon-select"
-                value={horizon}
-                onChange={(e) => setHorizon(Number(e.target.value))}
+                value={horizon === null ? 'auto' : String(horizon)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setHorizon(value === 'auto' ? null : Number(value));
+                }}
                 className="cursor-pointer rounded-lg border border-app-border bg-app-surface px-2.5 py-1 text-xs font-medium text-app-text shadow-xs transition-colors hover:border-brand-500/50 focus:border-brand-500 focus:outline-none"
               >
+                <option value="auto">Auto (según la pregunta)</option>
                 {HORIZONS.map((h) => (
                   <option key={h} value={h}>
                     {h} pasos
@@ -175,6 +232,122 @@ export const ProjectionsPage: React.FC = () => {
                 ))}
               </select>
             </div>
+          </div>
+
+          {/* Selector manual: opcional, solo con columnas permitidas por el rol. */}
+          <div className="mt-3">
+            <button
+              type="button"
+              id="projections-advanced-toggle"
+              aria-expanded={advancedOpen}
+              aria-controls="projections-advanced-panel"
+              onClick={() => {
+                const next = !advancedOpen;
+                setAdvancedOpen(next);
+                if (next && !columnContext && !contextLoading) void loadContext();
+              }}
+              className="rounded-lg border border-app-border bg-app-surface px-2.5 py-1 text-[11px] font-semibold text-app-muted transition-colors hover:border-brand-500/50 hover:text-app-text"
+            >
+              {advancedOpen ? 'Ocultar ajustes avanzados' : 'Ajustes avanzados'}
+            </button>
+
+            {advancedOpen && (
+              <div
+                id="projections-advanced-panel"
+                className="mt-2 rounded-xl border border-app-border bg-app-surface/60 p-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[11px] leading-relaxed text-app-muted">
+                    Elegí métrica, eje temporal y desglose. Solo se listan columnas que tu rol
+                    puede leer; si dejás «Automático», decide el backend.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void loadContext()}
+                    disabled={contextLoading}
+                    className="text-[11px] font-semibold text-violet-600 underline-offset-2 hover:underline disabled:opacity-50 dark:text-violet-400"
+                  >
+                    {contextLoading ? 'Cargando…' : 'Actualizar columnas'}
+                  </button>
+                </div>
+
+                {contextError && (
+                  <p role="alert" className="mt-2 text-[11px] leading-relaxed text-rose-700 dark:text-rose-300">
+                    {contextError}
+                  </p>
+                )}
+
+                {columnContext && !columnContext.available && (
+                  <p className="mt-2 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
+                    {columnContext.reason || 'No hay columnas disponibles para este rol.'}
+                  </p>
+                )}
+
+                {columnContext?.available && (
+                  <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <div>
+                      <label
+                        htmlFor="projections-metric-select"
+                        className="block text-[11px] font-medium text-app-muted"
+                      >
+                        Métrica
+                      </label>
+                      <select
+                        id="projections-metric-select"
+                        value={metricOverride}
+                        onChange={(e) => setMetricOverride(e.target.value)}
+                        className="mt-0.5 w-full cursor-pointer rounded-lg border border-app-border bg-app-card px-2 py-1 text-xs font-medium text-app-text focus:border-brand-500 focus:outline-none"
+                      >
+                        <option value="">Automático</option>
+                        {columnContext.metric_columns.map((name) => (
+                          <option key={name} value={name}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="projections-date-select"
+                        className="block text-[11px] font-medium text-app-muted"
+                      >
+                        Eje temporal
+                      </label>
+                      <select
+                        id="projections-date-select"
+                        value={dateOverride}
+                        onChange={(e) => setDateOverride(e.target.value)}
+                        className="mt-0.5 w-full cursor-pointer rounded-lg border border-app-border bg-app-card px-2 py-1 text-xs font-medium text-app-text focus:border-brand-500 focus:outline-none"
+                      >
+                        <option value="">Automático</option>
+                        {columnContext.date_columns.map((name) => (
+                          <option key={name} value={name}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="projections-dimension-select"
+                        className="block text-[11px] font-medium text-app-muted"
+                      >
+                        Desglose por
+                      </label>
+                      <select
+                        id="projections-dimension-select"
+                        value={dimensionOverride}
+                        onChange={(e) => setDimensionOverride(e.target.value)}
+                        className="mt-0.5 w-full cursor-pointer rounded-lg border border-app-border bg-app-card px-2 py-1 text-xs font-medium text-app-text focus:border-brand-500 focus:outline-none"
+                      >
+                        <option value="">Sin desglose</option>
+                        {columnContext.dimension_columns.map((name) => (
+                          <option key={name} value={name}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Pregunta */}
@@ -199,8 +372,9 @@ export const ProjectionsPage: React.FC = () => {
             />
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] leading-relaxed text-app-muted">
-                Un Enter lanza el análisis y el cálculo. La IA puede ajustar el horizonte si tu
-                pregunta lo dice; el resultado muestra el horizonte publicado.
+                Un Enter lanza el análisis y el cálculo. Con Auto, la IA puede ajustar el
+                horizonte según tu pregunta; con 3, 6 o 12, manda tu elección. El resultado
+                muestra siempre el horizonte publicado y su origen.
               </span>
               <button
                 type="button"
@@ -234,7 +408,9 @@ export const ProjectionsPage: React.FC = () => {
                 «{runInfo?.question}»
               </p>
               <p className="text-xs text-app-muted">
-                Horizonte: {runInfo?.horizon} pasos
+                Horizonte: {runInfo && runInfo.horizon !== null
+                  ? `${runInfo.horizon} pasos`
+                  : 'Auto (la IA lo ajusta)'}
               </p>
             </div>
 
@@ -291,6 +467,9 @@ export const ProjectionsPage: React.FC = () => {
 
         {/* Resultado (disponible o "sin evidencia") */}
         {!isRunning && result && <ProjectionResults result={result} />}
+
+        {/* Historial propio: permite verificar corridas anteriores. */}
+        <ProjectionHistory refreshKey={result?.audit_log_id ?? null} />
 
         {/* Estado inicial: sin corrida y sin resultado */}
         {!isRunning && !result && !error && (

@@ -701,8 +701,8 @@ function useChatEngineInternal() {
       discardStreamingNarrative();
 
       const vStatus = newResult.traceability?.validation_status;
-      // El backend emite prefijos: 'APROBADO', 'APROBADO_CONVERSACIONAL',
-      // 'APROBADO (Contexto Asistente)' (ver response_builder.py).
+      // El backend emite 'APROBADO', 'RECHAZADO_*', 'ERROR_*' o null cuando
+      // no hay un estado que afirmar. Null no es una aprobacion.
       if (vStatus && !vStatus.startsWith('APROBADO')) {
         if (vStatus.includes('RECHAZADO')) {
           notify('warning', `Consulta bloqueada por AST Guardrail (${vStatus}) según perfil ${userRole}.`);
