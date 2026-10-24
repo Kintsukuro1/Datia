@@ -85,12 +85,22 @@ class TestLLMDiagnosticRouter(unittest.TestCase):
 
     # ------------------------------------------------------------------ BUG 2
     def test_hostile_base_url_is_ignored_in_central_mode(self):
-        """Default de produccion: el cliente no elige el motor.
+        """Con `central` (default de produccion) el cliente no elige el motor.
 
         La URL hostil no se usa ni se convierte en 400: se ignora. `test-connection`
         sondea la configuracion del servidor, y `test-completion` compone sus
         endpoints sobre esa misma base. Ninguna request sale hacia 169.254.169.254.
+
+        El modo se fija explicitamente: sin `LLM_MODE`, el default depende de
+        `ENVIRONMENT` (development -> user, production -> central). Leerlo del
+        entorno hacia que el test pasara solo en una maquina con `.env` de
+        produccion y fallara en CI, donde no hay `.env`. El default en si lo
+        cubre `test_llm_managed_engine.py`.
         """
+        mode = patch.object(settings, "LLM_MODE", "central")
+        mode.start()
+        self.addCleanup(mode.stop)
+
         hostile = "http://169.254.169.254"
         with patch(
             "app.modules.system.health_service.HealthService.check_llm_connectivity",
