@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from conftest import make_auth_headers, pg_source_conn_attrs
 
 from main import app
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
 from app.modules.admin_catalog.models import CorporateConnection
@@ -202,13 +203,32 @@ class TestEnrichEstimateEndpoint(unittest.TestCase):
         self.assertEqual(res.status_code, 404)
 
     def test_400_for_non_loopback_base_url(self):
-        # El allowlist anti-SSRF corta antes de emitir una sola request.
-        res = self.client.get(
-            f"/api/v1/catalog/connections/{self.conn.id}/enrich-estimate",
-            params={"base_url": "http://evil.example.com:11434"},
-            headers=self.headers,
-        )
+        # Con `LLM_MODE=user` la URL la elige el admin y se valida antes de
+        # emitir una sola request.
+        with patch.object(settings, "LLM_MODE", "user"):
+            res = self.client.get(
+                f"/api/v1/catalog/connections/{self.conn.id}/enrich-estimate",
+                params={"base_url": "http://evil.example.com:11434"},
+                headers=self.headers,
+            )
         self.assertEqual(res.status_code, 400, res.text)
+
+    def test_base_url_is_ignored_in_central_mode(self):
+        """Default de produccion: la URL del panel no se usa ni se rechaza."""
+        meta = [_table_meta("public", "ventas", 2)]
+        with patch.object(settings, "LLM_MODE", "central"), patch.object(
+            SchemaInspector, "introspect_connection_metadata", return_value=meta
+        ), patch.object(
+            EnrichEstimator, "measure_tokens_per_second",
+            new=AsyncMock(return_value=15.0),
+        ):
+            res = self.client.get(
+                f"/api/v1/catalog/connections/{self.conn.id}/enrich-estimate",
+                params={"base_url": "http://evil.example.com:11434"},
+                headers=self.headers,
+            )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertTrue(res.json()["available"])
 
     def test_200_reports_measured_estimate(self):
         meta = [_table_meta("public", "ventas", 2)]

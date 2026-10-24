@@ -70,13 +70,123 @@ flowchart LR
 
 ## 📦 Puesta en Marcha
 
-### 1. Requisitos previos
+### Instalación on-prem (una empresa por instalación)
+
+Es el modo de entrega a un cliente: recibe un **bundle de instalación** y las
+imágenes de contenedor publicadas en GHCR. No necesita el repositorio ni tener
+Node.js o Python instalados en el host.
+
+#### Programas que necesita el host
+
+| Programa | Versión | Para qué |
+| :--- | :--- | :--- |
+| Docker Engine | 24 o superior | ejecutar los contenedores |
+| Docker Compose (plugin `docker compose`) | 2.20 o superior | orquestar el stack |
+| `openssl` | reciente | **solo** `setup.sh`: genera secretos y la clave del admin |
+| `tar` y `gzip` | estándar | extraer el bundle y los backups |
+| Driver NVIDIA + NVIDIA Container Toolkit | opcional | Ollama con GPU (`docker-compose.gpu.yml`) |
+
+No hace falta instalar PostgreSQL, Ollama, Nginx ni Caddy en el host: corren
+como contenedores. `curl` ya viene dentro de la imagen del backend para el
+healthcheck.
+
+| Recurso | Mínimo | Recomendado |
+| :--- | :--- | :--- |
+| CPU | 4 vCPU | 8 vCPU |
+| RAM | 8 GB | 16 GB para un modelo 7B en CPU |
+| Disco | 20 GB libres | 50 GB o más (modelos e imágenes) |
+| SO | Linux x86_64/arm64 con Docker | Ubuntu 22.04/24.04 LTS |
+
+La RAM del modelo no está limitada en el compose: 7B cuantizado (Q4) usa ~5 GB,
+14B necesita 16 GB libres y 32B unos 32 GB, más 2–4 GB para el resto del stack.
+Si el host es compartido, límite Ollama con un override de compose; un límite
+menor al que necesita el modelo lo hace fallar al cargarlo.
+
+#### Pasos de instalación
+
+1. **Descargue el bundle** desde la página de releases
+   (`https://github.com/Kintsukuro1/Datia/releases`) y extráigalo:
+
+   ```sh
+   tar -xzf datia-deploy-<tag>.tar.gz
+   cd datia-deploy-<tag>
+   ```
+
+2. **Autentíquese en GHCR** si los paquetes de imagen son privados. Necesita un
+   token de GitHub con `read:packages`:
+
+   ```sh
+   echo "<PAT-con-read:packages>" | docker login ghcr.io -u <usuario-github> --password-stdin
+   ```
+
+3. **Ejecute el instalador**. Genera `.env` con secretos aleatorios, valida el
+   host, descarga las imágenes, levanta el stack, baja el modelo y crea el
+   primer administrador:
+
+   ```sh
+   ./setup.sh
+   ```
+
+   La clave inicial del admin se imprime **una sola vez** al final. Guárdela.
+
+4. **Entre a la aplicación** en `http://127.0.0.1:8080` (por defecto solo
+   escucha en loopback). En el primer login el sistema obliga a cambiar la
+   clave temporal.
+
+5. **Configure el acceso a los datos** desde la interfaz: conexión a
+   PostgreSQL corporativo y catálogo. Para la base del cliente use un usuario
+   de solo lectura:
+
+   ```sql
+   CREATE USER datia_ro WITH PASSWORD '<clave>';
+   GRANT CONNECT ON DATABASE <base> TO datia_ro;
+   GRANT USAGE ON SCHEMA public TO datia_ro;
+   GRANT SELECT ON ALL TABLES IN SCHEMA public TO datia_ro;
+   ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO datia_ro;
+   ```
+
+#### Qué editar en `.env`
+
+`setup.sh` crea el `.env` y rellena los secretos. Después de la instalación
+solo se editan las variables de operación:
+
+| Variable | Cuándo cambiarla |
+| :--- | :--- |
+| `DATIA_BIND_IP` / `DATIA_HTTP_PORT` | Publicar el frontend en la LAN (`127.0.0.1` por defecto) o cambiar el puerto |
+| `TRUSTED_PROXY_CIDR` | Si hay un LB/ingress delante: CIDR desde el que llega el `X-Forwarded-For` |
+| `LLM_MODE` | `central` (Ollama del compose), `external` (Ollama de la empresa) o `user` (cada usuario elige su LLM) |
+| `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | Motor administrado y modelo (también con `LLM_PROVIDER=openai_compatible`) |
+| `LLM_PROVIDER` / `OPENAI_COMPATIBLE_URL` | vLLM, LM Studio o gateway corporativo compatible con OpenAI |
+| `COMPOSE_PROFILES=caddy` + `DATIA_DOMAIN` | TLS automático con Caddy (abra 80/443) |
+| `DATIA_SKIP_PULL=1` | Instalación air-gapped: usa imágenes ya cargadas con `docker load` |
+| `DATIA_SKIP_MODEL_PULL=1` | Air-gapped: no intentar descargar el modelo de Ollama; cárguelo antes |
+
+No cambie `FERNET_KEY` después de guardar credenciales de conectores: las
+claves cifradas quedan ilegibles y hay que recifrarlas. `SECRET_KEY` sí se puede
+rotar, pero invalida las sesiones activas.
+
+#### Operación
+
+```sh
+./backup.sh                              # metadata + data_sources + .env
+./restore.sh backups/<stamp>.dump --yes  # reemplaza la instalación actual
+./upgrade.sh                             # tras cambiar el tag en .env
+```
+
+El detalle completo (TLS, air-gapped, rollback, visibilidad de imágenes y
+solución de problemas) está en [`deploy/README.md`](deploy/README.md).
+
+---
+
+### Desarrollo local
+
+#### 1. Requisitos previos
 
 - Node.js v18+ y npm
 - Python 3.10+
 - *(Opcional para IA Local)* `llama.cpp` o `Ollama` con el modelo `Qwen2.5-Coder-7B-Instruct`
 
-### 2. Instalar dependencias (2 pasos)
+#### 2. Instalar dependencias (2 pasos)
 
 ```bash
 # 1. Dependencias del Frontend
@@ -90,7 +200,7 @@ pip install -r requirements.txt
 cd ..
 ```
 
-### 3. Iniciar la aplicación (frontend + backend concurrentes)
+#### 3. Iniciar la aplicación (frontend + backend concurrentes)
 
 ```bash
 npm run dev
@@ -108,7 +218,7 @@ npm run dev
 > dos bases de la demo (`democratizacion_metadatos` y `democratizacion_empresa`),
 > y `app/db/init_db.py` repite el seed en el primer arranque si hace falta.
 
-### 4. Alternativa: Docker Compose
+#### 4. Alternativa: Docker Compose (desarrollo)
 
 ```bash
 cp .env.example .env
@@ -126,6 +236,10 @@ docker compose up -d
 > `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
 
 El frontend queda en `http://127.0.0.1/` (publicado solo en loopback) y Nginx hace de proxy inverso hacia el backend en `http://backend:8000`.
+
+> **Este compose es de desarrollo.** Para entregar una instalación a un
+> cliente use el bundle on-prem descrito arriba; el detalle operativo está en
+> [`deploy/README.md`](deploy/README.md).
 
 > Si algo falla al levantar el stack (puertos, secretos, volúmenes), los
 > problemas frecuentes y su diagnóstico están en [`PARTE-DOCKER.md`](PARTE-DOCKER.md).
@@ -152,7 +266,7 @@ Los permisos se otorgan por **responsabilidad funcional**, no por título person
 - El login incluye un desplegable con estos ocho perfiles: al elegir uno se rellenan las credenciales y el acceso ocurre al pulsar **Acceder al Sistema**.
 
 > [!IMPORTANT]
-> Estas cuentas existen solo cuando el seed de demostración está activo (`DEMO_MODE=true`, o por defecto fuera de `production`). En Docker, compose arranca con `ENVIRONMENT=production` y `DEMO_MODE=false` **por defecto**: sin seed no hay cuentas con claves publicadas.
+> Estas cuentas existen solo cuando el seed de demostración está activo (`DEMO_MODE=true`, o por defecto fuera de `production`). En Docker, compose arranca con `ENVIRONMENT=production` y `DEMO_MODE=false` **por defecto**: sin seed no hay cuentas con claves publicadas. En una instalación on-prem el único acceso inicial es el admin que crea `setup.sh`.
 
 ---
 

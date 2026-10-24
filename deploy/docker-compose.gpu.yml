@@ -1,0 +1,22 @@
+# Override opcional para Ollama con GPU NVIDIA.
+#
+# Requisitos en el host:
+#   1. driver NVIDIA instalado;
+#   2. NVIDIA Container Toolkit configurado para Docker;
+#   3. `docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi`
+#      funciona.
+#
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --wait
+#
+# Sin GPU, Ollama corre en CPU. No mezcle este override con una instalacion que
+# ya esta corriendo: recreate el servicio `ollama`.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

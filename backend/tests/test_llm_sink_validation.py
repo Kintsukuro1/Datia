@@ -200,8 +200,11 @@ class TestDoubleValidationIsIdempotent(unittest.TestCase):
         async def boom(*a, **k):
             raise RuntimeError("connection refused")
 
-        # El router acepta el loopback; el sink lo vuelve a validar y lo usa.
-        with patch("httpx.AsyncClient.get", new=boom), \
+        # En `user` el router acepta el loopback; el sink lo vuelve a validar y
+        # lo usa. En `central` la URL se ignora, asi que este camino se prueba
+        # con la politica que la habilita.
+        with patch.object(settings, "LLM_MODE", "user"), \
+             patch("httpx.AsyncClient.get", new=boom), \
              patch("httpx.AsyncClient.post", new=boom):
             res = client.post(
                 "/api/v1/llm/test-connection",
@@ -224,10 +227,39 @@ class TestDoubleValidationIsIdempotent(unittest.TestCase):
             res2 = client.get("/api/v1/system/health", headers=headers)
         self.assertEqual(res2.status_code, 200, res2.text[:300])
 
-    def test_hostile_url_through_http_still_never_reaches_the_network(self):
-        """La doble validacion no debe dejar pasar lo que el router ya rechaza."""
+    def test_hostile_url_through_http_is_ignored_in_central_mode(self):
+        """La doble validacion no deja pasar lo que el router ya rechaza, pero
+        en central la URL ni siquiera se usa: el backend sondea su propio motor."""
         client, headers = _auth_client()
-        with patch("httpx.AsyncClient.get", side_effect=_no_request), \
+        captured = {}
+
+        async def fake_check(provider=None, base_url=None, model_name=None,
+                             timeout=2.0, trusted=False):
+            captured.update(base_url=base_url, trusted=trusted)
+            return {
+                "success": True, "latency_ms": 1, "message": "ok",
+                "available_models": [], "active_url": base_url,
+                "provider": provider or "ollama",
+            }
+
+        with patch.object(settings, "LLM_MODE", "central"), \
+             patch.object(HealthService, "check_llm_connectivity", new=fake_check), \
+             patch.object(HealthService, "check_db_connectivity", return_value={
+                 "success": True, "latency_ms": 1, "message": "ok"}), \
+             patch("httpx.AsyncClient.get", side_effect=_no_request), \
+             patch("httpx.AsyncClient.post", side_effect=_no_request):
+            res = client.get("/api/v1/system/health",
+                             params={"base_url": "http://169.254.169.254"},
+                             headers=headers)
+        self.assertEqual(res.status_code, 200, res.text[:300])
+        self.assertEqual(captured["base_url"], settings.OLLAMA_BASE_URL)
+        self.assertTrue(captured["trusted"])
+
+    def test_hostile_url_through_http_is_rejected_in_user_mode(self):
+        """Con `LLM_MODE=user` la URL si se valida: 400 y sin request."""
+        client, headers = _auth_client()
+        with patch.object(settings, "LLM_MODE", "user"), \
+             patch("httpx.AsyncClient.get", side_effect=_no_request), \
              patch("httpx.AsyncClient.post", side_effect=_no_request):
             res = client.get("/api/v1/system/health",
                              params={"base_url": "http://169.254.169.254"},

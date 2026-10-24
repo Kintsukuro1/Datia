@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { AppSettings } from '../../../types';
-import { llmClientService, LLMConnectionTestResult, LLMCompletionTestResult } from '../../chat/services/llm_service';
+import { llmClientService, LLMConnectionTestResult, LLMCompletionTestResult, LLMPolicy } from '../../chat/services/llm_service';
 import { apiClient, getApiErrorMessage } from '../../../shared/api/api_client';
 import { DEFAULT_OLLAMA_URL, DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER, LLM_PROVIDER_DEFAULTS, type LLMProviderKey } from '../../../constants';
 
@@ -31,6 +31,14 @@ export function useSettingsDiagnostics(settings: AppSettings, updateSettings: (n
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // Politica que aplica la empresa (LLM_MODE). En central/external el backend
+  // ignora la URL/modelo del navegador; la UI deshabilita los campos para no
+  // prometer una configuracion que no se va a usar. `llmPolicy === null` (carga
+  // o error) deja el formulario editable como antes; el backend sigue siendo la
+  // autoridad y la tarjeta muestra el error.
+  const [llmPolicy, setLlmPolicy] = useState<LLMPolicy | null>(null);
+  const [llmPolicyError, setLlmPolicyError] = useState<string | null>(null);
+
   // Re-entry guard refs
   const isTestingLLMRef = useRef(false);
   const isTestingInferenceRef = useRef(false);
@@ -45,6 +53,28 @@ export function useSettingsDiagnostics(settings: AppSettings, updateSettings: (n
 
   // Live timer for inference
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    llmClientService.getPolicy()
+      .then((policy) => {
+        if (!cancelled) {
+          setLlmPolicy(policy);
+          setLlmPolicyError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setLlmPolicy(null);
+          setLlmPolicyError(getApiErrorMessage(err, 'No se pudo leer la política LLM de la empresa.'));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const llmEditable = !llmPolicy || llmPolicy.allow_user_llm;
 
   useEffect(() => {
     let interval: any;
@@ -94,10 +124,29 @@ const fallback = LLM_PROVIDER_DEFAULTS[String(newProvider) as LLMProviderKey];
     setDetectedEndpoint(null);
 
     try {
-      // El backend ya sondea 8080/11434/1234 por su cuenta; este bucle existe
-      // para saber QUE endpoint respondio (la respuesta no trae `active_url`) y
-      // no pintar exito sobre un host configurado que esta caido. Las URLs
-      // salen de la tabla unica en `constants`.
+      // En central/external la empresa administra el motor: se prueba UNA vez
+      // sin mandar URL/modelo. El backend ignora lo que mande el navegador y
+      // devuelve el `active_url` real.
+      if (llmPolicy && !llmPolicy.allow_user_llm) {
+        try {
+          const res = await llmClientService.testConnection(llmPolicy.provider);
+          setDetectedModels(res.available_models);
+          setDetectedEndpoint(null);
+          setLlmTestResult(res);
+        } catch (err) {
+          setLlmTestResult({
+            success: false,
+            message: getApiErrorMessage(err, 'No se pudo comprobar el motor LLM administrado por la empresa.'),
+            available_models: [],
+            latency_ms: 0,
+          });
+        }
+        return;
+      }
+
+      // En `user` el endpoint es del usuario: el bucle existe para saber QUE
+      // endpoint respondio y no pintar exito sobre un host configurado que esta
+      // caido. Las URLs salen de la tabla unica en `constants`.
       const endpointsToTry: { url: string; prov: LLMProvider }[] = [
         { url: ollamaUrl, prov: provider },
       ];
@@ -161,14 +210,19 @@ const fallback = LLM_PROVIDER_DEFAULTS[String(newProvider) as LLMProviderKey];
     setInferenceResult(null);
 
     try {
-      const res = await llmClientService.testCompletion(testPrompt, provider, ollamaUrl, modelName);
+      // Mismo criterio que la prueba de conexion: en central/external se omite
+      // la config del navegador y el backend usa el motor de la empresa.
+      const managed = llmPolicy && !llmPolicy.allow_user_llm;
+      const res = managed
+        ? await llmClientService.testCompletion(testPrompt, llmPolicy.provider)
+        : await llmClientService.testCompletion(testPrompt, provider, ollamaUrl, modelName);
       setInferenceResult(res);
-    } catch (err: any) {
+    } catch (err) {
       setInferenceResult({
         success: false,
         completion_text: '',
         latency_ms: 0,
-        message: `Error al probar inferencia: ${err.message}`
+        message: `Error al probar inferencia: ${getApiErrorMessage(err, 'fallo de red o del servidor.')}`
       });
     } finally {
       isTestingInferenceRef.current = false;
@@ -245,13 +299,18 @@ const fallback = LLM_PROVIDER_DEFAULTS[String(newProvider) as LLMProviderKey];
     pgStatus,
     savedSuccess,
     saveError,
+    llmPolicy,
+    llmPolicyError,
+    llmEditable,
     // The whole page is one <form>. Without this the admin could type a host
     // and model, click the header nav, come back, and find every field reset
-    // with no message at all.
+    // with no message at all. En central/external los campos LLM estan
+    // deshabilitados: no cuentan como cambios sin guardar.
     dirty:
-      provider !== settings.llm_provider ||
-      ollamaUrl !== settings.ollama_url ||
-      modelName !== settings.ollama_model ||
+      (llmEditable &&
+        (provider !== settings.llm_provider ||
+          ollamaUrl !== settings.ollama_url ||
+          modelName !== settings.ollama_model)) ||
       pgHost !== settings.postgres_host ||
       pgPort !== settings.postgres_port ||
       pgDb !== settings.postgres_db,

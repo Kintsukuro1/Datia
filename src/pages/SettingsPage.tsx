@@ -35,6 +35,8 @@ export const SettingsPage: React.FC = () => {
     detectedModels,
     detectedEndpoint,
     elapsedSeconds,
+    llmPolicy,
+    llmPolicyError,
     handleProviderChange,
     handleTestLLMConnection,
     handleApplyDetected,
@@ -56,7 +58,23 @@ export const SettingsPage: React.FC = () => {
     return () => window.removeEventListener('beforeunload', warn);
   }, [dirty]);
 
-  const providerLabel = getProviderLabel(provider);
+  const providerLabel = getProviderLabel(
+    llmPolicy && !llmPolicy.allow_user_llm ? llmPolicy.provider : provider
+  );
+  const privacy = llmPolicy
+    ? llmPolicy.allow_user_llm
+      ? {
+          text: 'LLM propio del usuario',
+          cls: 'text-amber-700 dark:text-amber-300 bg-amber-500/10 border-amber-500/20',
+        }
+      : {
+          text: 'Motor de la empresa',
+          cls: 'text-indigo-700 dark:text-indigo-300 bg-indigo-500/10 border-indigo-500/20',
+        }
+    : {
+        text: '0 Exfiltración (Local)',
+        cls: 'text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
+      };
 
   return (
     <div className="w-full h-full flex-1 bg-dark-base overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar pb-28 font-sans">
@@ -104,6 +122,8 @@ export const SettingsPage: React.FC = () => {
             detectedEndpoint={detectedEndpoint}
             testingLLM={testingLLM}
             llmTestResult={llmTestResult}
+            llmPolicy={llmPolicy}
+            llmPolicyError={llmPolicyError}
             onProviderChange={handleProviderChange}
             onOllamaUrlChange={setOllamaUrl}
             onModelNameChange={setModelName}
@@ -200,8 +220,8 @@ export const SettingsPage: React.FC = () => {
                   <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                   <span className="text-gray-800 dark:text-gray-300 font-medium">Modo de Privacidad</span>
                 </div>
-                <span className="font-semibold text-[10px] text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                  0 Exfiltración (Local)
+                <span className={`font-semibold text-[10px] px-2 py-0.5 rounded border ${privacy.cls}`}>
+                  {privacy.text}
                 </span>
               </div>
             </div>

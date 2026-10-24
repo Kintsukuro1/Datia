@@ -10,7 +10,7 @@ from app.core.database import discard_failed_transaction
 from app.modules.auth.models import User
 from app.modules.admin_catalog.models import CorporateConnection
 from app.modules.catalog.services.schema_inspector import quote_sql_identifier
-from app.core.config import settings
+from app.core.config import settings, managed_llm_base_url
 from app.core.time import utcnow_naive
 from app.core.constants import (
     SYSTEM_STATUS_OPERATIONAL,
@@ -22,14 +22,11 @@ from app.core.constants import (
 )
 from app.modules.system.schemas import ComponentHealth, SystemHealthResponse
 from app.modules.system.health_service import HealthService
-# Misma validacion que /llm/test-connection y /llm/test-completion. Este endpoint
-# es la SEGUNDA puerta al mismo sink: `base_url` venia de un query param y
-# llegaba crudo a HealthService.check_llm_connectivity, que emite httpx GET a
-# donde el usuario dijera. Con ?base_url=http://169.254.169.254 cualquier
-# usuario autenticado hacia GET a la red interna. Se importa la funcion en vez
-# de copiar el allowlist para que las dos entradas compartan una sola
-# implementacion y la proxima puerta que se abra herede la proteccion.
-from app.modules.chat_engine.llm_diagnostic_router import _resolve_llm_base_url
+# La config LLM que manda el cliente se filtra por la politica de la empresa
+# (`LLM_MODE`). En central/external se ignora; en user se valida la URL antes de
+# emitir cualquier request. Una sola funcion para /system/health, /llm/test-* y
+# el enriquecimiento de catalogo.
+from app.modules.chat_engine.llm_service import resolve_user_llm_config
 
 router = APIRouter()
 
@@ -48,17 +45,22 @@ async def get_system_health(
     - Active registered corporate database connectors
     """
     effective_provider = provider or settings.LLM_PROVIDER
-    # Si el cliente manda base_url, se valida ANTES de tocar la red: host fuera
-    # del loopback -> 400 y ni una request sale. Sin base_url se usa la
-    # configuracion del servidor, que es de confianza y no necesita validacion.
-    effective_base_url = _resolve_llm_base_url(base_url) if base_url else settings.OLLAMA_BASE_URL
-    effective_model = model_name or settings.OLLAMA_MODEL
+    # En central/external la config del cliente se ignora; en user se valida
+    # antes de tocar la red y un host no permitido devuelve 400 sin request.
+    user_base_url, user_model = resolve_user_llm_config(base_url, model_name)
+    effective_base_url = user_base_url or managed_llm_base_url()
+    effective_model = user_model or settings.OLLAMA_MODEL
+    if settings.LLM_MODE_EFFECTIVE != "user":
+        # En central/external el provider lo decide la empresa. Un query param
+        # no debe cambiar contra qué paths se sondea el motor administrado.
+        effective_provider = settings.LLM_PROVIDER
 
     llm_res = await HealthService.check_llm_connectivity(
         provider=effective_provider,
         base_url=effective_base_url,
         model_name=effective_model,
-        timeout=2.0
+        timeout=2.0,
+        trusted=True,
     )
     llm_ok = llm_res["success"]
     detected_models = llm_res.get("available_models", [])
@@ -156,6 +158,24 @@ async def get_system_health(
         total_active_connectors=total_conns,
         healthy_connectors_count=healthy_count
     )
+
+
+@router.get("/llm-policy")
+def get_llm_policy(
+    current_user: User = Depends(get_current_user)
+) -> dict:
+    """Politica LLM que aplica la empresa a esta instalacion.
+
+    El frontend la usa para deshabilitar los campos de Ajustes en central y
+    external. No expone la URL interna del motor: eso solo sale en /health,
+    que ya esta autenticado y muestra el estado real.
+    """
+    return {
+        "mode": settings.LLM_MODE_EFFECTIVE,
+        "allow_user_llm": settings.LLM_MODE_EFFECTIVE == "user",
+        "default_model": settings.OLLAMA_MODEL,
+        "provider": settings.LLM_PROVIDER,
+    }
 
 
 @router.get("/anomalies")

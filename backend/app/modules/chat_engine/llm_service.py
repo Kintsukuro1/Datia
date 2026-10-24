@@ -6,7 +6,7 @@ import ipaddress
 from contextlib import contextmanager
 from urllib.parse import urlsplit
 from typing import AsyncIterator, List, Optional, Tuple
-from app.core.config import settings
+from app.core.config import settings, managed_llm_base_url
 from app.core.logging import logger
 from app.core.prompts import PromptManager
 
@@ -102,6 +102,39 @@ def validate_llm_base_url(raw: str) -> str:
             "(Docker) o en una IP privada de la red local."
         )
     return url.rstrip('/')
+
+
+def resolve_user_llm_config(
+    base_url: Optional[str],
+    model_name: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Filtra la config LLM que manda el cliente segun la politica de la empresa.
+
+    `LLM_MODE=central|external` (el default en production): la URL y el modelo
+    del cliente se IGNORAN, no se rechazan. Asi un navegador con un Ajustes
+    viejo en localStorage no rompe la consulta; simplemente usa el motor que
+    administra la empresa.
+
+    `LLM_MODE=user`: la empresa habilito el LLM propio por usuario. La URL se
+    valida con `validate_llm_base_url` (loopback, host.docker.internal o
+    RFC1918) y el modelo se acepta tal cual.
+
+    Levanta HTTPException(400), no ValueError, para que los routers no tengan
+    que traducirla. El sink (`generate_completion`) sigue usando ValueError.
+    """
+    if settings.LLM_MODE_EFFECTIVE != "user":
+        return None, None
+
+    from fastapi import HTTPException
+
+    url = (base_url or "").strip()
+    model = (model_name or "").strip()
+    if url:
+        try:
+            url = validate_llm_base_url(url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+    return (url or None, model or None)
 
 
 class StreamingThinkFilter:
@@ -274,9 +307,19 @@ class LLMService:
         la request contra un host no permitido, que es justo lo que el allowlist
         de `validate_llm_base_url` existe para impedir.
         """
+        # Un `base_url` explicito (LLM_MODE=user) es el UNICO candidato: si
+        # falla, se reporta el error. Reintentar contra el motor de la empresa
+        # mandaria el prompt a un servidor que el usuario no eligio, sin
+        # avisarle. Sin `base_url`, el motor configurado va primero y los
+        # puertos convencionales quedan como descubrimiento de desarrollo.
+        if base_url:
+            cand_base = cls._as_base_url(base_url)
+            return [(cand_base, f"{cand_base}/v1/chat/completions")]
+
         candidates: List[Tuple[str, str]] = []
         seen = set()
-        for raw_base in ([base_url] if base_url else []) + [
+        for raw_base in [
+            managed_llm_base_url(),
             LLAMA_CPP_BASE_URL,
             settings.OLLAMA_BASE_URL,
             settings.OPENAI_COMPATIBLE_URL,
@@ -357,6 +400,10 @@ class LLMService:
             logger.debug("No se pudo listar modelos en %s: %s", base, e)
 
         if resolved and resolved_from_server:
+            if len(cls._resolved_models) >= 128:
+                # ponytail: tope simple, no LRU. Las claves son URLs elegidas
+                # por el usuario en `LLM_MODE=user`; sin tope crecen sin fin.
+                cls._resolved_models.clear()
             cls._resolved_models[cache_key] = resolved
         return resolved
 
@@ -464,18 +511,29 @@ class LLMService:
                         if "context size has been exceeded" in err_body or "context size" in err_body or "kv cache" in err_body:
                             logger.error(f"Context size exceeded on {url}: {res.text[:cls.ERROR_BODY_CHARS]}")
                             raise ValueError(f"Context size has been exceeded on LLM server ({url}). Prompt was too long for current slot.")
-                        failures.append(f"{url} -> HTTP {res.status_code}: {(res.text or '')[:cls.ERROR_BODY_CHARS]}")
+                        # El cuerpo de un endpoint elegido por el usuario no se
+                        # repite en el error: sirve para mapear servicios
+                        # internos y sacar fragmentos de su respuesta. Queda en
+                        # el log del servidor; al usuario le llega el status.
+                        shown = (
+                            (res.text or "")[:cls.ERROR_BODY_CHARS]
+                            if not base_url else ""
+                        )
+                        failures.append(
+                            f"{url} -> HTTP {res.status_code}"
+                            + (f": {shown}" if shown else "")
+                        )
             except ValueError:
                 raise
             except Exception as e:
                 failures.append(f"{url} -> {type(e).__name__}: {e}")
                 logger.debug(f"LLM endpoint {url} no disponible: {str(e)}")
 
-        # Try 2: llama.cpp native completion endpoint (/completion) on 8080
-        native_urls = []
-        if base_url:
-            native_urls.append(f"{cls._as_base_url(base_url)}/completion")
-        native_urls.append(f"{LLAMA_CPP_BASE_URL}/completion")
+        # Try 2: llama.cpp native completion endpoint (/completion) on 8080.
+        # Con un endpoint explicito no se prueba: su protocolo es
+        # OpenAI-compatible y caer a otro motor seria el mismo fallback
+        # silencioso que `_candidate_chat_urls` ya no hace.
+        native_urls = [] if base_url else [f"{LLAMA_CPP_BASE_URL}/completion"]
 
         for url_native in native_urls:
             try:
@@ -506,46 +564,49 @@ class LLMService:
                 failures.append(f"{url_native} -> {type(e).__name__}: {e}")
                 logger.debug(f"LLM native endpoint {url_native} no disponible: {str(e)}")
 
-        # Try 3: Ollama /api/generate endpoint on 11434
-        ollama_base = base_url if base_url and "11434" in base_url else settings.OLLAMA_BASE_URL
-        url_ollama = f"{cls._as_base_url(ollama_base)}/api/generate"
-        try:
-            ollama_options = {
-                "temperature": temperature,
-                "num_predict": max_tokens,
-                "num_ctx": settings.LLM_NUM_CTX,
-                **cls.SAMPLING_DEFAULTS,
-            }
-            if stop:
-                ollama_options["stop"] = list(stop)
-            payload_ollama = {
-                # `/api/generate` NO acepta un id equivocado en silencio: responde
-                # 404 con `model not found`. Se resuelve igual que en la ruta de
-                # chat para que el mismo error no se produzca en una y no en la otra.
-                "model": await cls.resolve_model_for(cls._as_base_url(ollama_base), effective_model),
-                "prompt": prompt,
-                "system": system_prompt,
-                "stream": False,
-                "options": ollama_options
-            }
-            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
-                res = await client.post(url_ollama, json=payload_ollama)
-                if res.status_code == 200:
-                    text = res.json().get("response", "").strip()
-                    if text:
-                        return cls._clean_thinking_tags(text)
-                    failures.append(f"{url_ollama} -> 200 sin contenido")
-                else:
-                    err_body = (res.text or "").lower()
-                    if "context size has been exceeded" in err_body or "context size" in err_body or "kv cache" in err_body:
-                        logger.error(f"Context size exceeded on Ollama {url_ollama}: {res.text[:cls.ERROR_BODY_CHARS]}")
-                        raise ValueError(f"Context size has been exceeded on Ollama ({url_ollama}).")
-                    failures.append(f"{url_ollama} -> HTTP {res.status_code}: {(res.text or '')[:cls.ERROR_BODY_CHARS]}")
-        except ValueError:
-            raise
-        except Exception as e:
-            failures.append(f"{url_ollama} -> {type(e).__name__}: {e}")
-            logger.debug(f"Ollama endpoint no disponible: {str(e)}")
+        # Try 3: Ollama /api/generate. Solo aplica si el motor administrado ES
+        # Ollama: con `LLM_PROVIDER=openai_compatible` este endpoint no existe y
+        # probarlo mandaria la pregunta a un motor que la empresa no configuro.
+        if not base_url and settings.LLM_PROVIDER == "ollama":
+            ollama_base = settings.OLLAMA_BASE_URL
+            url_ollama = f"{cls._as_base_url(ollama_base)}/api/generate"
+            try:
+                ollama_options = {
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                    "num_ctx": settings.LLM_NUM_CTX,
+                    **cls.SAMPLING_DEFAULTS,
+                }
+                if stop:
+                    ollama_options["stop"] = list(stop)
+                payload_ollama = {
+                    # `/api/generate` NO acepta un id equivocado en silencio: responde
+                    # 404 con `model not found`. Se resuelve igual que en la ruta de
+                    # chat para que el mismo error no se produzca en una y no en la otra.
+                    "model": await cls.resolve_model_for(cls._as_base_url(ollama_base), effective_model),
+                    "prompt": prompt,
+                    "system": system_prompt,
+                    "stream": False,
+                    "options": ollama_options
+                }
+                async with httpx.AsyncClient(timeout=timeout_cfg) as client:
+                    res = await client.post(url_ollama, json=payload_ollama)
+                    if res.status_code == 200:
+                        text = res.json().get("response", "").strip()
+                        if text:
+                            return cls._clean_thinking_tags(text)
+                        failures.append(f"{url_ollama} -> 200 sin contenido")
+                    else:
+                        err_body = (res.text or "").lower()
+                        if "context size has been exceeded" in err_body or "context size" in err_body or "kv cache" in err_body:
+                            logger.error(f"Context size exceeded on Ollama {url_ollama}: {res.text[:cls.ERROR_BODY_CHARS]}")
+                            raise ValueError(f"Context size has been exceeded on Ollama ({url_ollama}).")
+                        failures.append(f"{url_ollama} -> HTTP {res.status_code}: {(res.text or '')[:cls.ERROR_BODY_CHARS]}")
+            except ValueError:
+                raise
+            except Exception as e:
+                failures.append(f"{url_ollama} -> {type(e).__name__}: {e}")
+                logger.debug(f"Ollama endpoint no disponible: {str(e)}")
 
         detail = " | ".join(failures)
         logger.error("Sin servidor LLM local disponible. Intentos: %s", detail)

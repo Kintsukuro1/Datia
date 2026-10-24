@@ -1,6 +1,6 @@
 import time
 import httpx
-from typing import Any, List
+from typing import Any, List, Optional
 from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -8,9 +8,9 @@ from pydantic import BaseModel
 from app.api.deps import get_current_user
 from app.modules.auth.models import User
 from app.modules.system.health_service import HealthService
-from app.core.config import settings
+from app.core.config import settings, managed_llm_base_url
 from app.core.prompts import PromptManager
-from app.modules.chat_engine.llm_service import LLMService
+from app.modules.chat_engine.llm_service import LLMService, resolve_user_llm_config
 
 # Timeout de la prueba de inferencia. Antes eran 15 s hardcodeados en cada uno de
 # los tres `AsyncClient`, y eso reportaba FALLO en un LLM local de CPU que antes
@@ -25,11 +25,10 @@ _INFERENCE_TIMEOUT = LLMService.LLM_TIMEOUT
 
 llm_diagnostic_router = APIRouter()
 
-# Datia es local-first: el servidor LLM solo puede estar en el loopback de la
-# maquina que corre el backend. Antes `base_url` venia del body sin validar y
-# estas rutas hacian POST a donde el usuario dijera, con respuesta cruda de vuelta:
-# un SSRF autenticado (cualquier usuario, cualquier rol) que con
-# base_url="http://169.254.169.254" leia metadatos de la nube interna.
+# Subconjunto de loopback que usa el SINK (`validate_llm_base_url`). La
+# politica de `LLM_MODE=user` es mas amplia (RFC1918 y host.docker.internal,
+# ver `llm_service.validate_llm_base_url`); esta allowlist ya no decide que
+# hosts puede elegir un usuario, solo cierra el caso loopback en el sink.
 LLM_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -63,27 +62,29 @@ def _resolve_llm_base_url(raw: str) -> str:
     return url.rstrip('/')
 
 class LLMTestRequest(BaseModel):
-    provider: str  # "ollama" | "openai_compatible" | "llama_cpp" | "custom"
-    base_url: str  # e.g. "http://127.0.0.1:8080" or "http://localhost:11434"
-    model_name: str
+    provider: str = "ollama"  # "ollama" | "openai_compatible" | "llama_cpp" | "custom"
+    base_url: Optional[str] = None  # e.g. "http://127.0.0.1:8080" or "http://localhost:11434"
+    model_name: Optional[str] = None
 
 class LLMTestResponse(BaseModel):
     success: bool
     message: str
     available_models: List[str] = []
     latency_ms: int = 0
+    active_url: str = ""
 
 class LLMCompletionTestRequest(BaseModel):
     prompt: str
-    provider: str
-    base_url: str
-    model_name: str
+    provider: str = "ollama"
+    base_url: Optional[str] = None
+    model_name: Optional[str] = None
 
 class LLMCompletionTestResponse(BaseModel):
     success: bool
     completion_text: str
     latency_ms: int = 0
     message: str
+    active_url: str = ""
 
 
 @llm_diagnostic_router.post("/test-connection", response_model=LLMTestResponse)
@@ -91,15 +92,22 @@ async def test_llm_connection(
     req: LLMTestRequest,
     current_user: User = Depends(get_current_user)
 ) -> Any:
-    """Tests live HTTP connectivity to local LLM server."""
-    # Se valida antes de llamar a HealthService: si la URL no pasa el allowlist,
-    # no se emite ninguna request.
-    base_url = _resolve_llm_base_url(req.base_url)
+    """Tests live HTTP connectivity to the LLM selected by the company policy."""
+    # En central/external la URL y el modelo del cliente se ignoran; en user se
+    # validan antes de tocar la red. Levanta 400 sin emitir ninguna request.
+    base_url, model_name = resolve_user_llm_config(req.base_url, req.model_name)
+    effective_base = base_url or managed_llm_base_url()
+    effective_model = model_name or settings.OLLAMA_MODEL
+    if settings.LLM_MODE_EFFECTIVE != "user":
+        effective_provider = settings.LLM_PROVIDER
+    else:
+        effective_provider = req.provider or settings.LLM_PROVIDER
     result = await HealthService.check_llm_connectivity(
-        provider=req.provider,
-        base_url=base_url,
-        model_name=req.model_name,
-        timeout=3.0
+        provider=effective_provider,
+        base_url=effective_base,
+        model_name=effective_model,
+        timeout=3.0,
+        trusted=True,
     )
     return LLMTestResponse(
         success=result["success"],
@@ -111,7 +119,8 @@ async def test_llm_connection(
         # inventarlo. El frontend ya lo tenia corregido; el bypass permitia que
         # esta mentira volviera.
         available_models=result.get("available_models", []),
-        latency_ms=result.get("latency_ms", 0)
+        latency_ms=result.get("latency_ms", 0),
+        active_url=result.get("active_url", ""),
     )
 
 @llm_diagnostic_router.post("/test-completion", response_model=LLMCompletionTestResponse)
@@ -121,7 +130,12 @@ async def test_llm_completion(
 ) -> Any:
     """Executes real inference completion against Ollama or llama.cpp / OpenAI-compatible endpoint."""
     start_time = time.time()
-    url = _resolve_llm_base_url(req.base_url)
+    base_url, model_name = resolve_user_llm_config(req.base_url, req.model_name)
+    effective_base = base_url or managed_llm_base_url()
+    effective_model = model_name or settings.OLLAMA_MODEL
+    # `_as_base_url` quita el `/v1` final: sin eso, un endpoint configurado como
+    # `https://llm.empresa/v1` recibia `/v1/v1/chat/completions`.
+    url = LLMService._as_base_url(effective_base)
     # No existe PromptManager.SQL_TEST_SYSTEM_PROMPT: esa linea era un
     # AttributeError garantizado en cada request, ejecutado ANTES de los tres
     # try y sin exception_handler en la app, o sea un 500 siempre. El endpoint
@@ -130,7 +144,7 @@ async def test_llm_completion(
 
     chat_url = f"{url}/v1/chat/completions"
     payload_chat = {
-        "model": req.model_name,
+        "model": effective_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": req.prompt}
@@ -149,7 +163,8 @@ async def test_llm_completion(
                     success=True,
                     completion_text=completion,
                     latency_ms=latency,
-                    message=f"Inferencia completada por llama.cpp / servidor LLM local ({req.model_name})."
+                    message=f"Inferencia completada por llama.cpp / servidor LLM local ({effective_model}).",
+                    active_url=url,
                 )
     except Exception:
         pass
@@ -170,14 +185,15 @@ async def test_llm_completion(
                     success=True,
                     completion_text=completion,
                     latency_ms=latency,
-                    message="Inferencia completada por llama.cpp (Endpoint Nativo /completion)."
+                    message="Inferencia completada por llama.cpp (Endpoint Nativo /completion).",
+                    active_url=url,
                 )
     except Exception:
         pass
 
     ollama_url = f"{url}/api/generate"
     payload_ollama = {
-        "model": req.model_name,
+        "model": effective_model,
         "prompt": req.prompt,
         "system": system_prompt,
         "stream": False,
@@ -193,7 +209,8 @@ async def test_llm_completion(
                     success=True,
                     completion_text=completion,
                     latency_ms=latency,
-                    message=f"Inferencia completada por Ollama ({req.model_name})."
+                    message=f"Inferencia completada por Ollama ({effective_model}).",
+                    active_url=url,
                 )
     except Exception:
         pass
@@ -202,5 +219,6 @@ async def test_llm_completion(
         success=False,
         completion_text="",
         latency_ms=int((time.time() - start_time) * 1000),
-        message=f"No se pudo completar la inferencia en {url}. Verifique que el servidor LLM local esté activo."
+        message=f"No se pudo completar la inferencia en {url}. Verifique que el servidor LLM configurado esté activo.",
+        active_url=url,
     )

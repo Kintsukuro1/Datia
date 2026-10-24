@@ -1,0 +1,33 @@
+# Caddy opcional para una VM con dominio. NO se usa si la empresa ya tiene
+# LB/ingress con TLS: en ese caso no active el perfil `caddy`.
+#
+# Caddy termina TLS y proxya al frontend por la red `edge`. El frontend confia
+# en el X-Forwarded-For de Caddy porque TRUSTED_PROXY_CIDR=172.30.0.0/24.
+{
+	# Si ACME le pide un email, descomente y exporte ACME_EMAIL en el entorno de
+	# Caddy (no esta en .env por defecto):
+	# email {$ACME_EMAIL}
+}
+
+{$DATIA_DOMAIN} {
+	encode zstd gzip
+
+	# Tiempo de espera para una consulta con LLM local. El default de Caddy es
+	# suficiente, pero se explicita para que una instalacion lenta no corte.
+	reverse_proxy frontend:8080 {
+		transport http {
+			read_timeout 310s
+			write_timeout 310s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

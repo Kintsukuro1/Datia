@@ -35,11 +35,8 @@ from app.modules.chat_engine.schemas import (
 from app.modules.chat_engine import forecast_service
 from app.modules.chat_engine.engine import QueryEngine
 from app.modules.chat_engine.sql_executor import SQLExecutor
-from app.modules.chat_engine.llm_service import LLMService
-from app.modules.chat_engine.llm_diagnostic_router import (
-    llm_diagnostic_router,
-    _resolve_llm_base_url,
-)
+from app.modules.chat_engine.llm_service import LLMService, resolve_user_llm_config
+from app.modules.chat_engine.llm_diagnostic_router import llm_diagnostic_router
 
 from app.core.constants import ADMIN_ROLES, ROLE_ADMINISTRADOR
 from app.core.database import discard_failed_transaction
@@ -75,31 +72,16 @@ def _resolve_target_database(db: Session, connection_id: int) -> str:
 # data-dictionary` y `/system/anomalies` no).
 
 
-def _validated_request_llm_base_url(query_in: QueryRequest) -> Optional[str]:
-    """Config LLM de Ajustes que trae la request, pasada por la allowlist de LOOPBACK.
+def _request_llm_config(query_in: QueryRequest) -> tuple[Optional[str], Optional[str]]:
+    """Config LLM de Ajustes, filtrada por la politica de la empresa.
 
-    Una sola definicion para `/query` y `/query/stream`: el 400 sale ANTES de
-    tocar el motor (en el stream, antes de abrir el stream: adentro de un
-    generador ya no hay status HTTP que devolver).
-
-    Por que `_resolve_llm_base_url` y no `validate_llm_base_url`
-    ------------------------------------------------------------
-    `validate_llm_base_url` (la del sink) acepta ademas RFC1918 y
-    `host.docker.internal` porque tiene que cubrir la URL CONFIGURADA POR EL
-    DESPLIEGUE (docker-compose: `OLLAMA_BASE_URL=http://host.docker.internal:11434`,
-    o un Ollama en otra maquina de la LAN). Eso es politica del operador, no del
-    usuario: aca la URL la elige cualquiera con sesion, y aceptar una IP privada
-    significa que el backend emite el POST con el prompt a un host que el usuario
-    controla (SSRF/exfiltracion). El cliente solo puede elegir el LLM de su propia
-    maquina, o sea loopback.
-
-    El sink sigue validando con su propia politica (`validate_llm_base_url`):
-    loopback pasa por ahi tambien, y la URL del servidor no cambia.
+    Una sola definicion para `/query` y `/query/stream`: el 400 de una URL
+    invalida en `LLM_MODE=user` sale ANTES de tocar el motor (en el stream,
+    antes de abrir el stream: adentro de un generador ya no hay status HTTP que
+    devolver). En `central`/`external` devuelve `(None, None)` y el motor usa la
+    configuracion del servidor, sin rechazar clientes con Ajustes viejos.
     """
-    if not query_in.llm_base_url:
-        return None
-    # Levanta HTTPException(400) sin emitir ninguna request.
-    return _resolve_llm_base_url(query_in.llm_base_url)
+    return resolve_user_llm_config(query_in.llm_base_url, query_in.llm_model)
 
 
 def _audit_response(
@@ -169,7 +151,7 @@ async def process_chat_query(
     Invokes Local LLM, applies RBAC permissions & AST Guardrail validation.
     Persists audit log of approval or rejection with result snapshot.
     """
-    request_llm_base_url = _validated_request_llm_base_url(query_in)
+    request_llm_base_url, request_llm_model = _request_llm_config(query_in)
     conn_id = query_in.connection_id or 1
     target_db_name = _resolve_target_database(db, conn_id)
     user_role_name = _require_assigned_role(
@@ -180,7 +162,7 @@ async def process_chat_query(
         # La config LLM viaja por ContextVar alrededor de TODO el motor: sus
         # 7 call-sites de `LLMService.generate_completion/stream_completion`
         # la leen como default sin threadear parametros por cada uno.
-        with LLMService.request_config(request_llm_base_url, query_in.llm_model):
+        with LLMService.request_config(request_llm_base_url, request_llm_model):
             response = await QueryEngine.execute_query(
                 question=query_in.question,
                 user_role=user_role_name,
@@ -264,7 +246,7 @@ async def process_chat_query_stream(
     # se enviaron. Un id explicito inexistente tiene que ser un 404 HTTP, no un
     # evento `error` que el cliente confunde con "el servidor se cayo".
     SchemaInspector.resolve_connection(db, conn_id)
-    request_llm_base_url = _validated_request_llm_base_url(query_in)
+    request_llm_base_url, request_llm_model = _request_llm_config(query_in)
     # Antes de abrir el stream: el corte de rol tiene que ser un 403 HTTP de
     # verdad. Adentro del generador las cabeceras ya se enviaron y un rechazo
     # solo puede viajar como evento `error`, que el cliente no distingue de
@@ -296,7 +278,7 @@ async def process_chat_query_stream(
                 # El `with` va DENTRO del task y no en el handler: el handler ya
                 # retorno cuando este generador corre. El ContextVar setea el
                 # contexto de ESTE task, que es donde corren los 7 call-sites.
-                with LLMService.request_config(request_llm_base_url, query_in.llm_model):
+                with LLMService.request_config(request_llm_base_url, request_llm_model):
                     response = await QueryEngine.execute_query(
                         question=query_in.question,
                         user_role=user_role_name,

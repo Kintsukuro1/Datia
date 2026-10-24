@@ -1,35 +1,54 @@
-# Contexto de build = ./backend (docker-compose.yml:32). El `COPY . .` del
-# Dockerfile arrastra TODO lo que haya aqui, asi que lo que no se lista entra
-# en la imagen.
+# Contexto de build = ./backend.
+# La imagen final solo necesita app/, main.py y los scripts de runtime/operacion.
+# El COPY explicito del Dockerfile es la garantia; esto es defensa en profundidad.
 
 # Bytecode y caches de Python
 **/__pycache__/
 *.py[cod]
 .Python
 .pytest_cache/
+.ruff_cache/
+.hypothesis/
+.mypy_cache/
 .coverage
 htmlcov/
+coverage/
 
 # Entornos virtuales
 env/
 venv/
 .venv/
 
-# Bases de datos locales: son datos del cliente, no codigo, y la imagen no
-# debe llevar copias (ni subirlas al registry).
+# Bases de datos locales: son datos del cliente, no codigo.
 *.db
 *.sqlite
 *.sqlite3
 data_sources/
 
-# Secrets: 'COPY . .' hornearia el .env del desarrollador en la capa.
-# .env.example se queda: contiene placeholders, no credenciales.
+# Secretos
 .env
 .env.*
-!.env.example
 
 .git
 .gitignore
 .vscode
 .idea
 *.log
+*.md
+
+# Tests y tooling de desarrollo
+tests/
+demo_database.sql
+requirements-dev.txt
+pyproject.toml
+ruff.toml
+Dockerfile
+.dockerignore
+
+# Scripts: solo los que se usan en runtime u operacion.
+scripts/**
+!scripts/__init__.py
+!scripts/setup_postgres_full.py
+!scripts/create_admin.py
+!scripts/rotate_credential_key.py
+!scripts/check_credential_health.py

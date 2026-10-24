@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.config import settings, managed_llm_base_url
 from app.core.logging import logger
 from app.core.time import utcnow_naive
 from app.modules.admin_catalog.models import CorporateConnection
@@ -1342,7 +1342,7 @@ def _measured_tokens_per_second() -> Optional[float]:
     """
     cache = enrich_estimator._SPEED_CACHE
     keys: List[Tuple[str, str]] = [("", "")]
-    settings_key = (settings.OLLAMA_BASE_URL or "", settings.OLLAMA_MODEL or "")
+    settings_key = (managed_llm_base_url() or "", settings.OLLAMA_MODEL or "")
     if settings_key != ("", ""):
         keys.append(settings_key)
 

@@ -14,6 +14,7 @@ import random
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import URL
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.security import encrypt_credential
@@ -30,8 +31,20 @@ PG_PASSWORD = settings.POSTGRES_PASSWORD
 METADATA_DB = settings.POSTGRES_DB  # democratizacion_metadatos
 BUSINESS_DB = "democratizacion_empresa"
 
-MAINTENANCE_URL = f"postgresql+psycopg://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/postgres"
-BUSINESS_URL = f"postgresql+psycopg://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{BUSINESS_DB}"
+def _pg_url(database: str) -> str:
+    """URL de PostgreSQL con la contrasena escapada (no interpolada cruda)."""
+    return URL.create(
+        "postgresql+psycopg",
+        username=PG_USER,
+        password=PG_PASSWORD,
+        host=PG_HOST,
+        port=PG_PORT,
+        database=database,
+    ).render_as_string(hide_password=False)
+
+
+MAINTENANCE_URL = _pg_url("postgres")
+BUSINESS_URL = _pg_url(BUSINESS_DB)
 
 def create_database_if_not_exists(dbname: str):
     """Connects to maintenance DB and creates target DB if it does not exist."""
@@ -40,7 +53,11 @@ def create_database_if_not_exists(dbname: str):
         exists = conn.execute(text("SELECT 1 FROM pg_database WHERE datname = :dbname"), {"dbname": dbname}).scalar()
         if not exists:
             logger.info(f"Creando base de datos PostgreSQL '{dbname}'...")
-            conn.execute(text(f'CREATE DATABASE "{dbname}" OWNER "{PG_USER}"'))
+            # Los identificadores no aceptan bind params; se escapan las comillas
+            # dobles para que un nombre con `"` no rompa el DDL.
+            safe_db = dbname.replace('"', '""')
+            safe_user = PG_USER.replace('"', '""')
+            conn.execute(text(f'CREATE DATABASE "{safe_db}" OWNER "{safe_user}"'))
             logger.info(f"Base de datos '{dbname}' creada exitosamente.")
         else:
             logger.info(f"Base de datos '{dbname}' ya existe.")

@@ -22,9 +22,9 @@ class QueryRequest(BaseModel):
         default=None, max_length=MAX_HISTORY_TURNS
     )
     # Config LLM de Ajustes que viaja POR REQUEST. El valor crudo NUNCA se usa
-    # para emitir requests: `llm_base_url` pasa por `_resolve_llm_base_url`
-    # (allowlist estricta de loopback) en el router, y el sink la vuelve a
-    # validar con la política más amplia del despliegue.
+    # para emitir requests: `llm_base_url` pasa por `resolve_user_llm_config`
+    # (politica de `LLM_MODE`) en el router, y el sink la vuelve a validar con
+    # la política más amplia del despliegue.
     llm_base_url: Optional[str] = Field(default=None, max_length=500)
     llm_model: Optional[str] = Field(default=None, max_length=200)
 

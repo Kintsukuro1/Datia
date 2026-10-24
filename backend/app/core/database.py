@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from typing import Generator
 from sqlalchemy import create_engine
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
 from app.core.logging import logger
@@ -14,8 +15,20 @@ def get_database_url(
     password: str = settings.POSTGRES_PASSWORD,
     db_name: str = settings.POSTGRES_DB
 ) -> str:
-    """Builds PostgreSQL database connection URL for psycopg driver."""
-    return f"postgresql+psycopg://{user}:{password}@{server}:{port}/{db_name}"
+    """Builds PostgreSQL database connection URL for psycopg driver.
+
+    `URL.create` escapa la contrasena. Interpolarla cruda rompia la conexion
+    con claves que traen `@`, `:` o `/`, y el sintoma aparecia recien al primer
+    request, no al configurar la instalacion.
+    """
+    return URL.create(
+        "postgresql+psycopg",
+        username=user,
+        password=password,
+        host=server,
+        port=port,
+        database=db_name,
+    ).render_as_string(hide_password=False)
 
 # Motor unico de la metadata: PostgreSQL. Sin fallback a SQLite a proposito:
 # una segunda base interna en un archivo solo producia dos verdades distintas
@@ -256,7 +269,14 @@ def build_engine_for_connector(conn):
     if conn.db_type == DatabaseType.POSTGRESQL or str(conn.db_type).lower() == "postgresql":
         pwd = decrypt_credential(conn.encrypted_password) if conn.encrypted_password else ""
         port = conn.port if conn.port and conn.port > 0 else 5432
-        url = f"postgresql+psycopg://{conn.username}:{pwd}@{conn.host}:{port}/{conn.database_name}"
+        url = URL.create(
+            "postgresql+psycopg",
+            username=conn.username,
+            password=pwd,
+            host=conn.host,
+            port=port,
+            database=conn.database_name,
+        )
         return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
 
     raise ValueError(

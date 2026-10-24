@@ -3,6 +3,7 @@ from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 
 from main import app
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
 from app.modules.admin_catalog.models import CorporateConnection
@@ -73,7 +74,10 @@ class TestSystemHealth(unittest.TestCase):
         }
 
         url = "/api/v1/system/health?base_url=http:%2F%2F127.0.0.1:8080&provider=llama_cpp&model_name=Qwen%2FQwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"
-        response = self.client.get(url, headers=self.headers)
+        # Los query params del panel solo se honran cuando la empresa habilito
+        # el LLM por usuario. En central/external se ignoran a proposito.
+        with patch.object(settings, "LLM_MODE", "user"):
+            response = self.client.get(url, headers=self.headers)
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["status"], SYSTEM_STATUS_OPERATIONAL)

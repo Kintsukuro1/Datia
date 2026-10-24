@@ -3,11 +3,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from app.core.config import settings
 from app.core.logging import logger
 from app.api.v1.router import api_router
 from app.core.database import SessionLocal
-from app.db.init_db import init_db
 
 # `/docs` y el esquema OpenAPI no piden autenticacion: describen los 50 endpoints
 # con todos sus parametros a cualquiera que alcance el puerto. En produccion van
@@ -53,6 +54,23 @@ def validate_startup_security():
                 "DEMO_MODE está activo en producción: hay cuentas con contraseñas "
                 "conocidas (admin/admin123 y otras del README)."
             )
+        if settings.LLM_MODE_EFFECTIVE == "user":
+            _warn(
+                "LLM_MODE=user en producción: cualquier usuario autenticado puede "
+                "apuntar el motor LLM a un host de la red privada. Habilítelo solo "
+                "si esa red está segmentada y confía en sus usuarios."
+            )
+        # En un backend dentro de contenedor, localhost es el propio contenedor:
+        # Ollama no está ahí. Es una advertencia y no un error porque un backend
+        # corriendo directo en el host sí usa loopback.
+        from urllib.parse import urlsplit
+        llm_host = (urlsplit(settings.OLLAMA_BASE_URL).hostname or "").lower()
+        if llm_host in {"localhost", "127.0.0.1", "::1"}:
+            _warn(
+                "OLLAMA_BASE_URL apunta al loopback. Si el backend corre en un "
+                "contenedor, use el servicio 'ollama' del compose o la IP del host; "
+                "localhost sería el propio contenedor."
+            )
     elif settings.SECRET_KEY == settings.DEFAULT_SECRET_KEY:
         _warn(
             "SECRET_KEY por defecto en desarrollo. No use esta clave en una "
@@ -77,23 +95,29 @@ async def lifespan(app: FastAPI):
     validate_startup_security()
 
     # 1. Ensure PostgreSQL databases, schemas, and base data exist (Auto-healing)
+    pg_ready = False
     try:
         from scripts.setup_postgres_full import run as run_postgres_full_setup
-        run_postgres_full_setup()
+        pg_ready = run_postgres_full_setup()
     except Exception as e_pg:
+        if _IS_PROD:
+            # En produccion no se arranca a medias: el compose espera
+            # /health/ready y el operador ve el error real, no un 200 mentiroso.
+            raise
         logger.warning(f"Aviso durante auto-inicialización de PostgreSQL: {e_pg}")
+
+    if _IS_PROD and not pg_ready:
+        raise RuntimeError(
+            "PostgreSQL no está disponible: no se puede inicializar la metadata. "
+            "Revise POSTGRES_* y el servicio postgres antes de reintentar."
+        )
 
     from app.core.database import engine
     logger.info(f"Motor de base de datos activo: {engine.dialect.name.upper()} ({engine.url.render_as_string(hide_password=True)})")
 
-    # 2. Initialize App Metadata (Users, Roles, RBAC permissions, Connectors)
-    try:
-        db = SessionLocal()
-        init_db(db)
-        db.close()
-        logger.info("Base de datos de metadatos e identidades inicializada correctamente.")
-    except Exception as e:
-        logger.warning(f"Aviso de inicio de base de datos: {str(e)}. El sistema operará en modo contingencia.")
+    # `run_postgres_full_setup()` ya llama a `init_db` (unico seeder de
+    # identidad, RBAC y conector). Llamarlo otra vez aca era un segundo
+    # arranque del mismo seeder en cada inicio.
 
     yield
 
@@ -137,6 +161,31 @@ def health_check():
         "app": settings.PROJECT_NAME,
         "environment": settings.ENVIRONMENT
     }
+
+@app.get("/health/live")
+def liveness_check():
+    """Proceso vivo. No toca dependencias: es lo que usa un orquestador para
+    decidir si reiniciar el contenedor."""
+    return {"status": "alive"}
+
+@app.get("/health/ready")
+def readiness_check():
+    """Proceso listo para atender. Verifica la metadata; si no responde, 503.
+
+    No devuelve el error de SQLAlchemy: el detalle queda en el log del server y
+    el healthcheck solo necesita el estado. Los datos de conexion no viajan.
+    """
+    db = None
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        return {"status": "ready"}
+    except Exception as exc:
+        logger.warning(f"Readiness check falló: {exc}")
+        return JSONResponse(status_code=503, content={"status": "not_ready"})
+    finally:
+        if db is not None:
+            db.close()
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)

@@ -9,6 +9,7 @@ from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 from main import app
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
 from app.modules.chat_engine.llm_diagnostic_router import (
@@ -83,22 +84,82 @@ class TestLLMDiagnosticRouter(unittest.TestCase):
         self.assertTrue(hasattr(PromptManager, "DEFAULT_SYSTEM_PROMPT"))
 
     # ------------------------------------------------------------------ BUG 2
-    def test_ssrf_base_url_is_rejected_with_400_and_no_request(self):
-        """BUG 2: `base_url` venía del body sin validar. Con 169.254.169.254 el
-        backend hacia POST a la red interna y devolvia la respuesta al atacante.
-        Ahora: 400 y ni una sola request sale hacia esa IP."""
-        for path in ("/api/v1/llm/test-completion", "/api/v1/llm/test-connection"):
-            with patch("httpx.AsyncClient.post", side_effect=_no_httpx), \
-                 patch("httpx.AsyncClient.get", side_effect=_no_httpx):
-                payload = {**self.base_payload, "base_url": "http://169.254.169.254"}
-                if path.endswith("test-completion"):
-                    payload["prompt"] = "ping"
-                res = self.client.post(path, json=payload, headers=self.headers)
-            self.assertEqual(res.status_code, 400, f"{path}: {res.status_code} {res.text[:200]}")
-            self.assertIn("no permitido", res.json()["detail"].lower())
+    def test_hostile_base_url_is_ignored_in_central_mode(self):
+        """Default de produccion: el cliente no elige el motor.
+
+        La URL hostil no se usa ni se convierte en 400: se ignora. `test-connection`
+        sondea la configuracion del servidor, y `test-completion` compone sus
+        endpoints sobre esa misma base. Ninguna request sale hacia 169.254.169.254.
+        """
+        hostile = "http://169.254.169.254"
+        with patch(
+            "app.modules.system.health_service.HealthService.check_llm_connectivity",
+            new_callable=AsyncMock,
+        ) as mock_health:
+            mock_health.return_value = {
+                "success": True,
+                "message": "ok",
+                "available_models": [],
+                "latency_ms": 1,
+                "active_url": settings.OLLAMA_BASE_URL,
+            }
+            res = self.client.post(
+                "/api/v1/llm/test-connection",
+                json={**self.base_payload, "base_url": hostile},
+                headers=self.headers,
+            )
+
+        self.assertEqual(res.status_code, 200, res.text[:300])
+        self.assertEqual(
+            mock_health.await_args.kwargs["base_url"],
+            settings.OLLAMA_BASE_URL,
+        )
+        self.assertTrue(mock_health.await_args.kwargs["trusted"])
+
+        captured = []
+
+        class _Res:
+            status_code = 500
+            text = "nope"
+
+            @staticmethod
+            def json():
+                return {}
+
+        async def fake_post(self, url, **kwargs):
+            captured.append(url)
+            return _Res()
+
+        with patch("httpx.AsyncClient.post", new=fake_post):
+            res = self.client.post(
+                "/api/v1/llm/test-completion",
+                json={**self.base_payload, "base_url": hostile, "prompt": "ping"},
+                headers=self.headers,
+            )
+
+        self.assertEqual(res.status_code, 200, res.text[:300])
+        self.assertFalse(res.json()["success"])
+        self.assertTrue(captured, "no se intento ningun endpoint")
+        central_base = LLMService._as_base_url(settings.OLLAMA_BASE_URL)
+        for url in captured:
+            self.assertNotIn("169.254", url, url)
+            self.assertTrue(url.startswith(central_base), url)
+
+    def test_hostile_base_url_is_rejected_in_user_mode(self):
+        """Con `LLM_MODE=user` la URL si importa: 400 y ni una request sale."""
+        with patch.object(settings, "LLM_MODE", "user"):
+            for path in ("/api/v1/llm/test-completion", "/api/v1/llm/test-connection"):
+                with patch("httpx.AsyncClient.post", side_effect=_no_httpx), \
+                     patch("httpx.AsyncClient.get", side_effect=_no_httpx):
+                    payload = {**self.base_payload, "base_url": "http://169.254.169.254"}
+                    if path.endswith("test-completion"):
+                        payload["prompt"] = "ping"
+                    res = self.client.post(path, json=payload, headers=self.headers)
+                self.assertEqual(res.status_code, 400, f"{path}: {res.status_code} {res.text[:200]}")
+                self.assertIn("no permitido", res.json()["detail"].lower())
 
     def test_internal_hosts_are_rejected_by_the_validator(self):
-        """Otros objetivos internos que tampoco deben pasar."""
+        """La allowlist estricta de loopback del sink no acepta objetivos internos."""
         for hostile in (
             "http://169.254.169.254",
             "http://10.0.0.1:8000",

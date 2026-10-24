@@ -9,8 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.admin_catalog.models import SemanticCatalog, CorporateConnection
 from app.modules.admin_catalog.schemas import AutoEnrichRequest, AutoEnrichResponse
-from app.modules.chat_engine.llm_service import LLMService
-from app.modules.chat_engine.llm_diagnostic_router import _resolve_llm_base_url
+from app.modules.chat_engine.llm_service import LLMService, resolve_user_llm_config
 from app.modules.system.health_service import HealthService
 from app.core.config import settings
 from app.core.logging import logger
@@ -534,22 +533,21 @@ class CatalogEnricher:
         llm_model_name: Optional[str] = None
         llm_skip_note = ""
         if req and req.use_llm:
-            llm_model_name = req.model_name
-            if req.base_url:
-                # Misma validacion anti-SSRF que /system/health: un host fuera
-                # del loopback se rechaza ANTES de emitir una sola request.
-                llm_base_url = _resolve_llm_base_url(req.base_url)
+            # En central/external devuelve (None, None) y el probe usa la config
+            # del servidor; en user valida la URL antes de emitir una request.
+            llm_base_url, llm_model_name = resolve_user_llm_config(req.base_url, req.model_name)
             try:
                 probe = await HealthService.check_llm_connectivity(
                     base_url=llm_base_url,
                     model_name=llm_model_name,
                     timeout=2.0,
+                    trusted=True,
                 )
             except Exception as ex:
                 probe = {"success": False, "message": str(ex)}
             if not probe.get("success"):
                 llm_skip_note = (
-                    " El modelo de IA local no respondió al chequeo de conectividad, "
+                    " El motor LLM configurado no respondió al chequeo de conectividad, "
                     "así que el catálogo quedó con reglas heurísticas."
                 )
 

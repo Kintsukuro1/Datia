@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 def _backend_dir() -> str:
@@ -50,6 +50,25 @@ class Settings(BaseSettings):
             return self.DEMO_MODE
         return self.ENVIRONMENT.lower() != "production"
 
+    # Quién elige el endpoint LLM de las consultas:
+    #   central  -> el Ollama del compose (OLLAMA_BASE_URL); el cliente no puede cambiarlo.
+    #   external -> un endpoint administrado por la empresa (OLLAMA_BASE_URL); tampoco
+    #               lo elige el usuario.
+    #   user     -> la empresa HABILITA que cada usuario apunte a un LLM propio en su
+    #               red privada. El backend sigue siendo el único que ejecuta SQL y
+    #               valida la URL con `validate_llm_base_url` (loopback/RFC1918).
+    #
+    # Sin valor explicito: `user` en development (preserva Ajustes local) y
+    # `central` en production (fail-closed: una instalación cliente no queda
+    # aceptando endpoints arbitrarios por olvido).
+    LLM_MODE: Optional[Literal["central", "external", "user"]] = None
+
+    @property
+    def LLM_MODE_EFFECTIVE(self) -> str:
+        if self.LLM_MODE is not None:
+            return self.LLM_MODE
+        return "user" if self.ENVIRONMENT.lower() != "production" else "central"
+
     DEFAULT_SECRET_KEY: str = "democratizacion_datos_super_secret_key_local_2026_aes256_change_in_prod"
 
     # Secret Key for JWT Tokens and AES Encryption
@@ -75,7 +94,9 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "ollama" # ollama | openai_compatible | custom
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5-coder:7b"
-    OPENAI_COMPATIBLE_URL: str = "http://localhost:8000/v1"
+    # 1234 (LM Studio) y no 8000: 8000 es el puerto de esta misma API, así que el
+    # fallback se POSTeaba a Datia y recibía un 404 en cada inferencia.
+    OPENAI_COMPATIBLE_URL: str = "http://localhost:1234/v1"
 
     # Ventana de contexto por request. Antes era el literal 16384 repetido en
     # tres lugares de `llm_service.py`. Qwen2.5-Coder-7B tiene 32K nativos
@@ -118,3 +139,17 @@ class Settings(BaseSettings):
     )
 
 settings = Settings()
+
+
+def managed_llm_base_url() -> str:
+    """URL del motor que administra la empresa, segun `LLM_PROVIDER`.
+
+    `openai_compatible`/`custom` apuntan a `OPENAI_COMPATIBLE_URL` (vLLM,
+    LM Studio, gateway corporativo). Cualquier otro valor usa Ollama. Esta
+    funcion es la unica fuente para el motor administrado: si cada camino
+    tomara `OLLAMA_BASE_URL` por su cuenta, configurar otro provider quedaria
+    documentado pero sin efecto.
+    """
+    if settings.LLM_PROVIDER == "ollama":
+        return settings.OLLAMA_BASE_URL
+    return settings.OPENAI_COMPATIBLE_URL or settings.OLLAMA_BASE_URL

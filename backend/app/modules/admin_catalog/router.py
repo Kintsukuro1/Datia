@@ -29,9 +29,10 @@ from app.modules.catalog.services.null_manager import NullManagerService
 from app.modules.catalog.services.schema_inspector import SchemaIntrospectionError
 from app.modules.reports.generator import ReportGeneratorService
 from app.modules.system.health_service import HealthService
-# Misma validacion anti-SSRF que /system/health y /llm/test-*: el base_url que
-# llega del cliente se filtra por el allowlist de loopback antes de tocar la red.
-from app.modules.chat_engine.llm_diagnostic_router import _resolve_llm_base_url
+# La config LLM que manda el admin se filtra por la politica de la empresa
+# (`LLM_MODE`): en central/external se ignora; en user se valida la URL antes de
+# emitir cualquier request. Misma funcion que /system/health y /chat/query.
+from app.modules.chat_engine.llm_service import resolve_user_llm_config
 from fastapi import HTTPException
 
 router = APIRouter()
@@ -162,9 +163,9 @@ async def estimate_enrich_duration(
     conn = db.query(CorporateConnection).filter(CorporateConnection.id == connection_id).first()
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada.")
-    if base_url:
-        # Host fuera del loopback -> 400 y ni una request sale.
-        base_url = _resolve_llm_base_url(base_url)
+    # En central/external se ignora la config del cliente; en user se valida la
+    # URL antes de que EnrichEstimator emita la primera request.
+    base_url, model_name = resolve_user_llm_config(base_url, model_name)
     try:
         return await EnrichEstimator.estimate_for_connection(
             conn, base_url=base_url, model_name=model_name

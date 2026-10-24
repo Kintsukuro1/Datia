@@ -1,26 +1,57 @@
+# Contexto de build del frontend (raiz del repo).
+# La garantia real es el COPY explicito del Dockerfile; esto reduce el
+# contexto y evita que documentacion interna o secretos lleguen al daemon.
+
 node_modules
 dist
 dist-electron
 release
 .git
 .gitignore
+.github
 .vscode
 .idea
-backend
+.agents
+.opencode
+AGENTS.md
+opencode.json
+skills-lock.json
+plans
 DOCS
+backend
+data_sources
+scripts
+deploy
+*.md
+setup.*
+docker-compose*.yml
+playwright.config.ts
+knip.json
+src/__tests__
+**/*.test.ts
+**/*.spec.ts
+test-results
+playwright-report
+blob-report
+coverage
 *.log
 
-# Secrets: 'COPY . .' would otherwise bake .env into the builder layer.
-# .env.example stays: it holds placeholders, not credentials.
+# Secretos
 .env
 .env.*
-!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+secrets
+backups
+*.dump
+*.sql.gz
+*.bak
 
-# Local-only agent tooling, plans and customer databases.
-.agents/
-.opencode/
-plans/
-data_sources/
+# Datos locales
 *.db
 *.sqlite
 *.sqlite3

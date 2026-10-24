@@ -16,6 +16,28 @@ class TestPostgresCompatibility(unittest.TestCase):
         )
         self.assertEqual(url, "postgresql+psycopg://datia_admin:secret_password@db.corporate.local:5432/democratizacion_prod")
 
+    def test_postgres_url_escapes_special_password(self):
+        """`@`, `:` y `/` en la clave no deben romper el parseo de la URL.
+
+        Interpolar la contrasena cruda hacia que `create_engine` leyera el host
+        equivocado y el error apareciera recien al primer request.
+        """
+        from sqlalchemy.engine import make_url
+
+        password = "p@ss:w/rd%25"
+        url = get_database_url(
+            server="db.corporate.local",
+            port=5432,
+            user="datia_admin",
+            password=password,
+            db_name="democratizacion_prod",
+        )
+        parsed = make_url(url)
+        self.assertEqual(parsed.password, password)
+        self.assertEqual(parsed.host, "db.corporate.local")
+        self.assertEqual(parsed.port, 5432)
+        self.assertEqual(parsed.database, "democratizacion_prod")
+
     def test_build_engine_for_postgres_connector(self):
         conn = CorporateConnection(
             name="PG Primary Data Warehouse",

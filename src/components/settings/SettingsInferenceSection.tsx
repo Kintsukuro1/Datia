@@ -90,6 +90,12 @@ export const SettingsInferenceSection: React.FC<SettingsInferenceSectionProps> =
             </span>
           </div>
 
+          {inferenceResult.active_url && (
+            <p className="px-1 text-[10px] font-mono text-slate-500 dark:text-gray-400 truncate">
+              Endpoint activo: {inferenceResult.active_url}
+            </p>
+          )}
+
           {inferenceResult.success && inferenceResult.completion_text && (
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2 shadow-inner">
               <div className="flex items-center justify-between text-xs font-bold text-purple-300 border-b border-slate-800 pb-2">

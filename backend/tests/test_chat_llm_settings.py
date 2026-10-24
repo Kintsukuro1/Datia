@@ -5,12 +5,10 @@ Hoy el backend solo acepta esos datos en `/llm/test-*` y `/system/health`:
 `/chat/query` y `/chat/query/stream` los ignoran y el motor usa el servidor
 default. Estos tests fijan las tres propiedades del fix:
 
-1. Una URL fuera de la allowlist se rechaza con 400 y el motor NO corre
-   (anti-SSRF). La puerta del ROUTER es la de solo loopback
-   (`_resolve_llm_base_url`): la allowlist mas amplia de
-   `validate_llm_base_url` es del SINK y cubre la URL del despliegue, no la
-   que elige el usuario. Los casos hostiles estan en
-   `test_chat_llm_private_host.py`.
+1. Una URL rechazada por la politica se rechaza con 400 y el motor NO corre
+   (anti-SSRF). Con `LLM_MODE=user` la allowlist es la del sink
+   (`validate_llm_base_url`: loopback, `host.docker.internal` y RFC1918); los
+   casos hostiles estan en `test_chat_llm_private_host.py`.
 2. La config viaja POR REQUEST (ContextVar) hasta el motor, en el endpoint
    normal y dentro del task del stream.
 3. `LLMService.generate_completion/stream_completion` la usan como default:
@@ -22,6 +20,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from main import app
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
 from app.modules.chat_engine.llm_service import LLMService
@@ -97,6 +96,12 @@ class TestChatLLMSettingsRelay(unittest.TestCase):
         db.close()
 
     def setUp(self):
+        # Estos tests fijan el relay de Ajustes al motor, que solo aplica con
+        # `LLM_MODE=user` (la empresa habilito el LLM propio por usuario). El
+        # default de produccion es `central` y se cubre en
+        # `test_chat_llm_private_host.py`.
+        self._previous_llm_mode = settings.LLM_MODE
+        settings.LLM_MODE = "user"
         # `raise_server_exceptions=False`: los fakes de abajo devuelven None y el
         # router termina en 500. Lo que se verifica es que el motor corrio con la
         # config de la request, no como termino la request.
@@ -106,6 +111,7 @@ class TestChatLLMSettingsRelay(unittest.TestCase):
         self.headers = make_auth_headers(self.db, "admin")
 
     def tearDown(self):
+        settings.LLM_MODE = self._previous_llm_mode
         self.db.close()
 
     def test_chat_query_rejects_non_allowed_llm_host(self):

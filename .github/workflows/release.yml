@@ -1,0 +1,125 @@
+name: Release
+
+# Publica las imagenes en GHCR y adjunta el bundle de instalacion al release.
+# Se dispara solo con tags `v*` (por ejemplo v1.0.0). El tag debe apuntar a un
+# commit que ya paso CI.
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  images:
+    name: Build and push ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: backend
+            context: ./backend
+            file: ./backend/Dockerfile
+            image: datia-backend
+          - service: frontend
+            context: .
+            file: ./Dockerfile
+            image: datia-frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # GHCR exige minusculas en el nombre del repositorio. El owner real del
+      # repo es `Kintsukuro1`; usarlo tal cual hace fallar el push con
+      # "invalid reference format" y el release no produce ninguna imagen.
+      - name: Normalizar owner para GHCR
+        id: owner
+        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.name }}/${{ matrix.image }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VITE_DEMO_MODE=false
+            VITE_API_BASE_URL=/api/v1
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          provenance: true
+          sbom: true
+
+  bundle:
+    name: Publish install bundle
+    needs: images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build bundle
+        run: |
+          set -eu
+          name="datia-deploy-${GITHUB_REF_NAME}"
+          dest="dist/${name}"
+          mkdir -p "$dest"
+          cp -R deploy/. "$dest/"
+          rm -rf "$dest/backups" "$dest/.env" "$dest/.gitignore"
+          printf '%s\n' "${GITHUB_REF_NAME}" > "$dest/VERSION"
+          # El bundle queda autocontenido: las imagenes apuntan al tag del
+          # release, no a :latest. El operador igual puede cambiar a un digest.
+          sed -i "s|:latest|:${GITHUB_REF_NAME}|g" "$dest/.env.example"
+          chmod +x "$dest"/*.sh
+          tar -czf "${name}.tar.gz" -C dist "$name"
+          ls -lh "${name}.tar.gz"
+          tar -tzf "${name}.tar.gz" | head -n 20
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: datia-deploy-${{ github.ref_name }}.tar.gz
+          generate_release_notes: true
+          draft: false
+          # Un tag con guion (v1.0.0-rc.1) es prerelease: no debe quedar como
+          # "Latest" en GitHub mientras las imagenes tampoco llevan `latest`.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}

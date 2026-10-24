@@ -3,7 +3,7 @@ import socket
 import asyncio
 import httpx
 from typing import Dict, Any, Optional
-from app.core.config import settings
+from app.core.config import settings, managed_llm_base_url
 from urllib.parse import urlsplit
 
 
@@ -46,26 +46,35 @@ class HealthService:
         provider: Optional[str] = None,
         base_url: Optional[str] = None,
         model_name: Optional[str] = None,
-        timeout: float = 2.0
+        timeout: float = 2.0,
+        trusted: bool = False,
     ) -> Dict[str, Any]:
         """
         Tests live HTTP connectivity to local LLM server:
         Supports Ollama (:11434), llama.cpp / llama.exe serve (:8080), LM Studio (:1234), vLLM (:8000).
         Automatically probes active local ports if the configured one fails.
+
+        `trusted=True` significa que `base_url` ya paso la politica de la URL.
+        Sin `base_url` se usa el motor administrado (`managed_llm_base_url`),
+        que es configuracion del servidor y por definicion es de confianza.
         """
         start_time = time.time()
-        primary_url = (base_url or "").rstrip('/')
+        primary_url = (base_url or managed_llm_base_url() or "").rstrip('/')
+        # LM Studio y otros OpenAI-compatible se configuran con `/v1`; los paths
+        # de abajo ya agregan `/v1/models`. Sin esto se pedia `/v1/v1/models`.
+        if primary_url.endswith('/v1'):
+            primary_url = primary_url[:-3].rstrip('/')
         default_model = model_name or settings.OLLAMA_MODEL
 
         # El `base_url` se valida ACA, en el sink, y no solo en el router: los
         # routers validan la entrada conocida, pero esta clase emite httpx GET a
         # donde le digan y no tiene por que confiar en quien la llame (por
-        # ejemplo system/router.py:51 le pasa settings.OLLAMA_BASE_URL, que en
+        # ejemplo system/router.py:51 le pasa el motor administrado, que en
         # Docker es http://host.docker.internal:11434 y debe seguir valiendo).
         # Idempotente con la validación del router: si ya pasó, no cambia nada.
         # Un base_url rechazado no se probea ni se reporta como activo: se
         # devuelve success:False con el motivo, sin afirmar nada sobre el LLM.
-        if base_url:
+        if base_url and not trusted:
             try:
                 from app.modules.chat_engine.llm_service import validate_llm_base_url
                 primary_url = validate_llm_base_url(base_url)
@@ -76,12 +85,12 @@ class HealthService:
                     "message": f"No se pudo verificar el servidor LLM: {exc}",
                     "available_models": [],
                     "active_url": "",
-                    "provider": provider or "ollama",
+                    "provider": provider or settings.LLM_PROVIDER,
                 }
 
         candidates = []
         if primary_url:
-            candidates.append((provider or "auto", primary_url))
+            candidates.append((provider or settings.LLM_PROVIDER, primary_url))
 
         # El llama.cpp se toma de la constante del modulo `llm_service` para no repetir
         # el puerto en dos archivos. Ojo: esta tabla sondea PUERTOS CONVENCIONALES
@@ -90,7 +99,11 @@ class HealthService:
         # de Datia. Derivarla de `settings` cambiaria el sondeo.
         from app.modules.chat_engine.llm_service import LLAMA_CPP_BASE_URL
 
-        fallbacks = [
+        # El descubrimiento de puertos locales es comodidad de desarrollo. En
+        # produccion el motor es el que configuro la empresa: sondear loopback
+        # ademas del primario puede reportar OK con un Ollama suelto en el host
+        # que no es el motor de esta instalacion.
+        fallbacks = [] if settings.ENVIRONMENT.lower() == "production" else [
             ("llama_cpp", LLAMA_CPP_BASE_URL),
             # Gemelo `localhost`: un servidor local puede estar escuchando en una
             # sola de las dos formas, y por eso se prueban las dos.
@@ -180,14 +193,18 @@ class HealthService:
                 except Exception:
                     pass
 
-        display_url = primary_url or settings.OLLAMA_BASE_URL
+        display_url = primary_url or managed_llm_base_url()
+        probed = (
+            "" if settings.ENVIRONMENT.lower() == "production"
+            else " ni los puertos locales 8080/11434/1234"
+        )
         return {
             "success": False,
             "latency_ms": 0,
-            "message": f"No se pudo contactar al servidor LLM local ({display_url} ni puertos 8080/11434/1234). Verifica que llama.exe serve u Ollama esté activo.",
+            "message": f"No se pudo contactar al servidor LLM configurado ({display_url}{probed}). Verifica que el motor LLM esté activo.",
             "available_models": [default_model],
             "active_url": display_url,
-            "provider": provider or "ollama"
+            "provider": provider or settings.LLM_PROVIDER
         }
 
     @classmethod

@@ -1,0 +1,8 @@
+# El bundle de instalacion no viaja con secretos ni backups.
+.env
+.env.*
+!.env.example
+backups/
+*.dump
+*.tar.gz
+*.log

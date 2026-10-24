@@ -3,7 +3,7 @@ services:
   # 1. DATABASE: PostgreSQL 16 (Metadata & Governance)
   # ==========================================
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine
     container_name: datia-postgres
     restart: unless-stopped
     environment:
@@ -56,6 +56,11 @@ services:
       # local y compose lo interpola aca.
       - DEMO_MODE=${DEMO_MODE:-false}
       - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      # central: la empresa administra el motor; user: el cliente puede apuntar
+      # su propio LLM (validado por el backend). Sin valor, production cae en
+      # central. El compose de desarrollo explicita el default para que no
+      # dependa de ENVIRONMENT.
+      - LLM_MODE=${LLM_MODE:-central}
       # Fijo, sin ${...}: dentro de un contenedor `localhost` es el PROPIO
       # contenedor, así que heredar el OLLAMA_BASE_URL=http://localhost:11434
       # que trae .env (correcto para `npm run dev` sin Docker) dejaba al backend
@@ -97,9 +102,10 @@ services:
       - backend
     ports:
       # Solo loopback del host. En Docker Desktop/Windows la publicacion en
-      # 0.0.0.0 exponia la app a toda la LAN.
-      - "127.0.0.1:80:80"
-      - "127.0.0.1:5173:80"
+      # 0.0.0.0 exponia la app a toda la LAN. El contenedor escucha en 8080
+      # porque nginx corre sin privilegios.
+      - "127.0.0.1:80:8080"
+      - "127.0.0.1:5173:8080"
     networks:
       - datia-network
 

@@ -91,6 +91,10 @@ class EnrichEstimator:
         tps = (len(text) / 4.0) / elapsed
         if tps <= 0:
             return None
+        if len(_SPEED_CACHE) >= 64:
+            # ponytail: tope simple, no LRU. La clave incluye la URL que elige
+            # cada admin; sin tope crece con cada wizard.
+            _SPEED_CACHE.clear()
         _SPEED_CACHE[key] = (tps, now)
         return tps
 
