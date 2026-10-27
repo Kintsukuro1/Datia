@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   ArrowLeft,
@@ -39,6 +40,17 @@ import {
   type WizardStep,
 } from './database-wizard/wizardConfig';
 
+const INITIAL_REMOTE_FORM: RemoteFormState = {
+  name: '',
+  dbType: 'postgresql',
+  host: 'localhost',
+  port: 5432,
+  databaseName: '',
+  username: 'postgres',
+  password: '',
+  isActive: true,
+};
+
 interface DatabaseWizardModalProps {
   isOpen: boolean;
   initialMode?: IngestionMode;
@@ -59,12 +71,6 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   const [ingestionMode, setIngestionMode] = useState<IngestionMode>(initialMode);
   const [creationMode, setCreationMode] = useState<CreationMode>('ai');
 
-  React.useEffect(() => {
-    if (isOpen) {
-      setIngestionMode(initialMode);
-    }
-  }, [isOpen, initialMode]);
-
   // File Upload State
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [customName, setCustomName] = useState('');
@@ -72,16 +78,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Remote DB State
-  const [remoteForm, setRemoteForm] = useState<RemoteFormState>({
-    name: '',
-    dbType: 'postgresql',
-    host: 'localhost',
-    port: 5432,
-    databaseName: '',
-    username: 'postgres',
-    password: '',
-    isActive: true,
-  });
+  const [remoteForm, setRemoteForm] = useState<RemoteFormState>(INITIAL_REMOTE_FORM);
 
   // Prueba de conectividad previa (POST /connectors/test). El resultado se
   // limpia al cambiar cualquier parámetro probado para no mostrar un OK viejo.
@@ -219,17 +216,14 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
     estimate?.estimated_seconds && estimate.estimated_seconds > 0 ? estimate.estimated_seconds : 60;
   const generationPct = Math.min(96, Math.max(3, Math.round((generationElapsed / generationExpectedSeconds) * 100)));
 
-  // Dialog semantics, Escape, focus containment and focus restore.
-  const modalRef = useModalA11y<HTMLDivElement>(isOpen, onClose);
-
-  if (!isOpen) return null;
-
   const resetState = () => {
     setCurrentStep('input');
     setIngestionMode(initialMode);
     setCreationMode('ai');
     setSelectedFile(null);
     setCustomName('');
+    setIsDragging(false);
+    setRemoteForm(INITIAL_REMOTE_FORM);
     setErrorMessage(null);
     setIsProcessing(false);
     setRegisteredConnection(null);
@@ -255,6 +249,23 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
     resetState();
     onClose();
   };
+
+  // Al abrir siempre se arranca limpio. Cubre el caso de un guardado o alta
+  // que termina despues de cerrar: sus setState tardios no pueden dejar el
+  // wizard en el paso 2 de la sesion anterior al reabrirlo.
+  React.useEffect(() => {
+    if (isOpen) resetState();
+    // resetState se recrea en cada render; la senal que importa es isOpen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+
+  // Dialog semantics, Escape, focus containment and focus restore.
+  // Escape usa el mismo cierre que X/Cancelar: si se pasa `onClose` directo,
+  // el estado del wizard sobrevive y al reabrirlo aparece el paso 2 de la
+  // conexion anterior en vez del formulario limpio.
+  const modalRef = useModalA11y<HTMLDivElement>(isOpen, handleClose);
+
+  if (!isOpen) return null;
 
   // --- Step 1: Submit DB (File or Remote) ---
   const handleFileChange = (file: File) => {
@@ -311,6 +322,10 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
       setRegisteredConnection(createdConn);
       setIsProcessing(false);
       setCurrentStep('choice');
+      // La fuente ya existe en el backend. Refrescar aca (y no solo al
+      // terminar el wizard) cubre al usuario que cierra en el paso 2 y
+      // tambien al que cierra mientras el POST todavia estaba en vuelo.
+      onSuccess();
     } catch (err) {
       const msg = getApiErrorMessage(err, 'Error al conectar/ingresar la fuente de datos.', true);
       setErrorMessage(msg);
@@ -566,7 +581,10 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
 
   const uiStepIndex = UI_STEP_INDEX[currentStep];
 
-  return (
+  // Portal al body: `fixed` no escapa de un ancestro con `backdrop-filter`
+  // (la tarjeta `.glass-panel` de AdminConnectorsTab), y el modal quedaba
+  // recortado dentro de la tarjeta en vez de cubrir el viewport.
+  return createPortal(
     <div ref={modalRef} role="dialog" aria-modal="true" aria-label="Asistente de instalación de base de datos" tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
       <div className="glass-panel w-full max-w-4xl rounded-2xl sm:rounded-3xl border border-app-border shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
         {/* Top Header */}
@@ -907,6 +925,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

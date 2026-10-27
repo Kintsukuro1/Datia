@@ -4,6 +4,7 @@ import secrets
 import uuid
 from typing import List, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.api.deps import (
     get_db, get_current_user, get_current_admin, display_role_name, is_admin_user,
@@ -12,7 +13,8 @@ from app.api.deps import (
 from app.core.security import verify_password, get_password_hash, create_access_token, decode_token_payload
 from app.core.config import settings
 from app.core.time import utcnow_naive
-from app.modules.auth.models import User, Role, UserSession
+from app.modules.auth.models import User, Role, Domain, UserSession
+from app.modules.admin_catalog.models import SemanticCatalog
 from app.core.constants import (
     MAX_FAILED_LOGIN_ATTEMPTS, ACCOUNT_LOCKOUT_DURATION_MINUTES, ADMIN_ROLES,
     DEFAULT_USER_ROLE,
@@ -20,6 +22,7 @@ from app.core.constants import (
 from app.modules.auth.schemas import (
     UserLogin, UserAdminCreate, UserCreationResponse, UserOut, Token,
     PasswordChangeRequest, PasswordResetResponse, SessionOut, UserRoleUpdate,
+    RoleCreate, RoleUpdate, RoleOut, DomainCreate, DomainUpdate, DomainOut,
     validate_password_strength
 )
 
@@ -378,14 +381,413 @@ def change_user_password(
 # ADMIN GOVERNANCE ENDPOINTS: SESSIONS & PASSWORD RESETS
 # =========================================================================
 
-@router.get("/roles")
+# =========================================================================
+# ADMIN GOVERNANCE ENDPOINTS: CÁTALOGO DE ROLES & DOMINIOS
+# =========================================================================
+#
+# El catálogo de roles dejó de ser solo de lectura: sin alta/edición/baja, cada
+# cliente nuevo dependía de los 8 perfiles de la demo y no podía modelar su
+# organigrama. Los dominios son las áreas de negocio a las que se adscribe el
+# catálogo semántico (`semantic_catalog.domain_id`).
+#
+# Invariantes:
+#   - el rol de `ADMIN_ROLES` no se renombra ni se borra: `is_admin_user` lo
+#     reconoce por NOMBRE exacto, así que renombrarlo dejaría a sus usuarios sin
+#     panel de administración en el siguiente request, sin aviso;
+#   - un rol con cuentas asignadas no se borra (409): `User.role_id` es
+#     `ON DELETE SET NULL` en la base, así que borrarlo dejaría cuentas sin
+#     matriz y el chat les respondería "tu rol no tiene tablas", que parece un
+#     bug del producto;
+#   - toda mutación deja fila en `audit_logs`, sin secretos.
+
+def _clean_catalog_name(raw: Optional[str], label: str) -> str:
+    """Nombre visible: se recorta y no puede quedar vacío."""
+    name = (raw or "").strip()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"El nombre del {label} no puede estar vacío.",
+        )
+    return name
+
+
+def _catalog_name_taken(
+    db: Session, model: Any, name: str, exclude_id: Optional[int] = None
+) -> bool:
+    """Duplicado sin distinguir mayúsculas.
+
+    Postgres compara `VARCHAR` distinguiendo mayúsculas, así que "Ventas" y
+    "ventas" convivirían como dos roles distintos. Para una etiqueta que el
+    admin elige a mano eso es una trampa, no una feature.
+    """
+    query = db.query(model.id).filter(func.lower(model.name) == name.lower())
+    if exclude_id is not None:
+        query = query.filter(model.id != exclude_id)
+    return query.first() is not None
+
+
+def _role_out(role: Role, user_count: int = 0) -> RoleOut:
+    return RoleOut(
+        id=role.id, name=role.name, description=role.description,
+        user_count=user_count,
+    )
+
+
+def _role_user_count(db: Session, role_id: int) -> int:
+    return db.query(User).filter(User.role_id == role_id).count()
+
+
+@router.get("/roles", response_model=List[RoleOut])
 def list_available_roles(
     current_admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ) -> Any:
-    """Lists available roles for administration management (Admin only)."""
-    roles = db.query(Role).all()
-    return [{"id": r.id, "name": r.name, "description": r.description} for r in roles]
+    """Catálogo de roles con cuántas cuentas tiene cada uno (Admin only)."""
+    counts = dict(
+        db.query(User.role_id, func.count(User.id))
+        .filter(User.role_id.isnot(None))
+        .group_by(User.role_id)
+        .all()
+    )
+    roles = db.query(Role).order_by(Role.name).all()
+    return [_role_out(r, counts.get(r.id, 0)) for r in roles]
+
+
+@router.post("/roles", response_model=RoleOut, status_code=status.HTTP_201_CREATED)
+def create_role(
+    payload: RoleCreate,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Crea un rol del catálogo (Admin only). Nace sin permisos de tabla."""
+    name = _clean_catalog_name(payload.name, "rol")
+    if _catalog_name_taken(db, Role, name):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Ya existe un rol llamado '{name}'.",
+        )
+
+    role = Role(name=name, description=(payload.description or "").strip() or None)
+    db.add(role)
+    db.commit()
+    db.refresh(role)
+
+    _persist_audit_log(
+        db=db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=display_role_name(current_admin),
+        question_prompt=(
+            f"Alta de rol '{role.name}' (id={role.id}) por administrador. Nace sin "
+            f"permisos de tabla: se asignan en la matriz de permisos."
+        ),
+        sql_generated=None,
+        validation_status="AUTH_ROL_CREADO",
+        target_database="metadata",
+    )
+    return _role_out(role)
+
+
+@router.patch("/roles/{role_id}", response_model=RoleOut)
+def update_role(
+    role_id: int,
+    payload: RoleUpdate,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Renombra y/o cambia la descripción de un rol (Admin only).
+
+    Campo ausente = no se toca. `description: null` = se borra la descripción.
+    """
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Indica al menos un campo a actualizar: 'name' y/o 'description'.",
+        )
+
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Rol no encontrado.",
+        )
+
+    previous_name = role.name
+    previous_description = role.description
+    changes = []
+
+    if "name" in updates:
+        new_name = _clean_catalog_name(payload.name, "rol")
+        # El rol administrador se reconoce por nombre exacto en `is_admin_user`.
+        # Renombrarlo apagaría el panel para todas sus cuentas de un plumazo.
+        if previous_name in ADMIN_ROLES and new_name != previous_name:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"El rol '{previous_name}' es el rol administrador del sistema y "
+                    f"no se puede renombrar. Crea otro rol si necesitas otra etiqueta."
+                ),
+            )
+        if _catalog_name_taken(db, Role, new_name, exclude_id=role.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Ya existe un rol llamado '{new_name}'.",
+            )
+        if new_name != previous_name:
+            role.name = new_name
+
+    if "description" in updates:
+        role.description = (payload.description or "").strip() or None
+
+    if role.name != previous_name:
+        changes.append(f"nombre: '{previous_name}' -> '{role.name}'")
+    if role.description != previous_description:
+        changes.append("descripción actualizada")
+
+    db.commit()
+    db.refresh(role)
+
+    _persist_audit_log(
+        db=db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=display_role_name(current_admin),
+        question_prompt=(
+            f"Actualización del rol '{role.name}' (id={role.id}) por administrador: "
+            f"{'; '.join(changes) or 'sin cambios efectivos'}."
+        ),
+        sql_generated=None,
+        validation_status="AUTH_ROL_ACTUALIZADO",
+        target_database="metadata",
+    )
+    return _role_out(role, _role_user_count(db, role.id))
+
+
+@router.delete("/roles/{role_id}")
+def delete_role(
+    role_id: int,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Borra un rol sin cuentas asignadas (Admin only).
+
+    Sus permisos de tabla/columna y sus links de dominio caen por cascada ORM.
+    """
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Rol no encontrado.",
+        )
+
+    if role.name in ADMIN_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"El rol '{role.name}' es el rol administrador del sistema y no se "
+                f"puede eliminar."
+            ),
+        )
+
+    user_count = _role_user_count(db, role.id)
+    if user_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"El rol '{role.name}' tiene {user_count} usuario(s) asignado(s). "
+                f"Reasígnalos a otro rol antes de eliminarlo."
+            ),
+        )
+
+    deleted_name = role.name
+    db.delete(role)
+    db.commit()
+
+    _persist_audit_log(
+        db=db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=display_role_name(current_admin),
+        question_prompt=(
+            f"Eliminación del rol '{deleted_name}' (id={role_id}) por administrador. "
+            f"Sin usuarios asignados; sus permisos de tabla y columna se eliminaron."
+        ),
+        sql_generated=None,
+        validation_status="AUTH_ROL_ELIMINADO",
+        target_database="metadata",
+    )
+    return {"message": f"El rol '{deleted_name}' fue eliminado."}
+
+
+@router.get("/domains", response_model=List[DomainOut])
+def list_domains(
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Dominios de negocio y cuántas entradas del catálogo los usan (Admin only)."""
+    counts = dict(
+        db.query(SemanticCatalog.domain_id, func.count(SemanticCatalog.id))
+        .filter(SemanticCatalog.domain_id.isnot(None))
+        .group_by(SemanticCatalog.domain_id)
+        .all()
+    )
+    domains = db.query(Domain).order_by(Domain.name).all()
+    return [
+        DomainOut(
+            id=d.id, name=d.name, description=d.description,
+            catalog_entries_count=counts.get(d.id, 0),
+        )
+        for d in domains
+    ]
+
+
+@router.post("/domains", response_model=DomainOut, status_code=status.HTTP_201_CREATED)
+def create_domain(
+    payload: DomainCreate,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Crea un área de negocio para clasificar el catálogo semántico (Admin only)."""
+    name = _clean_catalog_name(payload.name, "dominio")
+    if _catalog_name_taken(db, Domain, name):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Ya existe un dominio llamado '{name}'.",
+        )
+
+    domain = Domain(name=name, description=(payload.description or "").strip() or None)
+    db.add(domain)
+    db.commit()
+    db.refresh(domain)
+
+    _persist_audit_log(
+        db=db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=display_role_name(current_admin),
+        question_prompt=f"Alta de dominio '{domain.name}' (id={domain.id}) por administrador.",
+        sql_generated=None,
+        validation_status="AUTH_DOMINIO_CREADO",
+        target_database="metadata",
+    )
+    return DomainOut(id=domain.id, name=domain.name, description=domain.description)
+
+
+@router.patch("/domains/{domain_id}", response_model=DomainOut)
+def update_domain(
+    domain_id: int,
+    payload: DomainUpdate,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Renombra y/o cambia la descripción de un dominio (Admin only)."""
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Indica al menos un campo a actualizar: 'name' y/o 'description'.",
+        )
+
+    domain = db.query(Domain).filter(Domain.id == domain_id).first()
+    if not domain:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dominio no encontrado.",
+        )
+
+    previous_name = domain.name
+    previous_description = domain.description
+    changes = []
+
+    if "name" in updates:
+        new_name = _clean_catalog_name(payload.name, "dominio")
+        if _catalog_name_taken(db, Domain, new_name, exclude_id=domain.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Ya existe un dominio llamado '{new_name}'.",
+            )
+        if new_name != previous_name:
+            domain.name = new_name
+
+    if "description" in updates:
+        domain.description = (payload.description or "").strip() or None
+
+    if domain.name != previous_name:
+        changes.append(f"nombre: '{previous_name}' -> '{domain.name}'")
+    if domain.description != previous_description:
+        changes.append("descripción actualizada")
+
+    db.commit()
+    db.refresh(domain)
+
+    catalog_count = db.query(SemanticCatalog).filter(
+        SemanticCatalog.domain_id == domain.id
+    ).count()
+    _persist_audit_log(
+        db=db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=display_role_name(current_admin),
+        question_prompt=(
+            f"Actualización del dominio '{domain.name}' (id={domain.id}) por "
+            f"administrador: {'; '.join(changes) or 'sin cambios efectivos'}."
+        ),
+        sql_generated=None,
+        validation_status="AUTH_DOMINIO_ACTUALIZADO",
+        target_database="metadata",
+    )
+    return DomainOut(
+        id=domain.id, name=domain.name, description=domain.description,
+        catalog_entries_count=catalog_count,
+    )
+
+
+@router.delete("/domains/{domain_id}")
+def delete_domain(
+    domain_id: int,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Borra un dominio (Admin only).
+
+    `semantic_catalog.domain_id` es `ON DELETE SET NULL`: las entradas NO se
+    pierden, quedan sin clasificar. El conteo va en la auditoría para que la
+    baja no borre clasificación en silencio.
+    """
+    domain = db.query(Domain).filter(Domain.id == domain_id).first()
+    if not domain:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dominio no encontrado.",
+        )
+
+    unclassified = db.query(SemanticCatalog).filter(
+        SemanticCatalog.domain_id == domain.id
+    ).count()
+    deleted_name = domain.name
+    db.delete(domain)
+    db.commit()
+
+    _persist_audit_log(
+        db=db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=display_role_name(current_admin),
+        question_prompt=(
+            f"Eliminación del dominio '{deleted_name}' (id={domain_id}) por "
+            f"administrador. {unclassified} entrada(s) del catálogo quedaron sin dominio."
+        ),
+        sql_generated=None,
+        validation_status="AUTH_DOMINIO_ELIMINADO",
+        target_database="metadata",
+    )
+    return {
+        "message": (
+            f"El dominio '{deleted_name}' fue eliminado. "
+            f"{unclassified} entrada(s) del catálogo quedaron sin dominio."
+        )
+    }
 
 @router.get("/users", response_model=List[UserOut])
 def list_all_users(

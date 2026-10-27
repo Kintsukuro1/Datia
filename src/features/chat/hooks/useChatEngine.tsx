@@ -705,7 +705,11 @@ function useChatEngineInternal() {
       // no hay un estado que afirmar. Null no es una aprobacion.
       if (vStatus && !vStatus.startsWith('APROBADO')) {
         if (vStatus.includes('RECHAZADO')) {
-          notify('warning', `Consulta bloqueada por AST Guardrail (${vStatus}) según perfil ${userRole}.`);
+          if (vStatus.toUpperCase().includes('IA LOCAL NO DISPONIBLE')) {
+            notify('warning', 'Motor IA local no disponible: la consulta no se pudo procesar.');
+          } else {
+            notify('warning', `Consulta bloqueada por AST Guardrail (${vStatus}) según perfil ${userRole}.`);
+          }
         } else if (vStatus.includes('ERROR')) {
           notify('error', `Error al procesar consulta SQL (${vStatus}).`);
         }

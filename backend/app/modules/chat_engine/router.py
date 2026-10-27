@@ -412,29 +412,24 @@ async def run_prediction(
         current_user, db, payload.question or "Prediccion: forecast y retencion", target_db_name
     )
 
-    # --- Gate 2: gobernanza de dominio. Idéntico a `engine.py:164-167`.
+    # --- Gate 2: gobernanza de dominio. Idéntico al del chat (`QueryEngine.run_query`).
     #
-    # Por qué se pasa el conjunto de tablas y no una pregunta
-    # -------------------------------------------------------
-    # `check_domain_governance` es un guard de KEYWORDS sobre el texto de la
-    # consulta, y `/predict` no recibe una pregunta en lenguaje natural que
-    # consultar. Inventar una pseudo-pregunta ("¿cuánto vendremos?") sería un
-    # bypass disfrazado: dependería de una frase que el cliente elige y que
-    # puede no mandar. Lo que `/predict` SÍ decide por código es contra qué
-    # tablas lee — las del rol — y su SQL es siempre una agregación de ingresos
-    # (`income_only`) sobre la fact table. El dominio real de la consulta es,
-    # por tanto, el dominio de esas tablas, y es lo que se le pasa al guard.
+    # Se clasifica la PREGUNTA del cliente, igual que en `/chat/query`: la misma
+    # pregunta recibe el mismo veredicto por los dos caminos. Lo que limita los
+    # DATOS de `/predict` es la matriz (`allowed_tables`), porque su SQL es una
+    # agregación generada por código sobre la fact table del rol; el texto solo
+    # agrega el rechazo temprano y explicable cuando alguien pregunta por un area
+    # que su matriz no cubre.
     #
-    # El guard ya reconoce nombres de tabla en sus dos listas de keywords
-    # (`fact_ventas`, `fact_ingresos_costos`, `kna1_clientes` del lado
-    # financiero; `dim_servidores`, `fact_incidentes_ti` del lado TI), así que no
-    # hace falta ninguna ruta nueva en el guard: se le da el sujeto que de
-    # verdad se está leyendo.
+    # Antes se le pasaba `" ".join(allowed_tables)` como pseudo-pregunta y el
+    # nombre del rol decidía el dominio. Eso convertía al nombre en la autoridad:
+    # un rol llamado "TI" con `fact_ventas` en su matriz quedaba denegado, y uno
+    # llamado "Finance Analyst" quedaba sin política. Ahora manda la matriz.
     #
-    # Sin esto, un rol TI con `fact_ventas` en su matriz RBAC se llevaba
-    # agregados de ingresos por acá, mientras la MISMA pregunta escrita en el
-    # chat salía denegada por `governance_guard.py:193`. El endpoint no es un
-    # camino privilegiado alrededor de la gobernanza.
+    # Si el cliente no manda pregunta se usa la etiqueta neutra de auditoría
+    # ("Prediccion: forecast y retencion"). No contiene vocabulario de ningún
+    # dominio, así que no fabrica un veredicto ni lo bloquea: los DATOS siguen
+    # acotados por la matriz aguas abajo.
 
     # Cache de la request. Nace acá porque el gate de dominio ya resolvió las
     # tablas autorizadas: sembrarlas evita que `_load_fact_table` y
@@ -448,7 +443,10 @@ async def run_prediction(
         )
         budget["allowed_tables"] = allowed_tables
         domain_denial = GovernanceGuard.check_domain_governance(
-            " ".join(sorted(allowed_tables)), user_role_name, allowed_tables
+            payload.question or "Prediccion: forecast y retencion",
+            user_role_name,
+            allowed_tables,
+            is_admin=current_user.is_admin,
         )
         if domain_denial:
             _persist_audit_log(

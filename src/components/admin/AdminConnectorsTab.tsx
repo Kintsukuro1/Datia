@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Database, Plus, Edit3, Trash2, RefreshCw, CheckCircle2, RotateCcw, Filter, UploadCloud, HardDrive, Sparkles, AlertCircle, Search, Zap, PowerOff, ShieldAlert, Brain } from 'lucide-react';
+import { Database, Plus, Edit3, Trash2, RefreshCw, CheckCircle2, Filter, UploadCloud, HardDrive, Sparkles, AlertCircle, Search, Zap, PowerOff, ShieldAlert, Brain } from 'lucide-react';
 import { CorporateConnection } from '../../features/admin/services/connector_service';
 import { DatabaseWizardModal } from './DatabaseWizardModal';
 import { useAdminConnectors } from '../../features/admin/hooks/useAdminConnectors';
@@ -10,7 +10,6 @@ interface AdminConnectorsTabProps {
   onOpenEditModal: (conn: CorporateConnection) => void;
   onDeleteConnector: (id: number, name: string) => void;
   onToggleActive: (id: number) => void;
-  onResetDemoConnectors: () => void;
   onRefreshConnectors?: () => void;
 }
 
@@ -20,7 +19,6 @@ export const AdminConnectorsTab: React.FC<AdminConnectorsTabProps> = ({
   onOpenEditModal,
   onDeleteConnector,
   onToggleActive,
-  onResetDemoConnectors,
   onRefreshConnectors,
 }) => {
   const {
@@ -49,10 +47,6 @@ export const AdminConnectorsTab: React.FC<AdminConnectorsTabProps> = ({
     switch (dbType.toLowerCase()) {
       case 'postgresql':
         return 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30';
-      case 'mysql':
-        return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30';
-      case 'mssql':
-        return 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30';
       default:
         return 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/30';
     }
@@ -81,7 +75,7 @@ export const AdminConnectorsTab: React.FC<AdminConnectorsTabProps> = ({
             </span>
           </h3>
           <p className="text-xs text-app-muted mt-0.5">
-            Conexiones operativas en modo solo lectura (<code>READ ONLY</code>) con soporte para PostgreSQL, MySQL y SQL Server
+            Conexiones operativas en modo solo lectura (<code>READ ONLY</code>) sobre PostgreSQL
           </p>
         </div>
 
@@ -96,14 +90,14 @@ export const AdminConnectorsTab: React.FC<AdminConnectorsTabProps> = ({
             <span>Importar Archivo (SQLite / Excel / CSV)</span>
           </button>
 
-          {/* Action 2: Connect Remote DB (PostgreSQL / MSSQL / MySQL) */}
+          {/* Action 2: Connect Remote DB (PostgreSQL) */}
           <button
             type="button"
             onClick={() => handleOpenWizard('remote')}
             className="flex items-center space-x-1.5 text-xs bg-app-card hover:bg-app-hover text-app-text border border-app-border font-bold px-4 py-2 rounded-xl transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             <Plus className="w-4 h-4 text-brand-500" />
-            <span>Conectar BD Remota (Postgres / SQL Server)</span>
+            <span>Conectar BD Remota (PostgreSQL)</span>
           </button>
         </div>
       </div>
@@ -183,8 +177,6 @@ export const AdminConnectorsTab: React.FC<AdminConnectorsTabProps> = ({
             >
               <option value="ALL">Todos los Motores</option>
               <option value="postgresql">PostgreSQL</option>
-              <option value="mssql">SQL Server</option>
-              <option value="mysql">MySQL</option>
             </select>
           </div>
 
@@ -230,18 +222,10 @@ export const AdminConnectorsTab: React.FC<AdminConnectorsTabProps> = ({
           <div className="space-y-1">
             <h4 className="text-sm font-bold text-app-text">No hay fuentes de datos registradas</h4>
             <p className="text-xs text-app-muted max-w-sm mx-auto">
-              Importa un archivo SQLite, Excel (.xlsx) o CSV (.csv), o registra una conexión remota a PostgreSQL, SQL Server o MySQL.
+              Importa un archivo SQLite, Excel (.xlsx) o CSV (.csv), o registra una conexión remota a PostgreSQL.
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onResetDemoConnectors}
-              className="flex items-center space-x-1.5 text-xs bg-app-card hover:bg-app-hover text-app-text border border-app-border px-4 py-2 rounded-xl transition-colors font-semibold cursor-pointer"
-            >
-              <RotateCcw className="w-3.5 h-3.5 text-brand-500" />
-              <span>Restablecer Fuentes Demo</span>
-            </button>
             <button
               type="button"
               onClick={() => handleOpenWizard('file')}

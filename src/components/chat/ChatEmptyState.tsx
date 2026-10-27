@@ -33,8 +33,8 @@ export const ChatEmptyState: React.FC<ChatEmptyStateProps> = ({
       {/* Datia Brand Avatar */}
       <div className="relative flex items-center justify-center">
         <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-app-card flex items-center justify-center shadow-md border border-app-border overflow-hidden p-2">
-          <img src={logoDatiaLight} alt="Logo de Dat.ia" className="block dark:hidden w-full h-full object-contain" />
-          <img src={logoDatiaDark} alt="Logo de Dat.ia" className="hidden dark:block w-full h-full object-contain" />
+          <img src={logoDatiaLight} alt="Logo de Datia" className="block dark:hidden w-full h-full object-contain" />
+          <img src={logoDatiaDark} alt="Logo de Datia" className="hidden dark:block w-full h-full object-contain" />
         </div>
       </div>
 

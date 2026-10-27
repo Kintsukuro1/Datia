@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, ConfigDict
-from app.modules.admin_catalog.models import DatabaseType
+from app.modules.admin_catalog.models import ColumnPermissionType, DatabaseType
 
 # --- Semantic Catalog Schemas ---
 class SemanticCatalogBase(BaseModel):
@@ -197,6 +197,37 @@ class GovernanceCoverageResponse(BaseModel):
     connection_name: str
     tables: List[GovernanceCoverageTable] = []
     summary: GovernanceCoverageSummary
+
+# --- Politicas de columna (GET/PUT /permissions/columns) ---
+# Una fila = "esta columna, de esta tabla, para este rol, en esta conexion".
+# `ALLOWED` NO equivale a "sin fila": es una excepcion explicita que el seed
+# respeta (no vuelve a poner BLOCKED en el siguiente arranque). Es la unica via
+# para que un rol de RRHH creado a mano vea remuneraciones, y para proteger una
+# columna de un dataset subido (que nace sin ninguna politica de columna).
+
+class ColumnPolicyEntry(BaseModel):
+    table_name: str
+    column_name: str
+
+class ColumnPermissionUpdate(BaseModel):
+    connection_id: int
+    role_id: int
+    # Enum y no str: un valor invalido es 422 de validacion, no una fila con una
+    # politica que el guard no reconoce (y que por lo tanto no aplica nada).
+    permission_type: ColumnPermissionType
+    # Sin `schema_name`: el guard resuelve la CLS por (conexion, tabla, columna) y
+    # ya ignora el esquema. Aceptarlo y descartarlo seria un campo que miente.
+    columns: List[ColumnPolicyEntry] = []
+
+class ColumnPermissionOut(BaseModel):
+    id: int
+    connection_id: int
+    role_id: int
+    role_name: Optional[str] = None
+    schema_name: str = "public"
+    table_name: str
+    column_name: str
+    permission_type: str
 
 class ConnectionTestRequest(BaseModel):
     db_type: DatabaseType

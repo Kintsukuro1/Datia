@@ -139,8 +139,8 @@ export const LoginPage: React.FC = () => {
             {/* Cabecera: logo real + wordmark (mismo que el Header) */}
             <div className="relative z-10 flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-app-border bg-app-card shadow-md">
-                <img src={logoDatiaLight} alt="Logo Dat.ia" className="block h-full w-full object-contain p-1 dark:hidden" />
-                <img src={logoDatiaDark} alt="Logo Dat.ia" className="hidden h-full w-full object-contain p-1 dark:block" />
+                <img src={logoDatiaLight} alt="Logo Datia" className="block h-full w-full object-contain p-1 dark:hidden" />
+                <img src={logoDatiaDark} alt="Logo Datia" className="hidden h-full w-full object-contain p-1 dark:block" />
               </div>
               <span className="text-xl font-bold tracking-tight">DATIA</span>
             </div>

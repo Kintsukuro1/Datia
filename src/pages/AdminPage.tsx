@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldAlert, Users, Database, BookOpen, Server, Key, FileText, ShieldCheck, BrainCircuit } from 'lucide-react';
+import { ShieldAlert, Users, Database, BookOpen, Server, Key, FileText, ShieldCheck, BrainCircuit, Layers } from 'lucide-react';
 import { CorporateConnection, connectorService, DEFAULT_CONNECTORS } from '../features/admin/services/connector_service';
 import { AdminAuditTab } from '../components/admin/AdminAuditTab';
 import { AdminCatalogTab } from '../components/admin/AdminCatalogTab';
@@ -7,6 +7,7 @@ import { AdminConnectorsTab } from '../components/admin/AdminConnectorsTab';
 import { AdminUsersTab } from '../components/admin/AdminUsersTab';
 import { AdminPermissionsTab } from '../components/admin/AdminPermissionsTab';
 import { AdminLearnedTab } from '../components/admin/AdminLearnedTab';
+import { AdminRolesDomainsTab } from '../components/admin/AdminRolesDomainsTab';
 import { ConnectorModal } from '../components/admin/ConnectorModal';
 import { authService } from '../features/auth/services/auth_service';
 import { useAuth } from '../features/auth/context/AuthContext';
@@ -18,7 +19,7 @@ import { getApiErrorMessage } from '../shared/api/api_client';
 export const AdminPage: React.FC = () => {
   const { notify } = useNotifications();
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'connectors' | 'users' | 'catalog' | 'permissions' | 'learned' | 'audit'>('connectors');
+  const [activeTab, setActiveTab] = useState<'connectors' | 'users' | 'roles' | 'catalog' | 'permissions' | 'learned' | 'audit'>('connectors');
 
   // Connectors State
   const [connectors, setConnectors] = useState<CorporateConnection[]>(DEFAULT_CONNECTORS);
@@ -109,11 +110,6 @@ export const AdminPage: React.FC = () => {
     }
   };
 
-  const handleResetDemoConnectors = () => {
-    const reset = connectorService.resetConnectors();
-    setConnectors(reset);
-  };
-
   const activeCount = connectors.filter((c) => c.is_active).length;
 
   return (
@@ -129,7 +125,7 @@ export const AdminPage: React.FC = () => {
               <span>Panel de Gobernanza & Fuentes BD Corporativas</span>
             </h1>
             <p className="text-xs text-slate-600 dark:text-gray-400">
-              Administración centralizada de conexiones a PostgreSQL, SQL Server y MySQL con credenciales cifradas
+              Administración centralizada de conexiones a PostgreSQL con credenciales cifradas
             </p>
           </div>
         </div>
@@ -169,7 +165,7 @@ export const AdminPage: React.FC = () => {
         role="tablist"
         aria-label="Secciones de administración"
         onKeyDown={(e) => {
-          const order = ['connectors', 'users', 'permissions', 'learned', 'catalog', 'audit'];
+          const order = ['connectors', 'users', 'roles', 'permissions', 'learned', 'catalog', 'audit'];
           const i = order.indexOf(activeTab);
           const go = (next: string) => {
             setActiveTab(next as typeof activeTab);
@@ -218,6 +214,25 @@ export const AdminPage: React.FC = () => {
           <Users className="w-4 h-4" />
           <span>Usuarios & Roles RBAC ({usersLoaded ? dbUsers.length : '...'})</span>
         </button>
+
+        {isAdmin && (
+          <button
+            role="tab"
+            id={"admin-tab-roles"}
+            aria-selected={activeTab === 'roles'}
+            tabIndex={activeTab === 'roles' ? 0 : -1}
+            type="button"
+            onClick={() => setActiveTab('roles')}
+            className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-bold transition-all whitespace-nowrap rounded-t-xl ${
+              activeTab === 'roles'
+                ? 'bg-brand-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-card/60'
+            }`}
+          >
+            <Layers className="w-4 h-4" />
+            <span>Roles & Dominios</span>
+          </button>
+        )}
 
         {isAdmin && (
           <button
@@ -300,7 +315,6 @@ export const AdminPage: React.FC = () => {
           onOpenEditModal={handleOpenEditModal}
           onDeleteConnector={handleDeleteConnector}
           onToggleActive={handleToggleActive}
-          onResetDemoConnectors={handleResetDemoConnectors}
           onRefreshConnectors={fetchConnectors}
         />
       )}
@@ -310,17 +324,21 @@ export const AdminPage: React.FC = () => {
         <AdminUsersTab users={dbUsers} usersLoaded={usersLoaded} onRefreshUsers={fetchUsers} />
       )}
 
-      {/* Tab 3: Semantic Catalog & Dynamic Data Dictionary */}
+      {/* Tab 3: Catálogo de roles y dominios (admin-only: /auth/roles y
+          /auth/domains son `get_current_admin`) */}
+      {isAdmin && activeTab === 'roles' && <AdminRolesDomainsTab onChanged={fetchUsers} />}
+
+      {/* Tab 4: Semantic Catalog & Dynamic Data Dictionary */}
       {activeTab === 'catalog' && <AdminCatalogTab />}
 
-      {/* Tab 4: Matriz de permisos rol × tabla (solo admin, ver isAdmin) */}
+      {/* Tab 5: Matriz de permisos rol × tabla (solo admin, ver isAdmin) */}
       {isAdmin && activeTab === 'permissions' && <AdminPermissionsTab />}
 
-      {/* Tab 5: Memoria de aprendizaje compartida (admin-only: GET/DELETE son
+      {/* Tab 6: Memoria de aprendizaje compartida (admin-only: GET/DELETE son
           `get_current_admin` y la fila se inyecta en el prompt de todos) */}
       {isAdmin && activeTab === 'learned' && <AdminLearnedTab />}
 
-      {/* Tab 6: Audit & Compliance Logs */}
+      {/* Tab 7: Audit & Compliance Logs */}
       {activeTab === 'audit' && <AdminAuditTab />}
 
       {/* Modal for Creating & Editing Connection */}

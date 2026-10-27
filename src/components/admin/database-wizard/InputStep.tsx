@@ -1,12 +1,12 @@
 import React from 'react';
-import { AlertCircle, Box, Check, CheckCircle2, Cylinder, Database, Server, ShieldCheck, UploadCloud } from 'lucide-react';
+import { AlertCircle, Check, CheckCircle2, Database, Server, ShieldCheck, UploadCloud } from 'lucide-react';
 import { UploadDropzone } from '../upload/UploadDropzone';
 import { ConnectorFormFields } from '../ConnectorFormFields';
 import type { ConnectionTestResult } from '../../../features/admin/services/connector_service';
 import type { IngestionMode, RemoteDbType, RemoteFormState } from './wizardConfig';
 
-// Motores soportados por el backend, con el puerto por defecto real que aplica
-// el formulario al seleccionarlos.
+// Unico motor que el backend acepta (ver `RemoteDbType`). El puerto es el
+// default real que aplica el formulario al seleccionarlo.
 const ENGINES: {
   id: RemoteDbType;
   label: string;
@@ -14,16 +14,10 @@ const ENGINES: {
   icon: React.ComponentType<{ className?: string }>;
 }[] = [
   { id: 'postgresql', label: 'PostgreSQL', hint: 'Puerto 5432', icon: Database },
-  { id: 'mssql', label: 'MS SQL Server', hint: 'Puerto 1433', icon: Server },
-  { id: 'mysql', label: 'MySQL / MariaDB', hint: 'Puerto 3306', icon: Box },
-  { id: 'oracle', label: 'Oracle Database', hint: 'Puerto 1521', icon: Cylinder },
 ];
 
 const DEFAULT_PORTS: Record<RemoteDbType, number> = {
   postgresql: 5432,
-  mssql: 1433,
-  mysql: 3306,
-  oracle: 1521,
 };
 
 interface InputStepProps {
@@ -142,9 +136,9 @@ export const InputStep: React.FC<InputStepProps> = ({
               <label className="block text-[10px] font-semibold text-app-muted uppercase tracking-wider">
                 1. Motor de datos <span className="text-rose-500">*</span>
               </label>
-              <span className="text-[10px] text-app-muted">{ENGINES.length} motores soportados</span>
+              <span className="text-[10px] text-app-muted">PostgreSQL</span>
             </div>
-            <div role="radiogroup" aria-label="Motor de base de datos" className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+            <div role="radiogroup" aria-label="Motor de base de datos" className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {ENGINES.map((engine) => {
                 const selected = remoteForm.dbType === engine.id;
                 const Icon = engine.icon;
@@ -246,7 +240,7 @@ export const InputStep: React.FC<InputStepProps> = ({
           )}
 
           <p className="text-[10px] text-app-muted">
-            Cada base de datos se crea de forma individual e independiente en el sistema.
+            Cada conexión se registra de forma individual e independiente en el sistema.
           </p>
         </div>
       )}

@@ -1,4 +1,4 @@
-# Dat.ia - instalacion on-prem
+# Datia - instalacion on-prem
 
 Bundle de instalacion para **una empresa por instalacion** (single-tenant). El
 cliente recibe este directorio y las imagenes de GHCR; no recibe el repositorio

@@ -85,9 +85,27 @@ export const AuditFilters: React.FC<AuditFiltersProps> = ({
           className="w-full bg-white dark:bg-dark-base border border-slate-300 dark:border-dark-border rounded-xl px-3 py-1.5 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500"
         >
           <option value="">Todos los Estados</option>
-          <option value="APROBADO">Aprobado (SELECT)</option>
-          <option value="RECHAZADO">Rechazado por RBAC / Guardrail</option>
-          <option value="ERROR">Error Sintáctico / Ejecución</option>
+          <optgroup label="Consultas">
+            <option value="APROBADO">Aprobado (SELECT)</option>
+            <option value="RECHAZADO">Rechazado (RBAC, guardrail o IA caída)</option>
+            <option value="ERROR">Error Sintáctico / Ejecución</option>
+            <option value="PREDICCION">Predicción determinista</option>
+            <option value="REVALIDADO">Hilo compartido revalidado</option>
+            <option value="SIN_CONEXION">Sin conexión activa o registrada</option>
+            <option value="DIAGNOSTICO">Diagnóstico desconocido</option>
+          </optgroup>
+          <optgroup label="Gobernanza">
+            {/* Las mutaciones de permisos no son consultas: sin estas opciones
+                el rastro existia en la base pero no era filtrable desde la UI. */}
+            <option value="PERMISOS_TABLA">Cambio de permisos de tabla</option>
+            <option value="PERMISOS_COLUMNA">Cambio de política de columna</option>
+            <option value="NULL_POLICY">Política de nulos aplicada</option>
+          </optgroup>
+          <optgroup label="Acceso y explotación">
+            <option value="AUTH">Acceso y cuentas</option>
+            <option value="EXPORTADO">Exportaciones PDF / Excel</option>
+            <option value="PROYECCION">Proyecciones ML</option>
+          </optgroup>
         </select>
       </div>
 

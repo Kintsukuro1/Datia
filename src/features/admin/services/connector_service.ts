@@ -1,9 +1,13 @@
 import { apiClient, getApiErrorMessage } from '../../../shared/api/api_client';
 
+// Unico motor que el backend acepta hoy (`DatabaseType` en
+// admin_catalog/models.py). Ofrecer otros en la UI termina en un 422 al guardar.
+export type CorporateDbType = 'postgresql';
+
 export interface CorporateConnection {
   id: number;
   name: string;
-  db_type: 'postgresql' | 'mssql' | 'mysql' | 'oracle';
+  db_type: CorporateDbType;
   host: string;
   port: number;
   database_name: string;
@@ -17,7 +21,7 @@ export interface CorporateConnection {
 
 export interface ConnectionFormData {
   name: string;
-  db_type: 'postgresql' | 'mssql' | 'mysql' | 'oracle';
+  db_type: CorporateDbType;
   host: string;
   port: number;
   database_name: string;
@@ -148,11 +152,6 @@ export const connectorService = {
     await apiClient.delete(`/connectors/${id}`);
     const current = this.getStoredConnectors();
     this.saveConnectorsToStorage(current.filter((c) => c.id !== id));
-  },
-
-  resetConnectors(): CorporateConnection[] {
-    this.saveConnectorsToStorage(DEFAULT_CONNECTORS);
-    return DEFAULT_CONNECTORS;
   },
 
   async testConnection(data: ConnectionFormData): Promise<ConnectionTestResult> {

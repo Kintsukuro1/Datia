@@ -1,5 +1,5 @@
 # =============================================================================
-# Dat.ia - instalacion on-prem de UNA empresa (single-tenant).
+# Datia - instalacion on-prem de UNA empresa (single-tenant).
 #
 # El cliente recibe este bundle y las imagenes de GHCR. No recibe el repositorio
 # de codigo. PostgreSQL es la unica base corporativa; los datos que sube el

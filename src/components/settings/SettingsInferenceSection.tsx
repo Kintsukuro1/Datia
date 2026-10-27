@@ -92,7 +92,7 @@ export const SettingsInferenceSection: React.FC<SettingsInferenceSectionProps> =
 
           {inferenceResult.active_url && (
             <p className="px-1 text-[10px] font-mono text-slate-500 dark:text-gray-400 truncate">
-              Endpoint activo: {inferenceResult.active_url}
+              {inferenceResult.success ? 'Endpoint activo' : 'Endpoint probado'}: {inferenceResult.active_url}
             </p>
           )}
 

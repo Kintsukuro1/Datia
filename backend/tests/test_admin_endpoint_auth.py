@@ -11,7 +11,11 @@ class TestAdminEndpointAuth(unittest.TestCase):
     table (incl. locked_until) and the role catalog to anonymous callers.
     """
 
-    PROTECTED = ["/api/v1/auth/users", "/api/v1/auth/roles"]
+    PROTECTED = [
+        "/api/v1/auth/users",
+        "/api/v1/auth/roles",
+        "/api/v1/auth/domains",
+    ]
 
     @classmethod
     def setUpClass(cls):

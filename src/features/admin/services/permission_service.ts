@@ -36,6 +36,102 @@ export interface SetPermissionsResponse {
   permissions: ConfirmedPermission[];
 }
 
+/** Politica de columna de un rol en una conexion (CLS editable). */
+export type ColumnPermissionType = 'ALLOWED' | 'MASKED' | 'BLOCKED';
+
+/**
+ * Fila de `GET /api/v1/permissions/columns`.
+ *
+ * `ALLOWED` explicito NO es "sin fila": es la excepcion que el seed de CLS
+ * respeta en el siguiente arranque. Sin fila, la columna queda legible.
+ */
+export interface RoleColumnPermission {
+  id: number;
+  connection_id: number;
+  role_id: number;
+  role_name: string | null;
+  schema_name: string;
+  table_name: string;
+  column_name: string;
+  permission_type: ColumnPermissionType;
+}
+
+export interface SetColumnPermissionsResponse {
+  connection_id: number;
+  role_id: number;
+  permission_type: ColumnPermissionType;
+  permissions: RoleColumnPermission[];
+}
+
+/** Respuesta de `DELETE /api/v1/permissions/columns`. */
+export interface DeleteColumnPermissionResponse {
+  connection_id: number;
+  role_id: number;
+  table_name: string;
+  column_name: string;
+  /** `false` = no había fila. El reset es idempotente, no un 404. */
+  deleted: boolean;
+}
+
+/**
+ * Política que el guardarraíl aplica a una columna, no la que muestra la fila.
+ *
+ * El chat resuelve BLOCKED/MASKED por NOMBRE de columna en toda la conexión
+ * (`dynamic_schema.py` acumula nombres sueltos, sin tabla), así que una política
+ * sobre `movimientos.id` también tapa `otra_tabla.id`. Mirar solo la fila de la
+ * tabla elegida haría que el selector dijera "Permitida" mientras el chat
+ * bloquea la columna: la UI mentiría sobre el efecto real.
+ */
+export interface EffectiveColumnPolicy {
+  /** Política de la fila de la tabla elegida; `null` = sin fila. */
+  rowPolicy: ColumnPermissionType | null;
+  /** Política que aplica el guard: la más restrictiva para ese nombre. */
+  effectivePolicy: ColumnPermissionType;
+  /** Otra tabla de la conexión que impone una política más restrictiva. */
+  enforcedBy: string | null;
+}
+
+const POLICY_RANK: Record<ColumnPermissionType, number> = {
+  ALLOWED: 1,
+  MASKED: 2,
+  BLOCKED: 3,
+};
+
+export function resolveColumnPolicy(
+  policies: Array<
+    Pick<RoleColumnPermission, 'table_name' | 'column_name' | 'permission_type'>
+  >,
+  table: string,
+  column: string
+): EffectiveColumnPolicy {
+  const columnKey = column.toLowerCase();
+  const tableKey = table.toLowerCase();
+  const sameColumn = policies.filter(
+    (p) => p.column_name.toLowerCase() === columnKey
+  );
+  const row = sameColumn.find((p) => p.table_name.toLowerCase() === tableKey);
+  // sort estable: ante empate gana la primera fila, pero solo importa cuando
+  // hay una política MÁS restrictiva que la de la tabla elegida.
+  const enforcing = [...sameColumn].sort(
+    (a, b) => POLICY_RANK[b.permission_type] - POLICY_RANK[a.permission_type]
+  )[0];
+
+  const rowRank = row ? POLICY_RANK[row.permission_type] : POLICY_RANK.ALLOWED;
+  const enforcingRank = enforcing ? POLICY_RANK[enforcing.permission_type] : 0;
+  const enforcedBy =
+    enforcing &&
+    enforcing.table_name.toLowerCase() !== tableKey &&
+    enforcingRank > rowRank
+      ? enforcing.table_name
+      : null;
+
+  return {
+    rowPolicy: row?.permission_type ?? null,
+    effectivePolicy: enforcing?.permission_type ?? 'ALLOWED',
+    enforcedBy,
+  };
+}
+
 /**
  * Cobertura de gobernanza de UNA conexion (`GET /api/v1/permissions/coverage`).
  *
@@ -139,6 +235,59 @@ export const permissionService = {
     const res = await apiClient.get<GovernanceCoverage>('/permissions/coverage', {
       params: { connection_id: connectionId },
     });
+    return res.data;
+  },
+
+  // Politicas de columna (CLS). Sin catch por la misma razon que los demas: un
+  // fallo tiene que verse, no degradarse a "esta conexion no tiene columnas
+  // protegidas", que es una afirmacion distinta y peligrosa.
+  async getColumnPermissions(connectionId: number): Promise<RoleColumnPermission[]> {
+    const res = await apiClient.get<RoleColumnPermission[]>('/permissions/columns', {
+      params: { connection_id: connectionId },
+    });
+    return Array.isArray(res.data) ? res.data : [];
+  },
+
+  // Body, no query: a diferencia de las tablas, una columna es un par
+  // (tabla, columna) y en query string obligaria a dos listas paralelas.
+  async setColumnPermissions(input: {
+    connectionId: number;
+    roleId: number;
+    permissionType: ColumnPermissionType;
+    columns: Array<{ tableName: string; columnName: string }>;
+  }): Promise<SetColumnPermissionsResponse> {
+    const res = await apiClient.put<SetColumnPermissionsResponse>('/permissions/columns', {
+      connection_id: input.connectionId,
+      role_id: input.roleId,
+      permission_type: input.permissionType,
+      columns: input.columns.map((c) => ({
+        table_name: c.tableName,
+        column_name: c.columnName,
+      })),
+    });
+    return res.data;
+  },
+
+  // Query params, no body: DELETE no lleva cuerpo en este contrato. Es
+  // idempotente por diseño (`deleted: false` si no había fila), así que la UI
+  // puede pedir el reset dos veces sin convertir el no-op en un error.
+  async deleteColumnPermission(input: {
+    connectionId: number;
+    roleId: number;
+    tableName: string;
+    columnName: string;
+  }): Promise<DeleteColumnPermissionResponse> {
+    const res = await apiClient.delete<DeleteColumnPermissionResponse>(
+      '/permissions/columns',
+      {
+        params: {
+          connection_id: input.connectionId,
+          role_id: input.roleId,
+          table_name: input.tableName,
+          column_name: input.columnName,
+        },
+      }
+    );
     return res.data;
   },
 };

@@ -234,6 +234,16 @@ def init_db(db: Session):
             db.add(Role(name=role_data["name"], description=role_data["description"]))
     db.commit()
 
+    # Identidad de RRHH, marcada UNA vez por el nombre canonico. Despues
+    # sobrevive a un rename del panel: si se dedujera del nombre en cada
+    # arranque, renombrar al Gerente de Talento le revocaria el acceso a sueldos
+    # de forma irreversible (`init_db` solo agrega CLS, nunca la quita), y un rol
+    # nuevo llamado "Talento Junior" lo heredaria sin que nadie lo decidiera.
+    hr_role = db.query(Role).filter(Role.name == ROLE_GERENTE_TALENTO).first()
+    if hr_role is not None and not hr_role.is_hr:
+        hr_role.is_hr = True
+        db.commit()
+
     # Va DESPUES del seed de roles (necesita que los corporativos existan para
     # tener adonde reasignar) y ANTES de resolver los roles de los usuarios demo,
     # para que un usuario que aun apunta a un alias quede en el corporativo y no
@@ -346,20 +356,23 @@ def init_db(db: Session):
     # El Analista de Datos NO ve finanzas. Antes la matriz le daba las nueve
     # tablas para que pudiera correlacionar ventas con consumo de CPU, pero eso
     # contradice el aislamiento por area: un perfil que cruza areas deja de
-    # cruzar areas. Sigue siendo el unico rol que ve negocio, tecnica Y personal a
-    # la vez (sueltas y sin remuneraciones), que es lo que lo distingue.
+    # cruzar areas. Cruza tecnica y personal (sueltas y sin remuneraciones) sin
+    # tocar el bloque transaccional ni el catalogo comercial.
     role_matrix = {
         ROLE_ADMINISTRADOR: all_tables,
         ROLE_DIRECTOR_EJECUTIVO: ["fact_ingresos_costos"] + catalogo_tables + personal_tables + survey_tables,
         ROLE_ANALISTA_FINANCIERO: negocio_tables + personal_tables + survey_tables,
         ROLE_GERENTE_TALENTO: personal_tables + survey_tables,
-        # Catálogo + técnica + personal: cruza áreas sin tocar el bloque
-        # transaccional. Es lo que lo distingue del Ingeniero de TI.
+        # Técnica + personal: cruza áreas sin tocar el bloque transaccional.
+        # Comparte matriz con el Ingeniero de TI. Antes los separaba el NOMBRE
+        # del rol en el guard de dominio; esa heurística se eliminó porque
+        # "Administrativo de TI" caía en el bypass de admin. Con la matriz como
+        # autoridad, dos roles con las mismas tablas son el mismo permiso.
+        # Diferenciarlos exige decidir qué tabla concede uno y no el otro (y
+        # revocar la del otro en las bases ya sembradas), no un substring.
         #
         # NO lleva `catalogo_tables`: el DPO sí, porque para auditar a quién se le
-        # vendió qué necesita el catálogo comercial, y sin esa diferencia el
-        # Analista de Datos y el Oficial de Cumplimiento quedaban con la misma
-        # matriz. Un perfil que no se distingue de otro no agrega nada.
+        # vendió qué necesita el catálogo comercial.
         ROLE_ANALISTA_BI: tech_tables + personal_tables + survey_tables,
         ROLE_INGENIERO_TI: tech_tables + personal_tables + survey_tables,
         ROLE_OFICIAL_SEGURIDAD: tech_tables + catalogo_tables + personal_tables + survey_tables,
@@ -559,7 +572,7 @@ def init_db(db: Session):
             # dejaba el sueldo y el IBAN sin clasificar, y el diccionario y el chat
             # los servian en claro a cualquier rol. Se siembran TODOS los nombres;
             # los que la conexion no tiene no son mas que una fila muerta.
-            is_hr_role = "talento" in r_obj.name.lower() or "rrhh" in r_obj.name.lower()
+            is_hr_role = bool(r_obj.is_hr)
             if not is_hr_role:
                 for col in ["sueldo_mensual", "salario", "salario_bruto", "bono_anual",
                             "cuenta_bancaria_iban"]:

@@ -52,7 +52,7 @@ export const ChoiceStep: React.FC<ChoiceStepProps> = ({
           <div className="min-w-0">
             <h4 className="text-sm font-bold text-app-text truncate">{connection.name}</h4>
             <p className="text-xs text-app-muted">
-              Motor: <span className="font-mono text-brand-600 dark:text-brand-400 uppercase">{connection.db_type}</span> • Estado: <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Evaluada y Conectada</span>
+              Motor: <span className="font-mono text-brand-600 dark:text-brand-400 uppercase">{connection.db_type}</span> • Estado: <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Registrada</span>
             </p>
           </div>
         </div>

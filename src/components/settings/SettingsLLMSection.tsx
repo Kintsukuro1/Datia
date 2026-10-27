@@ -46,8 +46,15 @@ export const SettingsLLMSection: React.FC<SettingsLLMSectionProps> = ({
   const managed = !!llmPolicy && !llmPolicy.allow_user_llm;
   const managedProvider = (llmPolicy?.provider || 'custom') as LLMProvider;
   const shownProvider = managed ? managedProvider : provider;
-  const shownModel = managed ? llmPolicy!.default_model : modelName;
-  const shownUrl = managed ? '' : ollamaUrl;
+  // El backend resuelve el modelo contra `/v1/models` cuando el servidor
+  // reporta uno solo (LLMService.resolve_model_for). Mostrar el configurado en
+  // ese caso seria mostrar un modelo que NO es el que se va a ejecutar.
+  const reportedModel = detectedModels.length === 1 ? detectedModels[0] : '';
+  const shownModel = managed ? reportedModel || llmPolicy!.default_model : modelName;
+  // La URL administrada se revela al probar el motor (el mismo dato que ya
+  // devuelve /test-connection). Antes el campo quedaba siempre vacio y el
+  // endpoint solo aparecia en el mensaje, como si estuviera hardcodeado.
+  const shownUrl = managed ? llmTestResult?.active_url || '' : ollamaUrl;
   const knownProvider = ['llama_cpp', 'ollama', 'openai_compatible'].includes(String(shownProvider));
 
   const badge = managed
@@ -103,7 +110,7 @@ export const SettingsLLMSection: React.FC<SettingsLLMSectionProps> = ({
           <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" />
           <span>
             La empresa administra el motor LLM (<strong>{getProviderLabel(managedProvider)}</strong>). Los campos son de
-            solo lectura y las consultas usan <span className="font-mono">{managed ? llmPolicy!.default_model : shownModel}</span>.
+            solo lectura y las consultas usan <span className="font-mono">{shownModel}</span>.
           </span>
         </div>
       )}
@@ -132,8 +139,11 @@ export const SettingsLLMSection: React.FC<SettingsLLMSectionProps> = ({
               disabled={managed}
               className="w-full bg-white dark:bg-dark-base/90 border border-slate-300 dark:border-dark-border rounded-xl px-3 py-2.5 text-xs text-gray-900 dark:text-white focus:outline-none focus:border-brand-500 transition-colors shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <option value="llama_cpp">llama.cpp / llama.exe serve (http://127.0.0.1:8080)</option>
-              <option value="ollama">Ollama Local (http://localhost:11434)</option>
+              {/* Sin puertos en las etiquetas: el endpoint real es el del
+                  campo de al lado o el que administra la empresa. Un
+                  ":11434" fijo en el texto parecia una configuracion activa. */}
+              <option value="llama_cpp">llama.cpp / llama.exe serve</option>
+              <option value="ollama">Ollama Local</option>
               <option value="openai_compatible">OpenAI-Compatible Local (LM Studio / vLLM)</option>
               {!knownProvider && (
                 <option value={String(shownProvider)}>{getProviderLabel(shownProvider)} (empresa)</option>
@@ -152,7 +162,7 @@ export const SettingsLLMSection: React.FC<SettingsLLMSectionProps> = ({
             value={shownUrl}
             onChange={(e) => onOllamaUrlChange(e.target.value)}
             disabled={managed}
-            placeholder={managed ? 'Definida por la empresa (no se muestra)' : 'http://127.0.0.1:8080'}
+            placeholder={managed ? 'Se muestra al probar el motor' : 'http://127.0.0.1:8080'}
             className="w-full bg-white dark:bg-dark-base/90 border border-slate-300 dark:border-dark-border rounded-xl px-3 py-2.5 text-xs text-gray-900 dark:text-brand-300 font-mono focus:outline-none focus:border-brand-500 transition-colors shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </div>
@@ -198,6 +208,13 @@ export const SettingsLLMSection: React.FC<SettingsLLMSectionProps> = ({
               })}
             </div>
           )}
+
+          {detectedModels.length > 0 && !detectedModels.includes(shownModel) && (
+            <p className="mt-2 text-[10px] text-amber-700 dark:text-amber-300">
+              El motor reporta {detectedModels.join(', ')}; la configuración activa es{' '}
+              <span className="font-mono">{shownModel}</span>.
+            </p>
+          )}
         </div>
       </div>
 
@@ -214,7 +231,9 @@ export const SettingsLLMSection: React.FC<SettingsLLMSectionProps> = ({
           <div className="min-w-0 space-y-0.5">
             <span className="font-medium block">{llmTestResult.message} ({llmTestResult.latency_ms} ms)</span>
             {llmTestResult.active_url && (
-              <span className="block font-mono text-[10px] opacity-80 truncate">Endpoint activo: {llmTestResult.active_url}</span>
+              <span className="block font-mono text-[10px] opacity-80 truncate">
+                {llmTestResult.success ? 'Endpoint activo' : 'Endpoint probado'}: {llmTestResult.active_url}
+              </span>
             )}
           </div>
         </div>

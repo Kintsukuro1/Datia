@@ -1,8 +1,10 @@
+import type { CorporateDbType } from '../../../features/admin/services/connector_service';
+
 export type WizardStep = 'input' | 'choice' | 'generating' | 'review' | 'nulls_check' | 'complete';
 export type IngestionMode = 'file' | 'remote';
 export type CreationMode = 'ai' | 'manual';
 export type LlmStatus = 'checking' | 'available' | 'unavailable';
-export type RemoteDbType = 'postgresql' | 'mssql' | 'mysql' | 'oracle';
+export type RemoteDbType = CorporateDbType;
 export type NullPolicy = 'delete_rows' | 'mode' | 'nearest' | 'open';
 
 export interface RemoteFormState {

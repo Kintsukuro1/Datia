@@ -82,7 +82,7 @@ export const Header: React.FC = () => {
         >
           <img
             src={theme === 'dark' ? logoDatiaDark : logoDatiaLight}
-            alt="Logo de Dat.ia"
+            alt="Logo de Datia"
             onError={(e) => {
               const nextSrc = theme === 'dark' ? logoDatiaLight : logoDatiaDark;
               e.currentTarget.src = nextSrc;
@@ -116,7 +116,7 @@ export const Header: React.FC = () => {
       </div>
 
       {/* Desktop Main Navigation Links */}
-      <nav className="hidden md:flex items-center space-x-1.5 bg-slate-100 dark:bg-dark-base/80 p-1.5 rounded-2xl border border-slate-200 dark:border-dark-border/80 shadow-inner">
+      <nav className="hidden xl:flex items-center space-x-1.5 bg-slate-100 dark:bg-dark-base/80 p-1.5 rounded-2xl border border-slate-200 dark:border-dark-border/80 shadow-inner">
         <button
           type="button"
           aria-current={activePath === '/chat' || activePath === '/' ? 'page' : undefined}
@@ -207,7 +207,7 @@ export const Header: React.FC = () => {
         </button>
 
         {/* Mobile Hamburger Button */}
-        <div className="md:hidden relative" ref={mobileMenuRef}>
+        <div className="xl:hidden relative" ref={mobileMenuRef}>
           <button
             type="button"
             onClick={() => setIsMobileMenuOpen((prev) => !prev)}

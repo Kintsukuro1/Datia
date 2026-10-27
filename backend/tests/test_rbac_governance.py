@@ -147,6 +147,111 @@ class TestRBACGovernance(unittest.TestCase):
         self.assertIn("Gobernanza RBAC: Acceso denegado", denial)
         self.assertIn("infraestructura TI", denial)
 
+    def test_admin_no_se_deduce_del_nombre_del_rol(self):
+        """Un nombre con "admin" o "ti" adentro no otorga ni quita nada.
+
+        Antes `check_domain_governance` clasificaba por substring: "Administrativo
+        de TI" entraba por el bypass de admin ("admin") y "Coordinador de Gestion"
+        se trataba como infraestructura por el "ti" de "Gestion". El bypass real
+        ahora es explícito (`is_admin` o el rol exacto de `ADMIN_ROLES`).
+        """
+        denial = QueryEngine.check_domain_governance(
+            question="¿Cuáles son las ventas totales del mes?",
+            user_role="Administrativo de TI",
+            allowed_tables={"fact_incidentes_ti"},
+        )
+        self.assertIsNotNone(denial)
+        self.assertIn("información financiera", denial)
+
+        self.assertIsNone(QueryEngine.check_domain_governance(
+            question="¿Cuáles son las ventas totales del mes?",
+            user_role="Administrativo de TI",
+            allowed_tables=set(),
+            is_admin=True,
+        ))
+
+    def test_la_matriz_decide_y_no_el_nombre_del_rol(self):
+        """Misma pregunta y misma matriz: mismo veredicto, se llame como se llame.
+
+        Y al revés: con matrices distintas, el veredicto cambia aunque el nombre
+        sea el mismo. Es el contrato que reemplaza a la clasificación por
+        substring.
+        """
+        pregunta = "¿Cuáles son las ventas totales del mes?"
+        tablas_finanzas = {"fact_ventas", "dim_clientes"}
+        tablas_ti = {"dim_servidores", "fact_incidentes_ti"}
+
+        for rol in (
+            "Finance Analyst",
+            "Ingeniero de Infraestructura & TI",
+            "Coordinador de Gestión",
+            "Analista de Datos & BI",
+        ):
+            with self.subTest(rol=rol, matriz="finanzas"):
+                self.assertIsNone(QueryEngine.check_domain_governance(
+                    pregunta, rol, tablas_finanzas))
+            with self.subTest(rol=rol, matriz="ti"):
+                denial = QueryEngine.check_domain_governance(pregunta, rol, tablas_ti)
+                self.assertIsNotNone(denial)
+                self.assertIn("información financiera", denial)
+
+    def test_la_matriz_tambien_decide_en_recursos_humanos(self):
+        """Con `dim_empleados` la pregunta de sueldos pasa la capa 1; sin ella no.
+
+        El valor del sueldo sigue protegido por la capa de columnas
+        (`sueldo_mensual` BLOCKED/MASKED) y por el AST: esta capa solo decide si
+        la pregunta cae dentro de las tablas del rol.
+        """
+        pregunta = "¿Cuáles son los sueldos del personal?"
+        self.assertIsNone(QueryEngine.check_domain_governance(
+            pregunta, "Cualquiera", {"dim_empleados"}))
+        denial = QueryEngine.check_domain_governance(
+            pregunta, "Cualquiera", {"fact_ventas"})
+        self.assertIsNotNone(denial)
+        self.assertIn("salarios, remuneraciones, nóminas", denial)
+
+    def test_el_catalogo_puede_preguntar_por_precios(self):
+        """`precio` no es una keyword financiera: el catálogo es consultable.
+
+        La matriz declara `dim_categorias`/`dim_productos` como lectura de
+        cualquier perfil. Negarle "¿cuánto cuesta el producto X?" por "precio"
+        contradecía esa misma matriz.
+        """
+        self.assertIsNone(QueryEngine.check_domain_governance(
+            "¿Cuál es el precio de los productos?",
+            "Usuario Consultor",
+            {"dim_categorias", "dim_productos"},
+        ))
+
+    def test_matriz_sin_tablas_clasificables_no_dispara_el_guard(self):
+        """Nombres arbitrarios (`movimientos`, `hoja1`) no son un dominio ajeno.
+
+        Un cliente sube su CSV con el nombre que usa en su empresa. Si NINGUNA
+        tabla del rol se puede clasificar, no hay evidencia de cruce de dominio:
+        negarle "ingresos" al duenio de la unica tabla seria negarle su propio
+        dato. El SQL sigue acotado por la matriz y por el AST.
+
+        Es el falso positivo que destapo `test_ml_service_rbac`: un rol con
+        `movimientos` recibia 403 al proyectar "los ingresos mensuales".
+        """
+        self.assertIsNone(QueryEngine.check_domain_governance(
+            "proyecta los ingresos mensuales",
+            "Rol con dataset propio",
+            {"movimientos"},
+        ))
+
+        # Limite conocido de la heuristica: si la matriz ya declara un dominio,
+        # se asume que esta estructurada por areas y la pregunta del area
+        # ausente se deniega. Un nombre generico junto a tablas clasificadas no
+        # se adivina.
+        denial = QueryEngine.check_domain_governance(
+            "proyecta los ingresos mensuales",
+            "Rol con dataset propio",
+            {"movimientos", "dim_servidores"},
+        )
+        self.assertIsNotNone(denial)
+        self.assertIn("información financiera", denial)
+
     def test_admin_role_can_query_any_domain(self):
         """Domain governance does not block allowed queries when roles match their domain."""
         # TI querying IT infrastructure
@@ -317,7 +422,8 @@ class TestRBACGovernance(unittest.TestCase):
             denial = QueryEngine.check_domain_governance(
                 question=q,
                 user_role="Administrador",
-                allowed_tables={"fact_ventas", "dim_servidores", "dim_empleados"}
+                allowed_tables={"fact_ventas", "dim_servidores", "dim_empleados"},
+                is_admin=True,
             )
             self.assertIsNone(denial, f"Admin should NEVER be blocked by RBAC on question '{q}'")
 

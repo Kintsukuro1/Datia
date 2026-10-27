@@ -144,6 +144,23 @@ def ensure_schema_migrations(eng):
             except Exception as e:
                 logger.warning(f"Migración: users quedó sin migrar ({'; '.join(pending)}): {e}")
 
+        if "roles" in table_names:
+            pending = []
+            try:
+                role_cols = _cols("roles")
+                if "is_hr" not in role_cols:
+                    # La exencion de sueldos era un substring del nombre del rol
+                    # (`"talento" in nombre`): un rol nuevo llamado "Talento
+                    # Junior" veia remuneraciones, y renombrar al de RRHH se la
+                    # quitaba. El flag sobrevive al rename; el seed lo marca una
+                    # sola vez.
+                    pending.append("ALTER TABLE roles ADD COLUMN is_hr BOOLEAN DEFAULT FALSE NOT NULL")
+                if pending:
+                    with eng.begin() as conn:
+                        _safe_alter(conn, pending)
+            except Exception as e:
+                logger.warning(f"Migración: roles quedó sin migrar ({'; '.join(pending)}): {e}")
+
         if "audit_logs" in table_names:
             try:
                 audit_cols = _cols("audit_logs")
@@ -277,7 +294,17 @@ def build_engine_for_connector(conn):
             port=port,
             database=conn.database_name,
         )
-        return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
+        return create_engine(
+            url,
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=10,
+            # Sin connect_timeout, un host que no responde deja la peticion
+            # colgada ~130 s (timeout TCP por defecto de psycopg en Windows).
+            # El alta de un conector introspecciona en el mismo request, asi que
+            # el usuario veia "Ingresando Fuente..." durante mas de dos minutos.
+            connect_args={"connect_timeout": 10},
+        )
 
     raise ValueError(
         f"Motor de base de datos no soportado: {conn.db_type}. "

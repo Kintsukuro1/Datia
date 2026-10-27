@@ -122,6 +122,10 @@ const fallback = LLM_PROVIDER_DEFAULTS[String(newProvider) as LLMProviderKey];
     setTestingLLM(true);
     setLlmTestResult(null);
     setDetectedEndpoint(null);
+    // Sin esto, si el motor deja de responder despues de una prueba exitosa,
+    // la lista vieja quedaba visible como si el servidor la acabara de
+    // reportar. El diagnostico actual no puede heredar el resultado anterior.
+    setDetectedModels([]);
 
     try {
       // En central/external la empresa administra el motor: se prueba UNA vez
@@ -200,6 +204,12 @@ const fallback = LLM_PROVIDER_DEFAULTS[String(newProvider) as LLMProviderKey];
     if (!detectedEndpoint) return;
     setOllamaUrl(detectedEndpoint.url);
     setProvider(detectedEndpoint.prov);
+    // "Usar esta configuración" incluye el modelo: si el servidor reporta uno
+    // solo, es el que va a cargar. Aplicar solo URL/proveedor dejaba el modelo
+    // anterior y el usuario tenia que adivinarlo de la lista.
+    if (detectedModels.length === 1) {
+      setModelName(detectedModels[0]);
+    }
     setDetectedEndpoint(null);
   };
 

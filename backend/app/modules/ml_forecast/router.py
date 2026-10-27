@@ -103,7 +103,7 @@ def _projection_gates(
         )
         budget["allowed_tables"] = allowed_tables
         domain_denial = GovernanceGuard.check_domain_governance(
-            " ".join(sorted(allowed_tables)), user_role_name, allowed_tables
+            question, user_role_name, allowed_tables, is_admin=current_user.is_admin
         )
         if domain_denial:
             _persist_audit_log(

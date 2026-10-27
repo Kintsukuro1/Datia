@@ -200,9 +200,15 @@ class HealthService:
         )
         return {
             "success": False,
-            "latency_ms": 0,
+            # Tiempo real del sondeo, no 0: el mensaje "0 ms" hacia parecer que
+            # no se habia intentado nada cuando si se probaron puertos y paths.
+            "latency_ms": max(int((time.time() - start_time) * 1000), 0),
             "message": f"No se pudo contactar al servidor LLM configurado ({display_url}{probed}). Verifica que el motor LLM esté activo.",
-            "available_models": [default_model],
+            # Lista VACIA, no `[default_model]`: nadie reporto ese modelo. El
+            # frontend pinta esta lista como "Modelos Reportados por el
+            # Servidor" y llegaba a mostrar `qwen2.5-coder:7b` justo debajo del
+            # error de conexion. Un diagnostico no inventa lo que no midio.
+            "available_models": [],
             "active_url": display_url,
             "provider": provider or settings.LLM_PROVIDER
         }
@@ -229,7 +235,13 @@ class HealthService:
             return {
                 "success": True,
                 "latency_ms": latency_ms,
-                "message": f"Conexión exitosa al puerto {port} de {db_type.upper()}{db_label} en modo SOLO LECTURA."
+                # Un socket TCP abierto no prueba credenciales ni permisos. El
+                # texto anterior decia "conexion exitosa ... en modo SOLO
+                # LECTURA", que es justo lo que este chequeo NO verifica.
+                "message": (
+                    f"Puerto {port} de {db_type.upper()}{db_label} accesible por TCP. "
+                    "No se validaron credenciales ni permisos de solo lectura."
+                )
             }
         except Exception as e:
             return {

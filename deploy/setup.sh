@@ -120,7 +120,7 @@ DATIA_BIND_IP=$(strip_quotes "$(env_get DATIA_BIND_IP || true)")
 DATIA_HTTP_PORT=$(env_get DATIA_HTTP_PORT || true)
 PROFILES=${COMPOSE_PROFILES:-$(env_get COMPOSE_PROFILES || true)}
 
-printf '\nDat.ia esta arriba.\n'
+printf '\nDatia esta arriba.\n'
 if [ "$DATIA_BIND_IP" = "127.0.0.1" ]; then
     printf '  URL local: http://127.0.0.1:%s\n' "$DATIA_HTTP_PORT"
 else

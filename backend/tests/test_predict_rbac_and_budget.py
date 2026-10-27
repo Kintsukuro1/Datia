@@ -2,22 +2,22 @@
 
 Que se verifica aca
 -------------------
-1. Separacion de dominios: un perfil TI que tiene `fact_ventas` en su matriz de
-   permisos NO se lleva agregados de ingresos por `/predict`. Esa pregunta
-   escrita en el chat ya salia denegada por `governance_guard.py:193`; por el
-   endpoint de prediccion no. `/predict` no es un camino privilegiado alrededor
-   de la gobernanza.
+1. Separacion de dominios: la autoridad es la MATRIZ. Un perfil sin tablas de
+   finanzas que pregunta por ingresos recibe el mismo 403 que en el chat, y uno
+   a cuyo rol un administrador le dio `fact_ventas` puede proyectar sobre ella.
+   El NOMBRE del rol no decide: "TI" con `fact_ventas` no es un bypass, y
+   "Finance Analyst" sin ellas no es una excepcion.
 2. El perfil inicial "Usuario" sin rol asignado no entra, igual que en el chat.
 3. Con los gates puestos, un rol de SU dominio sigue funcionando: el fix no
    rompe el caso normal.
 
 La traduccion del guard de dominio
 ----------------------------------
-`GovernanceGuard.check_domain_governance` decide sobre keywords del TEXTO de la
-consulta, y `/predict` no recibe una pregunta en lenguaje natural. Lo que si se
-puede observar desde el endpoint es el conjunto de tablas autorizadas del rol, y
-ese es el sujeto real que el SQL va a leer. Por eso el gate le pasa las tablas y
-no una frase inventada.
+`GovernanceGuard.check_domain_governance` clasifica el TEXTO de la pregunta y
+decide contra las tablas del rol. `/predict` recibe una pregunta opcional: si
+viene, se clasifica igual que en `/chat/query`; si no viene, el SQL —generado
+por codigo— sigue acotado a `allowed_tables`, y no se inventa una pseudo-pregunta
+que el cliente podria omitir para saltarse el gate.
 """
 
 import asyncio
@@ -104,21 +104,48 @@ class TestPredictRbac(unittest.TestCase):
              patch.object(forecast_service, "audit_data_quality", quality):
             return asyncio.run(run_prediction(payload or _payload(), user, _SesionFalsa()))
 
-    # --- 1. Separacion de dominios (el bug de seguridad) -----------------------
+    # --- 1. Separacion de dominios: la matriz manda, no el nombre -------------
 
-    def test_ti_con_fact_ventas_no_saca_agregados_de_ingresos(self):
-        """TI con `fact_ventas` en su matriz: el chat lo denies, `/predict` no."""
+    def test_perfil_sin_tablas_financieras_no_saca_agregados_de_ingresos(self):
+        """Perfil de infraestructura preguntando por ingresos: 403, como el chat.
+
+        Antes el corte dependia del NOMBRE ("TI"); ahora de la matriz. La misma
+        pregunta escrita en `/chat/query` tambien se corta.
+        """
         user = _usuario("TI", role_id=11)
         with self.assertRaises(Exception) as ctx:
-            self._correr(user, {"fact_ventas", "dim_servidores"})
+            self._correr(
+                user,
+                {"dim_servidores"},
+                payload=_payload(question="proyecta las ventas y los ingresos"),
+            )
         self.assertEqual(getattr(ctx.exception, "status_code", None), 403)
         self.assertIn("Gobernanza RBAC: Acceso denegado", str(ctx.exception.detail))
 
-    def test_rol_financiero_no_saca_datos_de_ti(self):
-        """El otro lado del mismo muro: Economista no entra a `fact_incidentes_ti`."""
+    def test_un_perfil_con_fact_ventas_puede_proyectar_ingresos(self):
+        """Contrapunto: si la matriz concede `fact_ventas`, el nombre no la veta.
+
+        Denegar por llamarse "TI" era el bug que este archivo documentaba
+        (`is_tech_role` por substring). La matriz es la autoridad.
+        """
+        user = _usuario("TI", role_id=11)
+        resp = self._correr(
+            user,
+            {"fact_ventas"},
+            payload=_payload(question="proyecta las ventas"),
+        )
+        self.assertEqual(resp.errors, [])
+        self.assertIsNotNone(resp.forecast)
+
+    def test_rol_financiero_sin_tablas_de_ti_no_proyecta_infraestructura(self):
+        """El otro lado del mismo muro, tambien por matriz."""
         user = _usuario("Analista Financiero & Comercial", role_id=10)
         with self.assertRaises(Exception) as ctx:
-            self._correr(user, {"fact_ventas", "fact_incidentes_ti"})
+            self._correr(
+                user,
+                {"fact_ventas"},
+                payload=_payload(question="proyecta los incidentes de los servidores"),
+            )
         self.assertEqual(getattr(ctx.exception, "status_code", None), 403)
         self.assertIn("infraestructura TI", str(ctx.exception.detail))
 

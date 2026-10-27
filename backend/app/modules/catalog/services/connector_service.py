@@ -7,13 +7,17 @@ import time
 import uuid
 from typing import List, Optional, Any, Dict
 from fastapi import HTTPException, status, UploadFile
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.constants import ADMIN_ROLES
 from app.core.logging import logger
 from app.core.security import encrypt_credential
-from app.modules.admin_catalog.models import CorporateConnection, DatabaseType, SemanticCatalog, RoleTablePermission, RoleColumnPermission
+from app.modules.admin_catalog.models import (
+    ColumnPermissionType, CorporateConnection, DatabaseType, SemanticCatalog,
+    RoleTablePermission, RoleColumnPermission,
+)
 from app.modules.auth.models import Role
 from app.modules.admin_catalog.schemas import (
     CorporateConnectionCreate, CorporateConnectionUpdate, CorporateConnectionOut,
@@ -703,6 +707,208 @@ class ConnectorDomainService:
                 "granted_by_admin": bool(getattr(r, "granted_by_admin", False)),
             })
         return out
+
+    @classmethod
+    def list_role_column_permissions(
+        cls,
+        db: Session,
+        connection_id: Optional[int] = None,
+        role_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Politicas de columna (ALLOWED/MASKED/BLOCKED) por rol y conexion.
+
+        Es el espejo de `list_role_table_permissions` para CLS: una fila dice que
+        una columna concreta se permite, se enmascara o no se devuelve. Sin fila
+        la columna queda legible, salvo que otra tabla de la MISMA conexion
+        proteja ese nombre (ver el docstring de `set_role_column_permissions`).
+        """
+        q = db.query(RoleColumnPermission)
+        if connection_id is not None:
+            q = q.filter(RoleColumnPermission.connection_id == connection_id)
+        if role_id is not None:
+            q = q.filter(RoleColumnPermission.role_id == role_id)
+        rows = q.order_by(
+            RoleColumnPermission.connection_id,
+            RoleColumnPermission.role_id,
+            RoleColumnPermission.table_name,
+            RoleColumnPermission.column_name,
+        ).all()
+        role_names = dict(db.query(Role.id, Role.name).all())
+        return [
+            {
+                "id": r.id,
+                "connection_id": r.connection_id,
+                "role_id": r.role_id,
+                "role_name": role_names.get(r.role_id),
+                "schema_name": r.schema_name or "public",
+                "table_name": r.table_name,
+                "column_name": r.column_name,
+                "permission_type": r.permission_type.value,
+            }
+            for r in rows
+        ]
+
+    @staticmethod
+    def _validate_column_policy_scope(
+        db: Session, connection_id: int, role_id: int
+    ) -> None:
+        """Valida el alcance de una politica de columna.
+
+        Compartido por el PUT y el DELETE: 404 si la conexion o el rol no
+        existen, 400 si es el rol admin (exento de CLS por diseño). Un mismo
+        criterio en ambos caminos evita que el reset acepte un alcance que el
+        alta rechaza.
+        """
+        conn = db.query(CorporateConnection).filter(
+            CorporateConnection.id == connection_id
+        ).first()
+        if not conn:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conexión no encontrada.")
+
+        role = db.query(Role).filter(Role.id == role_id).first()
+        if not role:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rol no encontrado.")
+        if role.name in ADMIN_ROLES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "El rol de administrador está exento de políticas de columna por diseño: "
+                    "una regla suya no la aplicaría ningún camino del producto."
+                ),
+            )
+
+    @classmethod
+    def set_role_column_permissions(
+        cls,
+        db: Session,
+        connection_id: int,
+        role_id: int,
+        columns: List[Dict[str, str]],
+        permission_type: ColumnPermissionType,
+    ) -> List[RoleColumnPermission]:
+        """Crea o actualiza politicas de columna para un rol en una conexion.
+
+        Upsert por (rol, conexion, tabla, columna): repetir el PUT actualiza la
+        fila existente en vez de acumular duplicados que el guard resolveria con
+        el ultimo valor leido.
+
+        NO valida que la columna exista en la base fisica: una politica sobre una
+        columna inexistente es inerte, y comprobarlo exigiria una introspeccion en
+        cada PUT (que puede fallar por red cuando la base del cliente esta caida).
+        La UI ofrece solo columnas del diccionario real. El rol admin se rechaza
+        porque el guard lo exime de CLS: sus filas serian mentira visible en la UI.
+
+        Alcance real y deliberado: el guard resuelve BLOCKED/MASKED por NOMBRE de
+        columna dentro de la conexion (`dynamic_schema` y `mask_rows`), asi que si
+        dos tablas comparten nombre gana la politica mas restrictiva. Sobre-bloquear
+        es la postura fail-closed del proyecto; lo contrario filtraria datos.
+        """
+        cls._validate_column_policy_scope(db, connection_id, role_id)
+
+        touched: List[RoleColumnPermission] = []
+        seen: set = set()
+        for entry in columns:
+            table = (entry.get("table_name") or "").strip()
+            column = (entry.get("column_name") or "").strip()
+            if not table or not column:
+                continue
+            key = (table.lower(), column.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+
+            perm = db.query(RoleColumnPermission).filter(
+                RoleColumnPermission.role_id == role_id,
+                RoleColumnPermission.connection_id == connection_id,
+                func.lower(RoleColumnPermission.table_name) == table.lower(),
+                func.lower(RoleColumnPermission.column_name) == column.lower(),
+            ).first()
+            if perm:
+                perm.permission_type = permission_type
+                perm.schema_name = perm.schema_name or "public"
+            else:
+                perm = RoleColumnPermission(
+                    role_id=role_id,
+                    connection_id=connection_id,
+                    schema_name="public",
+                    table_name=table,
+                    column_name=column,
+                    permission_type=permission_type,
+                )
+                db.add(perm)
+            touched.append(perm)
+
+        if not touched:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No se recibió ninguna columna válida para aplicar la política.",
+            )
+
+        db.commit()
+
+        # Mismo motivo que en `set_role_table_permissions`: el prompt cacheado
+        # seguiria mostrando la columna (o su muestra) hasta 10 minutos despues de
+        # que el admin la bloqueo.
+        try:
+            from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
+            DynamicSchemaPruningService.invalidate_schema_cache(connection_id)
+        except Exception as exc:
+            logger.warning("No se pudo invalidar el cache de esquema tras cambiar políticas de columna: %s", exc)
+
+        for perm in touched:
+            db.refresh(perm)
+        return touched
+
+    @classmethod
+    def delete_role_column_permission(
+        cls,
+        db: Session,
+        connection_id: int,
+        role_id: int,
+        table_name: str,
+        column_name: str,
+    ) -> bool:
+        """Borra la fila CLS y devuelve la columna a "sin politica".
+
+        Es el unico camino para deshacer una excepcion `ALLOWED`: el seed solo
+        inserta cuando no existe fila, asi que borrar deja la columna en el
+        default que corresponda al proximo arranque. Idempotente: si no habia
+        fila devuelve False en vez de 404 (la UI puede pedir el reset dos veces).
+        """
+        cls._validate_column_policy_scope(db, connection_id, role_id)
+
+        table = (table_name or "").strip()
+        column = (column_name or "").strip()
+        if not table or not column:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tabla y columna son obligatorias para borrar una política.",
+            )
+
+        row = db.query(RoleColumnPermission).filter(
+            RoleColumnPermission.connection_id == connection_id,
+            RoleColumnPermission.role_id == role_id,
+            func.lower(RoleColumnPermission.table_name) == table.lower(),
+            func.lower(RoleColumnPermission.column_name) == column.lower(),
+        ).first()
+        if not row:
+            return False
+
+        db.delete(row)
+        db.commit()
+
+        # Mismo motivo que en el PUT: el prompt cacheado seguiria enmascarando
+        # (o bloqueando) la columna hasta 10 minutos despues del reset.
+        try:
+            from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
+            DynamicSchemaPruningService.invalidate_schema_cache(connection_id)
+        except Exception as exc:
+            logger.warning(
+                "No se pudo invalidar el cache de esquema tras borrar la política de columna: %s",
+                exc,
+            )
+
+        return True
 
     @classmethod
     def test_connection_connectivity(cls, test_in: ConnectionTestRequest) -> ConnectionTestResult:

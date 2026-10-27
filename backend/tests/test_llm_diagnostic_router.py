@@ -9,7 +9,7 @@ from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 from main import app
-from app.core.config import settings
+from app.core.config import managed_llm_base_url, settings
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
 from app.modules.chat_engine.llm_diagnostic_router import (
@@ -55,7 +55,8 @@ class TestLLMDiagnosticRouter(unittest.TestCase):
         ocurria en la linea 66, antes de los tres try, sin exception_handler en la
         app -> 500 garantizada en cada request. Ahora responde 200."""
         payload = {**self.base_payload, "prompt": "ping"}
-        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        with patch.object(LLMService, "resolve_model_for", new=AsyncMock(return_value="test-model")), \
+             patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = MagicMock(
                 status_code=200,
                 json=lambda: {"choices": [{"message": {"content": "pong"}}]},
@@ -72,12 +73,40 @@ class TestLLMDiagnosticRouter(unittest.TestCase):
     def test_test_completion_returns_response_even_when_llm_is_down(self):
         """Sin LLM local responde success=False con 200, no 500."""
         payload = {**self.base_payload, "prompt": "ping"}
-        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        with patch.object(LLMService, "resolve_model_for", new=AsyncMock(return_value="test-model")), \
+             patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
             mock_post.side_effect = RuntimeError("connection refused")
             res = self.client.post("/api/v1/llm/test-completion", json=payload, headers=self.headers)
 
         self.assertEqual(res.status_code, 200, res.text[:300])
         self.assertFalse(res.json()["success"])
+
+    def test_test_completion_uses_the_model_the_server_reports(self):
+        """El Playground resuelve el modelo igual que el chat.
+
+        Antes mandaba el nombre configurado: con LM Studio eso es un 404
+        `model_not_found` aunque el motor este arriba. El chat funcionaba porque
+        `generate_completion` si resuelve contra `/v1/models`; el test no.
+        """
+        payload = {**self.base_payload, "prompt": "ping"}
+        captured = {}
+
+        async def fake_post(self, url, **kwargs):
+            captured["model"] = kwargs["json"]["model"]
+            return MagicMock(
+                status_code=200,
+                json=lambda: {"choices": [{"message": {"content": "pong"}}]},
+                text='{"choices":[]}',
+            )
+
+        with patch.object(
+            LLMService, "resolve_model_for",
+            new=AsyncMock(return_value="unsloth/Qwen3.5-4B-GGUF:Q4_K_M"),
+        ), patch("httpx.AsyncClient.post", new=fake_post):
+            res = self.client.post("/api/v1/llm/test-completion", json=payload, headers=self.headers)
+
+        self.assertEqual(res.status_code, 200, res.text[:300])
+        self.assertEqual(captured["model"], "unsloth/Qwen3.5-4B-GGUF:Q4_K_M")
 
     def test_prompt_manager_has_the_attribute_used_by_the_router(self):
         """Guardarra contra volver a referenciar un prompt inexistente."""
@@ -122,7 +151,7 @@ class TestLLMDiagnosticRouter(unittest.TestCase):
         self.assertEqual(res.status_code, 200, res.text[:300])
         self.assertEqual(
             mock_health.await_args.kwargs["base_url"],
-            settings.OLLAMA_BASE_URL,
+            managed_llm_base_url(),
         )
         self.assertTrue(mock_health.await_args.kwargs["trusted"])
 
@@ -140,7 +169,8 @@ class TestLLMDiagnosticRouter(unittest.TestCase):
             captured.append(url)
             return _Res()
 
-        with patch("httpx.AsyncClient.post", new=fake_post):
+        with patch.object(LLMService, "resolve_model_for", new=AsyncMock(return_value="test-model")), \
+             patch("httpx.AsyncClient.post", new=fake_post):
             res = self.client.post(
                 "/api/v1/llm/test-completion",
                 json={**self.base_payload, "base_url": hostile, "prompt": "ping"},
@@ -150,7 +180,7 @@ class TestLLMDiagnosticRouter(unittest.TestCase):
         self.assertEqual(res.status_code, 200, res.text[:300])
         self.assertFalse(res.json()["success"])
         self.assertTrue(captured, "no se intento ningun endpoint")
-        central_base = LLMService._as_base_url(settings.OLLAMA_BASE_URL)
+        central_base = LLMService._as_base_url(managed_llm_base_url())
         for url in captured:
             self.assertNotIn("169.254", url, url)
             self.assertTrue(url.startswith(central_base), url)

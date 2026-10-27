@@ -98,4 +98,47 @@ class SessionOut(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+# --- Catálogo de roles y dominios (solo admin) ------------------------------
+#
+# `name` es la etiqueta que se muestra y con la que se asigna el rol a un
+# usuario (`PATCH /auth/users`), así que se valida acá y se compara sin
+# distinguir mayúsculas en el router. `description` es opcional y `null`
+# significa "sin descripción", no "no tocar": en un PATCH el campo ausente es
+# el que significa "no tocar".
+
+class RoleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    description: Optional[str] = Field(None, max_length=500)
+
+class RoleUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=50)
+    description: Optional[str] = Field(None, max_length=500)
+
+class RoleOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    # Cuántas cuentas tienen el rol asignado. La UI lo necesita para explicar
+    # POR QUÉ el borrado va a fallar antes de ofrecer el botón, y el router lo
+    # usa como condición de borrado (409 con usuarios asignados).
+    user_count: int = 0
+
+class DomainCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    description: Optional[str] = Field(None, max_length=500)
+
+class DomainUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=50)
+    description: Optional[str] = Field(None, max_length=500)
+
+class DomainOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    # Entradas del catálogo semántico adscritas al dominio. Al borrar, la FK
+    # `semantic_catalog.domain_id` las deja en NULL: no se pierden, pierden la
+    # clasificación. La UI lo muestra antes de confirmar.
+    catalog_entries_count: int = 0
+
 Token.model_rebuild()

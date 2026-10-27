@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app.core.config import settings
+from app.core.config import managed_llm_base_url, settings
 from app.modules.chat_engine.llm_service import (
     LLMService,
     validate_llm_base_url,
@@ -252,7 +252,7 @@ class TestDoubleValidationIsIdempotent(unittest.TestCase):
                              params={"base_url": "http://169.254.169.254"},
                              headers=headers)
         self.assertEqual(res.status_code, 200, res.text[:300])
-        self.assertEqual(captured["base_url"], settings.OLLAMA_BASE_URL)
+        self.assertEqual(captured["base_url"], managed_llm_base_url())
         self.assertTrue(captured["trusted"])
 
     def test_hostile_url_through_http_is_rejected_in_user_mode(self):

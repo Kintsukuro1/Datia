@@ -16,7 +16,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from main import app
-from app.core.config import settings
+from app.core.config import managed_llm_base_url, settings
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
 from app.modules.system import router as system_router
@@ -100,7 +100,7 @@ class TestSystemHealthSSRF(unittest.TestCase):
             )
 
         self.assertEqual(res.status_code, 200, res.text[:300])
-        self.assertEqual(captured["base_url"], settings.OLLAMA_BASE_URL)
+        self.assertEqual(captured["base_url"], managed_llm_base_url())
         self.assertTrue(captured["trusted"])
 
     def test_openai_compatible_provider_uses_its_url(self):
@@ -162,7 +162,7 @@ class TestSystemHealthSSRF(unittest.TestCase):
                  "success": True, "latency_ms": 1, "message": "ok"}):
             res = self.client.get("/api/v1/system/health", headers=self.headers)
         self.assertEqual(res.status_code, 200, res.text[:300])
-        self.assertEqual(mock.await_args.kwargs["base_url"], settings.OLLAMA_BASE_URL)
+        self.assertEqual(mock.await_args.kwargs["base_url"], managed_llm_base_url())
         self.assertTrue(mock.await_args.kwargs["trusted"])
 
     def test_ssrf_still_requires_authentication(self):

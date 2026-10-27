@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { CorporateConnection } from '../../features/admin/services/connector_service';
+import { CorporateConnection, CorporateDbType } from '../../features/admin/services/connector_service';
 import { Eye, EyeOff } from 'lucide-react';
 
 export interface FormFieldsProps {
   name: string;
-  dbType: 'postgresql' | 'mssql' | 'mysql' | 'oracle';
+  dbType: CorporateDbType;
   host: string;
   port: number;
   databaseName: string;
@@ -13,7 +13,7 @@ export interface FormFieldsProps {
   isActive: boolean;
   editingConnector: CorporateConnection | null;
   onFieldChange: (field: string, value: any) => void;
-  onDbTypeChange: (dbType: 'postgresql' | 'mssql' | 'mysql' | 'oracle') => void;
+  onDbTypeChange: (dbType: CorporateDbType) => void;
   /** El wizard dibuja el motor como tarjetas propias; el modal lo mantiene como select. */
   hideDbTypeSelector?: boolean;
 }
@@ -70,9 +70,6 @@ export const ConnectorFormFields: React.FC<FormFieldsProps> = ({
               className={`${FIELD_CLASS} cursor-pointer`}
             >
               <option value="postgresql">PostgreSQL</option>
-              <option value="mssql">Microsoft SQL Server</option>
-              <option value="mysql">MySQL / MariaDB</option>
-              <option value="oracle">Oracle Database</option>
             </select>
           </div>
         )}

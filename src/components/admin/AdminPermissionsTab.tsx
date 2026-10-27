@@ -13,6 +13,7 @@ import {
 import { useMemo, useState } from 'react';
 import { ErrorBanner } from '../shared/ErrorBanner';
 import { ConnectionPills } from './ConnectionPills';
+import { AdminColumnPermissionsPanel } from './AdminColumnPermissionsPanel';
 import {
   useAdminPermissions,
   useGovernanceCoverage,
@@ -67,9 +68,9 @@ export const AdminPermissionsTab: React.FC = () => {
   }, [coverage]);
 
   // Columnas BLOCKED/MASKED de la cobertura: la parte que la matriz no puede
-  // mostrar. Aca solo se informan (no hay endpoint de escritura de permisos de
-  // columna); el dato ya viene calculado por el mismo guardarrail que aplica el
-  // chat, no se re-deriva en el cliente.
+  // mostrar. El dato ya viene calculado por el mismo guardarrail que aplica el
+  // chat; el editor de abajo es quien las cambia, pero este resumen se recalcula
+  // contra el servidor para que no pueda contradecirlo.
   const protectedColumns = useMemo(
     () => collectProtectedColumns(coverage?.tables ?? []),
     [coverage]
@@ -427,6 +428,17 @@ export const AdminPermissionsTab: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* CLS editable. Va despues de la matriz porque proteger columnas solo
+          tiene sentido sobre tablas que alguien puede leer; el panel se apaña
+          solo (lista de roles, diccionario y politicas) y avisa arriba cuando el
+          cambio mueve la cobertura. */}
+      <AdminColumnPermissionsPanel
+        connectionId={selectedConnectionId}
+        roles={roles}
+        tables={tables}
+        onSaved={refreshCoverage}
+      />
     </div>
   );
 };

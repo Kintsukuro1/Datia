@@ -46,7 +46,7 @@ Todo usuario recién registrado recibe automáticamente el perfil **Usuario Cons
 - **Dominio:** Total. Es el único rol con bypass de la matriz de permisos.
 - **Capacidades Exclusivas:**
   1. Asignar y modificar roles a usuarios registrados.
-  2. Registrar, editar y probar conexiones a fuentes de datos (hoy solo PostgreSQL; MySQL/MSSQL/Oracle figuran en la UI del wizard como visión no implementada).
+  2. Registrar, editar y probar conexiones a fuentes de datos (hoy solo PostgreSQL).
   3. Configurar llaves de cifrado Fernet AES-256 para cadenas de conexión.
   4. Ejecutar el **auto-enriquecimiento con IA** sobre el Catálogo Semántico.
   5. Consultar la auditoría global y la trazabilidad de todas las consultas.

@@ -9,7 +9,7 @@ Dos garantias:
 """
 import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.core.config import managed_llm_base_url, settings
 from app.modules.chat_engine.llm_service import LLMService
@@ -126,6 +126,23 @@ class TestHealthProbesTheConfiguredEngineOnly(unittest.TestCase):
 
         self.assertTrue(res["success"], res)
         self.assertIn("11434", res["active_url"])
+
+    def test_failure_does_not_invent_the_configured_model(self):
+        """Si nadie respondio, la lista de modelos va vacia.
+
+        Antes se devolvia `[OLLAMA_MODEL]` y el Studio la pintaba como "Modelos
+        Reportados por el Servidor" debajo del error de conexion: el diagnostico
+        afirmaba que el motor tenia un modelo que nunca reporto.
+        """
+        with patch.object(settings, "ENVIRONMENT", "production"), \
+             patch("app.modules.system.health_service._port_open",
+                   new=AsyncMock(return_value=False)):
+            res = asyncio.run(HealthService.check_llm_connectivity(
+                provider="ollama", base_url="http://127.0.0.1:11434",
+                model_name="qwen2.5-coder:7b", timeout=0.1, trusted=True))
+
+        self.assertFalse(res["success"], res)
+        self.assertEqual(res["available_models"], [])
 
 
 if __name__ == "__main__":

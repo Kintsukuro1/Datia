@@ -1,4 +1,5 @@
 import io
+import json
 from typing import List, Optional, Any, Dict, Set
 from fastapi import APIRouter, Depends, status, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -16,7 +17,8 @@ from app.modules.admin_catalog.schemas import (
     CorporateConnectionCreate, CorporateConnectionUpdate, CorporateConnectionOut,
     ConnectionTestRequest, ConnectionTestResult, MetadataDBTestRequest,
     ReportExportRequest, NullsAuditResponse, ApplyNullPolicyRequest,
-    GovernanceCoverageResponse, GovernanceCoverageTable, GovernanceCoverageSummary
+    GovernanceCoverageResponse, GovernanceCoverageTable, GovernanceCoverageSummary,
+    ColumnPermissionOut, ColumnPermissionUpdate,
 )
 from app.modules.admin_catalog.models import (
     CorporateConnection, RoleTablePermission, RoleColumnPermission
@@ -308,6 +310,37 @@ def delete_connector(
 # item_id no numerico. Los permisos son la matriz RBAC de toda la plataforma, no
 # una entrada del catalogo semantico.
 
+def _audit_permission_change(
+    db: Session,
+    admin: User,
+    validation_status: str,
+    action: str,
+    target_database: Optional[str],
+    detail: Dict[str, Any],
+) -> None:
+    """Registra una mutación de permisos en `audit_logs`.
+
+    Se llama DESPUÉS del commit del cambio: `_persist_audit_log` es best-effort y
+    su `except` hace rollback, así que invocarla antes podría descartar la
+    mutación si la auditoría falla. `username` y `target_database` se recortan a
+    la longitud de sus columnas (50/100): un nombre largo no debe convertir el
+    rastro en una excepción silenciosa.
+
+    El detalle va en `result_snapshot` como JSON: quién cambió qué permiso, sin
+    credenciales ni valores de muestra de las columnas.
+    """
+    _persist_audit_log(
+        db,
+        user_id=admin.id,
+        username=(admin.username or "")[:50],
+        user_role=display_role_name(admin),
+        question_prompt=action,
+        sql_generated=None,
+        validation_status=validation_status,
+        target_database=(target_database or "")[:100],
+        result_snapshot=json.dumps(detail, ensure_ascii=False, default=str),
+    )
+
 @router.get("/permissions")
 def list_role_table_permissions(
     connection_id: Optional[int] = Query(None, description="Filtrar por ID de conexión"),
@@ -340,15 +373,187 @@ def set_role_table_permissions(
         db, connection_id=connection_id, role_id=role_id,
         table_names=table_names, is_allowed=is_allowed,
     )
+    payload = [
+        {"id": p.id, "table_name": p.table_name, "schema_name": p.schema_name,
+         "is_allowed": bool(p.is_allowed)}
+        for p in perms
+    ]
+
+    # Sin este rastro, conceder una tabla no dejaba ninguna evidencia: el export
+    # de cumplimiento solo mostraba consultas, y un acceso otorgado por error no
+    # tenia autor ni fecha.
+    conn_name = db.query(CorporateConnection.name).filter(
+        CorporateConnection.id == connection_id
+    ).scalar()
+    role_name = db.query(Role.name).filter(Role.id == role_id).scalar()
+    _audit_permission_change(
+        db, current_admin,
+        validation_status="PERMISOS_TABLA",
+        action=(
+            f"Permisos de tabla: {'concedidas' if is_allowed else 'revocadas'} "
+            f"{len(payload)} tabla(s) al rol '{role_name or role_id}'"
+        ),
+        target_database=conn_name,
+        detail={
+            "accion": "conceder" if is_allowed else "revocar",
+            "connection_id": connection_id,
+            "connection": conn_name,
+            "role_id": role_id,
+            "role": role_name,
+            "tablas": [p["table_name"] for p in payload],
+        },
+    )
+
     return {
         "connection_id": connection_id,
         "role_id": role_id,
         "is_allowed": is_allowed,
-        "permissions": [
-            {"id": p.id, "table_name": p.table_name, "schema_name": p.schema_name,
-             "is_allowed": bool(p.is_allowed)}
-            for p in perms
+        "permissions": payload,
+    }
+
+@router.get("/permissions/columns", response_model=List[ColumnPermissionOut])
+def list_role_column_permissions(
+    connection_id: Optional[int] = Query(None, description="Filtrar por ID de conexión"),
+    role_id: Optional[int] = Query(None, description="Filtrar por ID de rol"),
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+) -> Any:
+    """Políticas de columna (ALLOWED/MASKED/BLOCKED) por rol y conexión (Admin only).
+
+    Es lo que hace visible y editable la CLS: sin fila, una columna queda legible.
+    Un dataset subido nace sin ninguna fila, así que el admin decide acá qué se
+    enmascara o se bloquea en vez de esperar un seed que adivine nombres.
+    """
+    return ConnectorDomainService.list_role_column_permissions(
+        db, connection_id=connection_id, role_id=role_id,
+    )
+
+@router.put("/permissions/columns")
+def set_role_column_permissions(
+    payload: ColumnPermissionUpdate,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+) -> Any:
+    """Crea o actualiza políticas de columna de un rol en una conexión (Admin only).
+
+    `ALLOWED` es una excepción explícita, no un borrado: el seed de CLS solo
+    inserta cuando no existe fila, así que una concesión del admin sobrevive al
+    siguiente arranque. Es la vía para que un rol de RRHH creado a mano vea
+    remuneraciones (el flag `is_hr` solo lo marca el rol canónico).
+    """
+    rows = ConnectorDomainService.set_role_column_permissions(
+        db,
+        connection_id=payload.connection_id,
+        role_id=payload.role_id,
+        columns=[
+            {"table_name": c.table_name, "column_name": c.column_name}
+            for c in payload.columns
         ],
+        permission_type=payload.permission_type,
+    )
+    confirmed = [
+        {
+            "id": r.id,
+            "connection_id": r.connection_id,
+            "role_id": r.role_id,
+            "role_name": None,
+            "schema_name": r.schema_name or "public",
+            "table_name": r.table_name,
+            "column_name": r.column_name,
+            "permission_type": r.permission_type.value,
+        }
+        for r in rows
+    ]
+
+    conn_name = db.query(CorporateConnection.name).filter(
+        CorporateConnection.id == payload.connection_id
+    ).scalar()
+    role_name = db.query(Role.name).filter(Role.id == payload.role_id).scalar()
+    for row in confirmed:
+        row["role_name"] = role_name
+    _audit_permission_change(
+        db, current_admin,
+        validation_status="PERMISOS_COLUMNA",
+        action=(
+            f"Política de columna {payload.permission_type.value}: "
+            f"{len(confirmed)} columna(s) del rol '{role_name or payload.role_id}'"
+        ),
+        target_database=conn_name,
+        detail={
+            "accion": "politica_columna",
+            "permission_type": payload.permission_type.value,
+            "connection_id": payload.connection_id,
+            "connection": conn_name,
+            "role_id": payload.role_id,
+            "role": role_name,
+            "columnas": [f"{r['table_name']}.{r['column_name']}" for r in confirmed],
+        },
+    )
+
+    return {
+        "connection_id": payload.connection_id,
+        "role_id": payload.role_id,
+        "permission_type": payload.permission_type.value,
+        "permissions": confirmed,
+    }
+
+@router.delete("/permissions/columns")
+def delete_role_column_permission(
+    connection_id: int = Query(..., description="ID de la conexión"),
+    role_id: int = Query(..., description="ID del rol"),
+    table_name: str = Query(..., description="Tabla de la columna"),
+    column_name: str = Query(..., description="Columna que vuelve a 'sin política'"),
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin)
+) -> Any:
+    """Borra la política de una columna y la devuelve a "sin política" (Admin only).
+
+    Es el único camino para deshacer una excepción `ALLOWED`: el seed solo inserta
+    cuando no existe fila, así que borrar deja la columna sujeta al default del
+    próximo arranque. Idempotente por diseño: si no había fila responde
+    `deleted: false` en vez de 404, porque repetir el reset no es un error.
+
+    Solo se audita cuando borró algo: un no-op no cambia ninguna política y
+    llenaría `audit_logs` de eventos que no ocurrieron.
+    """
+    deleted = ConnectorDomainService.delete_role_column_permission(
+        db,
+        connection_id=connection_id,
+        role_id=role_id,
+        table_name=table_name,
+        column_name=column_name,
+    )
+
+    conn_name = db.query(CorporateConnection.name).filter(
+        CorporateConnection.id == connection_id
+    ).scalar()
+    role_name = db.query(Role.name).filter(Role.id == role_id).scalar()
+
+    if deleted:
+        _audit_permission_change(
+            db, current_admin,
+            validation_status="PERMISOS_COLUMNA",
+            action=(
+                f"Política de columna eliminada: {table_name}.{column_name} "
+                f"del rol '{role_name or role_id}' (sin política)"
+            ),
+            target_database=conn_name,
+            detail={
+                "accion": "eliminar_politica_columna",
+                "connection_id": connection_id,
+                "connection": conn_name,
+                "role_id": role_id,
+                "role": role_name,
+                "columnas": [f"{table_name}.{column_name}"],
+            },
+        )
+
+    return {
+        "connection_id": connection_id,
+        "role_id": role_id,
+        "table_name": table_name,
+        "column_name": column_name,
+        "deleted": deleted,
     }
 
 @router.get("/permissions/coverage", response_model=GovernanceCoverageResponse)

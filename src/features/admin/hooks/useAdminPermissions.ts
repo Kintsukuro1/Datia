@@ -15,7 +15,7 @@ import { getApiErrorMessage } from '../../../shared/api/api_client';
 export interface AdminRole {
   id: number;
   name: string;
-  description: string;
+  description: string | null;
 }
 
 /** Clave del borrador: un par (rol, tabla). */

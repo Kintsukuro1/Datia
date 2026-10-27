@@ -7,6 +7,129 @@ from app.core.constants import ADMIN_ROLES
 from app.core.database import discard_failed_transaction
 from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
 
+# ---------------------------------------------------------------------------
+# Dominios funcionales del guard de gobernanza.
+#
+# La autoridad es la MATRIZ RBAC, no el nombre del rol. Antes se clasificaba el
+# rol por substring: "Administrativo de TI" caia en el bypass de admin por
+# contener "admin", "Coordinador de Gestion" se trataba como infraestructura por
+# el "ti" de "Gestion", y "Finance Analyst" no matcheaba ninguna rama y quedaba
+# sin politica. Renombrar un rol desde el panel o crear uno nuevo lo dejaba en
+# la misma situacion, sin aviso.
+#
+# Ahora la PREGUNTA se clasifica por su vocabulario y el permiso se resuelve
+# contra las tablas que el rol tiene en `role_table_permissions`: si la pregunta
+# toca un dominio del que el rol no tiene NI UNA tabla, se deniega. Un rol con
+# `fact_ventas` puede preguntar por ventas se llame como se llame; uno sin
+# tablas de finanzas no, aunque se apellide "Administrativo de TI".
+#
+# Las tablas se clasifican por SU nombre (no por el del rol) porque el dataset
+# de un cliente no se va a llamar como el de la demo.
+#
+# Si NINGUNA tabla del rol se puede clasificar (un CSV subido como
+# `movimientos`, `hoja1`, `datos_2024`), el guard NO deniega: no hay evidencia
+# de que la matriz pertenezca a otro dominio, y negarle "ingresos" al duenio de
+# esa unica tabla seria negarle su propio dato. En ese caso el gate duro es la
+# matriz + el AST, que ya acotan las tablas y las columnas.
+#
+# ponytail: mapear vocabulario -> dominio es una heuristica de UX. El gate duro
+# sigue siendo el AST (`ast_validator`): esta capa solo convierte un rechazo
+# tardio en uno temprano y explicable. Si un cliente reporta un falso positivo,
+# se amplia el vocabulario de aca; la matriz no se toca.
+_FINANCE_TABLES_RE = re.compile(
+    r"venta|ingreso|costo|factura|gasto|precio|margen|utilidad|saldo|balance|"
+    r"cobro|pago|cliente|producto|categoria|comercial|rentabilidad"
+)
+_TI_TABLES_RE = re.compile(
+    r"servidor|incidente|consumo|recurso|infra|cluster|nodo|telemetr|monitor|"
+    r"alerta|ticket|soporte"
+)
+_PERSONAL_TABLES_RE = re.compile(
+    r"emplead|persona|nomina|sueldo|salario|rrhh|talento|remunerac"
+)
+
+# `precio`, `tarifa` y `cotizacion` NO estan a proposito del lado financiero: el
+# catalogo comercial (`dim_categorias`, `dim_productos`) es una lista de precios
+# que la matriz declara consultable por perfiles sin acceso a la operacion, y
+# negarles "cuanto cuesta el producto X" contradecia su propia matriz.
+_FINANCE_QUESTION_RE = re.compile(
+    r"\b(saldo|saldos|balance|balances)\b"
+    r"|\b(venta|ventas|preventa|postventa)\b"
+    r"|\b(ingreso|ingresos|recaudaci[oó]n|cobro|cobros)\b"
+    r"|\b(ganancia|ganancias|lucro|utilidad|utilidades)\b"
+    r"|\b(facturaci[oó]n|factura|facturas|facturado)\b"
+    r"|\b(margen|m[aá]rgenes|ebitda|rentabilidad)\b"
+    r"|\b(costo|costos|gasto|gastos|egreso|egresos|presupuesto|presupuestos)\b"
+    r"|\b(dinero|monto|montos|financier[oa]s?|finanzas)\b"
+    r"|\b(econ[oó]mic[oa]s?|econom[íi]a|comercial(es)?)\b"
+    r"|\b(cartera\s+de\s+clientes|comprador|compradores)\b"
+    r"|\b(m[oó]dulo|[aá]rea|departamento)\s+(de\s+)?(finanzas|financier[oa]|comercial|ventas|facturaci[oó]n|econom[íi]a)\b"
+    r"|\b(fact_ventas|fact_ingresos_costos|vbak_cabpedidoventa|vbap_pospedidoventa|kna1_clientes)\b"
+)
+
+_TI_QUESTION_RE = re.compile(
+    r"\b(tecnol[oó]gic[oa]s?|tecnolog[ií]a)\b"
+    r"|\b(ti|it|t\.i\.)\b"
+    r"|\b(inform[aá]tic[oa]s?|telecomunicaci[oó]n|telecomunicaciones)\b"
+    r"|\b(servidor|servidores|server|servers|host|hosts|cluster|clusters|nodo|nodos)\b"
+    r"|\b(cpu|memoria\s+ram|\bram\b|disco|discos|almacenamiento)\b"
+    r"|\b(incidente|incidentes|incidentes\s+ti|incidentes_ti)\b"
+    r"|\b(ticket|tickets|soporte\s+t[ée]cnico|helpdesk|mesa\s+de\s+ayuda)\b"
+    r"|\b(uptime|downtime|ca[íi]da|ca[íi]das|disponibilidad\s+del?\s+sistema)\b"
+    r"|\b(consumo\s+de\s+recursos|latencia|ancho\s+de\s+banda|ping|router|switch|firewall)\b"
+    r"|\b(infraestructura(\s+de\s+ti|\s+tecnol[oó]gica|\s+t[ée]cnica)?)\b"
+    r"|\b(m[oó]dulo|[aá]rea|departamento)\s+(de\s+)?(ti|it|tecnolog[íi]a|infraestructura|sistemas)\b"
+    r"|\b(m[oó]dulo\s+(ti|it|tecnol[oó]gic[oa]))\b"
+    r"|\b(sistemas\s+inform[aá]ticos|telemetr[íi]a)\b"
+    r"|\b(parche|parches|vulnerabilidad|vulnerabilidades|ciberseguridad|seguridad\s+ti)\b"
+    r"|\b(backup|backups|respaldo|respaldos)\b"
+    r"|\b(dim_servidores|fact_incidentes_ti|fact_consumo_recursos)\b"
+)
+
+_HR_QUESTION_RE = re.compile(
+    r"\b(sueldo|sueldos|salario|salarios|remuneraci[oó]n|remuneraciones)\b"
+    r"|\b(n[oó]mina|n[oó]minas|honorario|honorarios)\b"
+    r"|\b(cu[aá]nto\s+gana[n]?|compensaci[oó]n|compensaciones)\b"
+    r"|\b(m[oó]dulo|[aá]rea|departamento)\s+(de\s+)?(rrhh|recursos humanos|talento|personal)\b"
+)
+
+# "Vendimos productos tecnologicos" es una pregunta COMERCIAL, no de
+# infraestructura: el perfil de finanzas debe poder hacerla. Sin esta excepcion,
+# la palabra "tecnologic" disparaba la rama TI y la matriz de finanzas no tiene
+# ninguna tabla de TI. Es la misma excepcion que ya existia.
+_PRODUCT_QUERY_RE = re.compile(
+    r"\b(producto|productos|categor[íi]a|categor[íi]as|art[íi]culo|art[íi]culos|cat[aá]logo)\b"
+)
+_COMMERCIAL_CONTEXT_RE = re.compile(
+    r"\b(vendid[oa]s?|vendieron|vendimos|vender|venta|ventas|comprad[oa]s?|compraron|"
+    r"compramos|compras?|precio|precios|facturaci[oó]n|facturas?|cliente|clientes)\b"
+)
+
+# (nombre, regex de la pregunta, regex de las tablas del dominio, mensaje)
+_DOMAIN_RULES = (
+    (
+        "finanzas",
+        _FINANCE_QUESTION_RE,
+        _FINANCE_TABLES_RE,
+        "Gobernanza RBAC: Acceso denegado. El perfil '{role}' no tiene autorización "
+        "para consultar información financiera, facturación, ventas, ingresos ni balances comerciales de la organización.",
+    ),
+    (
+        "ti",
+        _TI_QUESTION_RE,
+        _TI_TABLES_RE,
+        "Gobernanza RBAC: Acceso denegado. El perfil '{role}' no tiene autorización "
+        "para consultar servidores, incidentes técnicos ni métricas de infraestructura TI.",
+    ),
+    (
+        "personal",
+        _HR_QUESTION_RE,
+        _PERSONAL_TABLES_RE,
+        "Gobernanza RBAC: Acceso denegado. El perfil '{role}' no tiene autorización "
+        "para consultar salarios, remuneraciones, nóminas ni información confidencial de Recursos Humanos.",
+    ),
+)
+
 class GovernanceGuard:
     """
     Enforces Fail-Closed RBAC table access, column masking, and cross-domain boundary isolation.
@@ -136,89 +259,57 @@ class GovernanceGuard:
         return GovernanceGuard._schema_field_for_role("masked_columns", user_role, is_admin, db, role_id, connection_id)
 
     @classmethod
-    def check_domain_governance(cls, question: str, user_role: str, allowed_tables: Set[str]) -> Optional[str]:
-        """
-        Enforces cross-domain governance guardrails (Fail-Closed).
-        Detects if a user role attempts to query topics strictly outside their business domain.
-        Returns a denial reason string if violated, or None if permitted.
-        """
-        role_lower = (user_role or "").lower().strip()
-        q_lower = (question or "").lower().strip()
+    def check_domain_governance(
+        cls,
+        question: str,
+        user_role: str,
+        allowed_tables: Set[str],
+        is_admin: bool = False,
+    ) -> Optional[str]:
+        """Deniega la pregunta si toca un dominio del que el rol no tiene tablas.
 
-        # 0. Global Admin and C-Level have cross-domain visibility
-        if any(k in role_lower for k in ["admin", "director ejecutivo", "c-level", "super", "plataforma"]):
+        `is_admin` explicito y `ADMIN_ROLES` por nombre EXACTO: el bypass no se
+        deduce de un substring. `"Administrativo de TI"` no es administrador.
+
+        Devuelve el motivo del rechazo o `None` si la pregunta cae dentro de la
+        matriz del rol.
+        """
+        # 0. El unico bypass es el admin explicito de la cuenta (`is_admin`) o el
+        # rol EXACTO de `ADMIN_ROLES`. El C-Level NO esta en esa lista: lo que su
+        # matriz no cubre se le deniega igual, como a cualquier otro rol.
+        if is_admin or user_role in ADMIN_ROLES:
             return None
 
-        # Domain 1: Tech / TI / Infrastructure roles attempting to access financial, commercial or sales data
-        is_tech_role = any(k in role_lower for k in ["ti", "infraestructura", "tecnolog", "sistemas", "devops", "soporte"])
-        if is_tech_role and not any(k in role_lower for k in ["financ", "comercial", "econom"]):
-            financial_keywords = [
-                r'\b(saldo|saldos|balance|balances)\b',
-                r'\b(venta|ventas|preventa|postventa)\b',
-                r'\b(ingreso|ingresos|recaudaci[oó]n|cobro|cobros)\b',
-                r'\b(ganancia|ganancias|lucro|utilidad|utilidades)\b',
-                r'\b(precio|precios|tarifa|tarifas|cotizaci[oó]n|cotizaciones)\b',
-                r'\b(facturaci[oó]n|factura|facturas|facturado)\b',
-                r'\b(margen|m[aá]rgenes|ebitda|rentabilidad)\b',
-                r'\b(costo|costos|gasto|gastos|egreso|egresos|presupuesto|presupuestos)\b',
-                r'\b(dinero|monto|montos|financier[oa]s?|finanzas)\b',
-                r'\b(econ[oó]mic[oa]s?|econom[íi]a|comercial(es)?)\b',
-                r'\b(cartera\s+de\s+clientes|comprador|compradores)\b',
-                r'\b(m[oó]dulo|[aá]rea|departamento)\s+(de\s+)?(finanzas|financier[oa]|comercial|ventas|facturaci[oó]n|econom[íi]a)\b',
-                r'\b(fact_ventas|fact_ingresos_costos|vbak_cabpedidoventa|vbap_pospedidoventa|kna1_clientes)\b'
-            ]
-            if re.search('|'.join(financial_keywords), q_lower):
-                return (
-                    f"Gobernanza RBAC: Acceso denegado. El perfil '{user_role}' no tiene autorización "
-                    "para consultar información financiera, facturación, ventas, ingresos ni balances comerciales de la organización."
-                )
+        q_lower = (question or "").lower().strip()
+        if not q_lower:
+            return None
 
-        # Domain 2: Business / Financial / Commercial roles attempting to access technical IT infrastructure
-        is_fin_role = any(k in role_lower for k in ["economista", "financiero", "finanzas", "comercial", "negocio", "contab"])
-        if is_fin_role and not any(k in role_lower for k in ["ti", "infraestructura", "tecnolog"]):
-            # Check if it is a legitimate product or catalog inquiry about technology goods
-            commercial_context = r'\b(vendid[oa]s?|vendieron|vendimos|vender|venta|ventas|comprad[oa]s?|compraron|compramos|compras?|precio|precios|facturaci[oó]n|facturas?|cliente|clientes)\b'
-            product_context = r'\b(producto|productos|categor[íi]a|categor[íi]as|art[íi]culo|art[íi]culos|cat[aá]logo)\b'
-            is_product_query = bool(re.search(product_context, q_lower) and re.search(commercial_context, q_lower))
+        tables = {t.lower() for t in (allowed_tables or set())}
 
-            if not is_product_query:
-                tech_keywords = [
-                    r'\b(tecnol[oó]gic[oa]s?|tecnolog[ií]a)\b',
-                    r'\b(ti|it|t\.i\.)\b',
-                    r'\b(inform[aá]tic[oa]s?|telecomunicaci[oó]n|telecomunicaciones)\b',
-                    r'\b(servidor|servidores|server|servers|host|hosts|cluster|clusters|nodo|nodos)\b',
-                    r'\b(cpu|memoria\s+ram|\bram\b|disco|discos|almacenamiento)\b',
-                    r'\b(incidente|incidentes|incidentes\s+ti|incidentes_ti)\b',
-                    r'\b(ticket|tickets|soporte\s+t[ée]cnico|helpdesk|mesa\s+de\s+ayuda)\b',
-                    r'\b(uptime|downtime|ca[íi]da|ca[íi]das|disponibilidad\s+del?\s+sistema)\b',
-                    r'\b(consumo\s+de\s+recursos|latencia|ancho\s+de\s+banda|ping|router|switch|firewall)\b',
-                    r'\b(infraestructura(\s+de\s+ti|\s+tecnol[oó]gica|\s+t[ée]cnica)?)\b',
-                    r'\b(m[oó]dulo|[aá]rea|departamento)\s+(de\s+)?(ti|it|tecnolog[íi]a|infraestructura|sistemas)\b',
-                    r'\b(m[oó]dulo\s+(ti|it|tecnol[oó]gic[oa]))\b',
-                    r'\b(sistemas\s+inform[aá]ticos|telemetr[íi]a)\b',
-                    r'\b(parche|parches|vulnerabilidad|vulnerabilidades|ciberseguridad|seguridad\s+ti)\b',
-                    r'\b(backup|backups|respaldo|respaldos)\b',
-                    r'\b(dim_servidores|fact_incidentes_ti|fact_consumo_recursos)\b'
-                ]
-                if re.search('|'.join(tech_keywords), q_lower):
-                    return (
-                        f"Gobernanza RBAC: Acceso denegado. El perfil '{user_role}' no tiene autorización "
-                        "para consultar servidores, incidentes técnicos ni métricas de infraestructura TI."
-                    )
+        # Dominios que la matriz del rol cubre, deducidos de los NOMBRES de sus
+        # tablas. Vacio = no se puede clasificar ninguna (dataset con nombres
+        # arbitrarios): no hay evidencia de cruce de dominio, se defiere al gate
+        # duro. Denegar aca dejaria a un cliente con una tabla `movimientos` sin
+        # poder preguntar por sus propios ingresos.
+        role_domains = {
+            domain
+            for domain, _, table_re, _ in _DOMAIN_RULES
+            if any(table_re.search(table) for table in tables)
+        }
+        if not role_domains:
+            return None
 
-        # Domain 3: HR / Payroll Isolation (only HR / Gerente de Talento, C-Level, Admin can access salaries/payroll)
-        is_hr_role = any(k in role_lower for k in ["talento", "rrhh", "recursos humanos", "personas"])
-        if not is_hr_role:
-            hr_keywords = [
-                r'\b(sueldo|sueldos|salario|salarios|remuneraci[oó]n|remuneraciones)\b',
-                r'\b(n[oó]mina|n[oó]minas|honorario|honorarios)\b',
-                r'\b(cu[aá]nto\s+gana[n]?|compensaci[oó]n|compensaciones)\b',
-                r'\b(m[oó]dulo|[aá]rea|departamento)\s+(de\s+)?(rrhh|recursos humanos|talento|personal)\b',
-            ]
-            if re.search('|'.join(hr_keywords), q_lower):
-                return (
-                    f"Gobernanza RBAC: Acceso denegado. El perfil '{user_role}' no tiene autorización "
-                    "para consultar salarios, remuneraciones, nóminas ni información confidencial de Recursos Humanos."
-                )
+        is_product_query = bool(
+            _PRODUCT_QUERY_RE.search(q_lower)
+            and _COMMERCIAL_CONTEXT_RE.search(q_lower)
+        )
+
+        for domain, question_re, _, denial in _DOMAIN_RULES:
+            if domain == "ti" and is_product_query:
+                continue
+            if domain in role_domains:
+                continue
+            if question_re.search(q_lower):
+                return denial.format(role=user_role)
 
         return None

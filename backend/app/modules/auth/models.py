@@ -46,6 +46,12 @@ class Role(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(50), unique=True, index=True, nullable=False)
     description = Column(Text, nullable=True)
+    # Identidad estable de la politica de columnas: "este rol es el area de
+    # personas". NO se deduce del nombre: el panel permite renombrar roles, y
+    # un rol nuevo llamado "Talento Junior" no debe heredar el acceso a
+    # remuneraciones. Solo el seed marca el rol canonico; no hay endpoint que
+    # la cambie.
+    is_hr = Column(Boolean, default=False, server_default="false", nullable=False)
     created_at = Column(DateTime, default=utcnow_naive)
 
     users = relationship("User", back_populates="role")

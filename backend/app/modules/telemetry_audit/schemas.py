@@ -18,6 +18,11 @@ class AuditLogOut(BaseModel):
     execution_time_ms: int = 0
     rows_returned: int = 0
     error_message: Optional[str] = None
+    # Detalle del evento. Se llena SOLO para mutaciones de permisos: el snapshot
+    # de una consulta puede pesar 100 KB y ya esta representado por SQL/filas,
+    # pero el de un cambio de permisos (~200 bytes) es la unica prueba de QUE
+    # columnas se tocaron. Sin esto, el "que" solo era visible entrando a la base.
+    result_snapshot: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -353,7 +353,9 @@ class QueryEngine:
 
         # 3. Strict Cross-Domain RBAC Governance Check (Defense Layer 1 - Fail Closed)
         if not is_admin and user_role not in ADMIN_ROLES:
-            domain_denial = cls.check_domain_governance(effective_question, user_role, allowed_tables)
+            domain_denial = cls.check_domain_governance(
+                effective_question, user_role, allowed_tables, is_admin=is_admin
+            )
             if domain_denial:
                 return ResponseBuilder.build_rbac_denied_response(effective_question, domain_denial)
 

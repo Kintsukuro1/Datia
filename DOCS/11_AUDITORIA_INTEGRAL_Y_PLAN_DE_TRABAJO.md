@@ -304,7 +304,8 @@ A continuación se detallan exhaustivamente todos los hallazgos clasificados en 
 ---
 
 #### D-03: Implementación Real de Conectores Corporativos MySQL y SQL Server
-- **Oportunidad:** En la documentación técnica y en los selectores visuales de la interfaz de administración se listan motores relacionales como Microsoft SQL Server (`mssql`) y MySQL/MariaDB (`mysql`). Sin embargo, en el backend solo se implementa lógica de conexión física para SQLite y PostgreSQL.
+- **Oportunidad:** En la documentación técnica y en los selectores visuales de la interfaz de administración se listaban motores relacionales como Microsoft SQL Server (`mssql`) y MySQL/MariaDB (`mysql`). Sin embargo, en el backend solo se implementa lógica de conexión física para SQLite y PostgreSQL.
+- **Estado (26/10/2026):** la UI ya se alineó con el backend y solo ofrece PostgreSQL; MySQL/MSSQL/Oracle siguen sin soporte real.
 - **Valor agregado:** Completar los adaptadores de dialecto en `build_engine_for_connector` para MySQL (`pymysql`) y MSSQL (`pyodbc`/`pymssql`), habilitando la integración real con bases de datos ERP y sistemas legados de clientes corporativos.
 - **Compensación / Trade-off:** Incrementa el tamaño de dependencias binarias en el backend para incluir los drivers correspondientes.
 - **Esfuerzo:** M | **Riesgo:** BAJO.

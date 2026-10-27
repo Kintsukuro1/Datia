@@ -1,10 +1,10 @@
 import { useReducer, useEffect } from 'react';
-import { CorporateConnection, ConnectionFormData, connectorService, ConnectionTestResult } from '../services/connector_service';
+import { CorporateConnection, ConnectionFormData, connectorService, ConnectionTestResult, CorporateDbType } from '../services/connector_service';
 import { getApiErrorMessage } from '../../../shared/api/api_client';
 
 interface State {
   name: string;
-  dbType: 'postgresql' | 'mssql' | 'mysql' | 'oracle';
+  dbType: CorporateDbType;
   host: string;
   port: number;
   databaseName: string;
@@ -20,7 +20,7 @@ interface State {
 type Action =
   | { type: 'RESET_FORM'; payload: CorporateConnection | null }
   | { type: 'SET_FIELD'; field: string; value: any }
-  | { type: 'CHANGE_DB_TYPE'; dbType: 'postgresql' | 'mssql' | 'mysql' | 'oracle' }
+  | { type: 'CHANGE_DB_TYPE'; dbType: CorporateDbType }
   | { type: 'SET_TESTING'; testing: boolean }
   | { type: 'SET_TEST_RESULT'; result: ConnectionTestResult | null }
   | { type: 'SET_SUBMITTING'; submitting: boolean }
@@ -64,13 +64,8 @@ function modalReducer(state: State, action: Action): State {
       };
     case 'SET_FIELD':
       return { ...state, [action.field]: action.value };
-    case 'CHANGE_DB_TYPE': {
-      let defaultPort = 5432;
-      if (action.dbType === 'mssql') defaultPort = 1433;
-      else if (action.dbType === 'mysql') defaultPort = 3306;
-      else if (action.dbType === 'oracle') defaultPort = 1521;
-      return { ...state, dbType: action.dbType, port: defaultPort };
-    }
+    case 'CHANGE_DB_TYPE':
+      return { ...state, dbType: action.dbType, port: 5432 };
     case 'SET_TESTING':
       return { ...state, testingConn: action.testing };
     case 'SET_TEST_RESULT':

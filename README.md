@@ -256,8 +256,8 @@ Los permisos se otorgan por **responsabilidad funcional**, no por título person
 | 👔 **Director Ejecutivo (C-Level)** | `director` | `director123` | Rentabilidad consolidada y catálogo. Sin el detalle transaccional |
 | 📈 **Analista Financiero & Comercial** | `economista` | `economista123` | Finanzas, ventas, clientes, facturación y encuestas |
 | 🤝 **Gerente de Talento & Operaciones** | `talento` | `talento123` | Plantilla (incluye sueldos) y encuestas. Sin ventas |
-| 📊 **Analista de Datos & BI** | `bi` | `bi123` | Infraestructura y catálogo. Sin datos financieros |
-| 🖥️ **Ingeniero de Infraestructura & TI** | `ti` | `ti123` | Infraestructura, servidores, incidentes y encuestas |
+| 📊 **Analista de Datos & BI** | `bi` | `bi123` | Infraestructura y plantilla (sin remuneraciones). Sin datos financieros ni catálogo comercial |
+| 🖥️ **Ingeniero de Infraestructura & TI** | `ti` | `ti123` | Infraestructura, servidores, incidentes, plantilla (sin remuneraciones) y encuestas |
 | 🔎 **Oficial de Cumplimiento & Seguridad** | `seguridad` | `seguridad123` | Trazabilidad técnica y catálogo. Sin márgenes de venta |
 | 🧭 **Usuario Consultor** | `consultor` | `consultor123` | Solo lectura del catálogo de productos y encuestas |
 
@@ -285,6 +285,14 @@ La gobernanza aplica en **tres capas**, y cada una frena por su cuenta:
 | **1** | **Matriz de permisos** (`role_table_permissions`) | Define qué tablas ve cada rol. Es la capa que hace el aislamiento. |
 | **2** | **Guard de dominio** (`governance_guard`) | Además de la tabla, frena el *tema* de la pregunta. El C-Level tiene bypass de dominio por diseño, así que en su caso solo lo frena la capa 1. |
 | **3** | **Validador AST** (`sqlglot`) | Si el LLM genera SQL contra una tabla fuera de la matriz, la consulta se rechaza antes de llegar a la base, aunque la pregunta haya pasado el filtro de palabras clave. |
+
+Las tres capas deciden **qué tablas** se pueden consultar. La clasificación de **columnas** (`role_column_permissions`) se edita por conexión en *Administración → Permisos*: cada columna real del diccionario puede quedar **Permitida**, **Enmascarada** o **Bloqueada** para un rol, o volver a **Sin política** (borra la fila y la deja en el default legible; es la única forma de deshacer una **Permitida** explícita). Un dataset subido nace sin políticas de columna, así que el admin las clasifica ahí; una **Permitida** explícita sobre una columna que el seed bloquea es una excepción que sobrevive al siguiente arranque, y es la vía para que un rol de RRHH creado a mano vea remuneraciones.
+
+El alcance de una política es la **conexión**: el guard resuelve BLOCKED/MASKED por nombre de columna, así que si dos tablas comparten el nombre gana la política más restrictiva (Bloqueada &gt; Enmascarada &gt; Permitida). Es la postura fail-closed: sobre-bloquear se nota; filtrar, no. El selector muestra la fila de la tabla elegida y avisa cuando otra tabla de la conexión impone una política más restrictiva, para que un "Permitida" no se lea como un cambio de efecto que el chat no va a aplicar.
+
+Cada cambio de tabla o de política de columna queda registrado en `audit_logs` (`PERMISOS_TABLA` / `PERMISOS_COLUMNA`) con el rol, la conexión y las columnas afectadas; el reset a **Sin política** solo audita cuando borró una fila. En *Administración → Auditoría* se filtra por esos eventos, por familia de acceso (`AUTH_*`), exportaciones (`EXPORTADO_*`), proyecciones (`PROYECCION_*`), política de nulos (`NULL_POLICY_*`) y errores (`ERROR_*`), y el inspector muestra el detalle. El listado no transporta los snapshots de consultas, que pesan hasta ~100 KB cada uno.
+
+La exportación CSV conserva el detalle de los eventos de permisos en la columna **Detalle del Evento** y carga en memoria solo las columnas que escribe (no los snapshots de todas las filas). El tope de 50.000 filas sigue vigente por memoria; si el filtro supera ese tope, el archivo agrega una fila **AVISO** al final con el total real para que no se confunda un export truncado con uno completo.
 
 ---
 

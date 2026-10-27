@@ -7,6 +7,23 @@ export interface LoginResponse {
   user: User;
 }
 
+// Catálogo de roles/dominios del panel de administración. `user_count` y
+// `catalog_entries_count` los calcula el servidor: la UI los usa para explicar
+// por qué un borrado va a fallar ANTES de ofrecer el botón.
+export interface RoleCatalogItem {
+  id: number;
+  name: string;
+  description: string | null;
+  user_count: number;
+}
+
+export interface DomainCatalogItem {
+  id: number;
+  name: string;
+  description: string | null;
+  catalog_entries_count: number;
+}
+
 export const authService = {
   async login(username: string, password: string): Promise<LoginResponse> {
     const res = await apiClient.post<LoginResponse>('/auth/login', { username, password });
@@ -30,8 +47,49 @@ export const authService = {
 
   // Sin fallback: si /auth/roles falla (ej. 403 por rol no-admin), el error sube.
   // Devolver roles ficticios hacía creer al usuario que tenía permisos que no tiene.
-  async getAvailableRoles(): Promise<{ id: number; name: string; description: string }[]> {
-    const res = await apiClient.get<{ id: number; name: string; description: string }[]>('/auth/roles');
+  async getAvailableRoles(): Promise<RoleCatalogItem[]> {
+    const res = await apiClient.get<RoleCatalogItem[]>('/auth/roles');
+    return res.data;
+  },
+
+  async createRole(data: { name: string; description?: string }): Promise<RoleCatalogItem> {
+    const res = await apiClient.post<RoleCatalogItem>('/auth/roles', data);
+    return res.data;
+  },
+
+  async updateRole(
+    id: number,
+    data: { name?: string; description?: string | null },
+  ): Promise<RoleCatalogItem> {
+    const res = await apiClient.patch<RoleCatalogItem>(`/auth/roles/${id}`, data);
+    return res.data;
+  },
+
+  async deleteRole(id: number): Promise<{ message: string }> {
+    const res = await apiClient.delete<{ message: string }>(`/auth/roles/${id}`);
+    return res.data;
+  },
+
+  async getDomains(): Promise<DomainCatalogItem[]> {
+    const res = await apiClient.get<DomainCatalogItem[]>('/auth/domains');
+    return res.data;
+  },
+
+  async createDomain(data: { name: string; description?: string }): Promise<DomainCatalogItem> {
+    const res = await apiClient.post<DomainCatalogItem>('/auth/domains', data);
+    return res.data;
+  },
+
+  async updateDomain(
+    id: number,
+    data: { name?: string; description?: string | null },
+  ): Promise<DomainCatalogItem> {
+    const res = await apiClient.patch<DomainCatalogItem>(`/auth/domains/${id}`, data);
+    return res.data;
+  },
+
+  async deleteDomain(id: number): Promise<{ message: string }> {
+    const res = await apiClient.delete<{ message: string }>(`/auth/domains/${id}`);
     return res.data;
   },
 

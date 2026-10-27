@@ -142,9 +142,16 @@ async def test_llm_completion(
     # solo prueba conectividad, asi que alcanza con el prompt base.
     system_prompt = PromptManager.DEFAULT_SYSTEM_PROMPT
 
+    # El Playground debe usar el mismo modelo que el chat. Antes mandaba el
+    # nombre configurado tal cual: con LM Studio (404 model_not_found) u Ollama
+    # con otro tag, el test de inferencia fallaba aunque el motor estuviera
+    # sano y el chat funcionara porque `generate_completion` si resuelve el
+    # modelo contra `/v1/models`.
+    resolved_model = await LLMService.resolve_model_for(url, effective_model)
+
     chat_url = f"{url}/v1/chat/completions"
     payload_chat = {
-        "model": effective_model,
+        "model": resolved_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": req.prompt}
@@ -163,7 +170,7 @@ async def test_llm_completion(
                     success=True,
                     completion_text=completion,
                     latency_ms=latency,
-                    message=f"Inferencia completada por llama.cpp / servidor LLM local ({effective_model}).",
+                    message=f"Inferencia completada por el servidor LLM local ({resolved_model}).",
                     active_url=url,
                 )
     except Exception:
@@ -193,7 +200,7 @@ async def test_llm_completion(
 
     ollama_url = f"{url}/api/generate"
     payload_ollama = {
-        "model": effective_model,
+        "model": resolved_model,
         "prompt": req.prompt,
         "system": system_prompt,
         "stream": False,

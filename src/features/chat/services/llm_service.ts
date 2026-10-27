@@ -49,8 +49,9 @@ export interface LLMCompletionTestResult {
  * `base_url` recibido y los puertos 8080/11434/1234 con esos mismos endpoints, y
  * devuelve la misma forma (`success`, `message`, `available_models`,
  * `latency_ms`). Regresiones conocidas al migrar: el backend NO recorta tags
- * `<think>` ni usa el timeout largo de 5 min del navegador, y cuando el
- * servidor no reporta modelos devuelve `[model_name]` en vez de lista vacia.
+ * `<think>` ni usa el timeout largo de 5 min del navegador. Cuando no puede
+ * contactar al servidor devuelve `available_models: []`: no inventa el modelo
+ * configurado como si el servidor lo hubiera reportado.
  *
  * Este modulo ahora no captura errores: un fallo del backend sube al llamador,
  * que decide si reintenta otro endpoint o muestra el error.

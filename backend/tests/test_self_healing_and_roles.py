@@ -11,7 +11,10 @@ from main import app
 from app.core.database import Base, get_db
 from app.db.init_db import init_db
 from app.modules.auth.models import Role, Domain, User
-from app.modules.admin_catalog.models import RoleTablePermission, CorporateConnection
+from app.modules.admin_catalog.models import (
+    ColumnPermissionType, RoleTablePermission, RoleColumnPermission,
+    CorporateConnection,
+)
 from app.modules.chat_engine.models import QueryLearningMemory
 from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
 from app.modules.chat_engine.engine import QueryEngine
@@ -133,8 +136,10 @@ class TestSelfHealingAndCorporateRoles(unittest.TestCase):
             ),
             ROLE_ANALISTA_FINANCIERO: negocio | personal | surveys,
             ROLE_GERENTE_TALENTO: personal | surveys,
-            # Sin el bloque transaccional. Comparte matriz con el Ingeniero de TI a
-            # proposito: se separan en la capa 2, no en la capa 1.
+            # Cruza técnica y personal. Comparte matriz con el Ingeniero de TI:
+            # el guard ya no separa roles por nombre, así que la diferencia
+            # entre ambos es una decisión de producto pendiente (ver
+            # `test_cada_rol_ve_algo_que_ningun_otro_ve`).
             ROLE_ANALISTA_BI: tech | personal | surveys,
             ROLE_INGENIERO_TI: tech | personal | surveys,
             ROLE_OFICIAL_SEGURIDAD: tech | personal | surveys | {"dim_categorias", "dim_productos"},
@@ -201,6 +206,63 @@ class TestSelfHealingAndCorporateRoles(unittest.TestCase):
                 f"de cada uno: hace falta que no se toquen.",
             )
 
+    def _cls_para(self, role, table, column):
+        """La fila de CLS de ese rol para esa columna, si existe."""
+        conn = self.db.query(CorporateConnection).filter(
+            CorporateConnection.is_uploaded == False  # noqa: E712
+        ).first()
+        return self.db.query(RoleColumnPermission).filter(
+            RoleColumnPermission.role_id == role.id,
+            RoleColumnPermission.connection_id == conn.id,
+            RoleColumnPermission.table_name == table,
+            RoleColumnPermission.column_name == column,
+        ).first()
+
+    def test_un_rol_nuevo_no_hereda_la_exencion_de_sueldos_por_su_nombre(self):
+        """El acceso a remuneraciones es del area de personas, no de la palabra.
+
+        `init_db` decidia la exencion de la CLS con `"talento" in nombre`, asi
+        que un rol nuevo llamado "Talento Junior" nacia sin el bloqueo de
+        sueldo. El nombre es texto libre que escribe un admin; la clasificacion
+        de un rol no puede depender de el.
+        """
+        rol = Role(name="Talento Junior", description="rol de prueba")
+        self.db.add(rol)
+        self.db.commit()
+
+        init_db(self.db)
+
+        self.assertFalse(rol.is_hr)
+        self.assertIsNotNone(
+            self._cls_para(rol, "dim_empleados", "sueldo_mensual"),
+            "Un rol nuevo con 'talento' en el nombre no debe ver sueldos.",
+        )
+
+    def test_rol_de_rrhh_conserva_su_exencion_si_lo_renombran(self):
+        """La exencion de sueldos viaja con el rol, no con su nombre.
+
+        El panel permite renombrar roles. Si la exencion se dedujera del nombre,
+        renombrar al Gerente de Talento le agregaria el bloqueo de sueldos en el
+        siguiente arranque, y `init_db` no lo quita despues: el dano seria
+        permanente y sin aviso.
+        """
+        canonico = self.db.query(Role).filter(Role.name == ROLE_GERENTE_TALENTO).first()
+        self.assertTrue(canonico.is_hr, "El seed debe marcar al rol canonico de RRHH.")
+
+        renombrado = Role(name="Personas & Cultura", description="RRHH renombrado", is_hr=True)
+        self.db.add(renombrado)
+        self.db.commit()
+
+        init_db(self.db)
+
+        self.assertIsNone(
+            self._cls_para(renombrado, "dim_empleados", "sueldo_mensual"),
+            "RRHH conserva la exencion de sueldos aunque el rol se llame distinto.",
+        )
+        rut = self._cls_para(renombrado, "dim_empleados", "rut_dni")
+        self.assertIsNotNone(rut, "La exencion de sueldos no exime el RUT.")
+        self.assertEqual(rut.permission_type, ColumnPermissionType.MASKED)
+
     def test_cada_rol_ve_algo_que_ningun_otro_ve(self):
         """Contrapunto: que el aislamiento no sea solo "nadie ve finanzas".
 
@@ -208,18 +270,16 @@ class TestSelfHealingAndCorporateRoles(unittest.TestCase):
         tendria respuesta distinguible y la demo no demostraria nada.
 
         EXCEPCION DOCUMENTADA: `ROLE_ANALISTA_BI` y `ROLE_INGENIERO_TI` comparten
-        tabla a proposito. Ambos trabajan sobre metricas tecnicas; lo que los
-        separa es la CAPA 2, no la capa 1:
+        matriz. Antes los separaba el NOMBRE del rol en el guard de dominio, y esa
+        heuristica se elimino porque "Administrativo de TI" caia en el bypass de
+        admin por contener "admin". Con la matriz como unica autoridad, dos roles
+        con las mismas tablas son el mismo permiso.
 
-          - el nombre "Ingeniero de Infraestructura & TI" matchea la rama tecnica
-            del guard de dominio, asi que TI recibe un denegado temprano si pregunta
-            por ventas o margenes, aunque la capa 1 lo frena igual
-          - "Analista de Datos & BI" no matchea ninguna rama: es un perfil
-            transversal, y su proposito es cruzar areas
-
-        La separacion existe, pero vive en otra capa. Este test la excluye del
-        alcance de la matriz a proposito, y `test_bi_y_ti_se_diferencian_en_el_guard`
-        verifica que la diferencia siga existiendo.
+        Diferenciarlos es una decision de producto pendiente, no un olvido: exige
+        elegir que tabla concede uno y no el otro, y REVOCARLA en las bases ya
+        sembradas (`init_db` solo agrega permisos, nunca los quita). Revocar
+        permisos de un cliente en un upgrade sin migracion explicita es peor que
+        dos perfiles equivalentes.
         """
         matrices = {}
         for nombre in (ROLE_ADMINISTRADOR, ROLE_DIRECTOR_EJECUTIVO,
@@ -243,36 +303,6 @@ class TestSelfHealingAndCorporateRoles(unittest.TestCase):
                 f"'{a}' y '{b}' ven exactamente las mismas tablas. Dos perfiles "
                 f"indistinguibles hacen que la matriz no demuestre nada.",
             )
-
-    def test_bi_y_ti_se_diferencian_en_el_guard_de_dominio(self):
-        """La compensacion del test anterior: si comparten matriz, tienen que
-        separarse en la capa 2, y seguir separandose.
-
-        Este es el unico punto donde el aislamiento depende del NOMBRE del rol
-        (`governance_guard` clasifica por substring), asi que un cambio de nombre
-        en `constants.py` puede borrarlo en silencio. Sin este test, el Analista de
-        Datos y el Ingeniero de TI serian el mismo rol con dos etiquetas.
-        """
-        from app.modules.chat_engine.governance_guard import GovernanceGuard
-
-        tablas = {"dim_servidores"}
-        pregunta_finanzas = "cuales son las ventas totales"
-
-        ti = GovernanceGuard.check_domain_governance(
-            pregunta_finanzas, ROLE_INGENIERO_TI, tablas)
-        bi = GovernanceGuard.check_domain_governance(
-            pregunta_finanzas, ROLE_ANALISTA_BI, tablas)
-
-        self.assertIsNotNone(
-            ti,
-            "El Ingeniero de TI debe recibir un denegado de dominio sobre finanzas. "
-            "Es la unica capa que lo distingue del Analista de Datos.",
-        )
-        self.assertIsNone(
-            bi,
-            "El Analista de Datos es un perfil transversal: el guard de dominio no "
-            "le restringe por area. Si esto cambia, cambio el diseno a proposito.",
-        )
 
     def test_un_usuario_demo_por_rol_y_ninguno_sin_matriz(self):
         """Cada rol corporativo tiene una cuenta, y ninguna entra al producto para

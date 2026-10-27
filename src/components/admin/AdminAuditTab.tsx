@@ -111,7 +111,7 @@ export const AdminAuditTab: React.FC = () => {
               <th className="px-4 py-3">Fecha (UTC)</th>
               <th className="px-4 py-3">Usuario & Rol</th>
               <th className="px-4 py-3">Pregunta / Prompt</th>
-              <th className="px-4 py-3">Estado AST</th>
+              <th className="px-4 py-3">Evento</th>
               <th className="px-4 py-3">Base de Datos</th>
               <th className="px-4 py-3">Latencia</th>
               <th className="px-4 py-3 text-right">Detalles</th>
@@ -130,7 +130,7 @@ export const AdminAuditTab: React.FC = () => {
             ) : logs.length === 0 ? (
               <tr>
                 <td colSpan={7} className="py-12 text-center text-slate-500 dark:text-gray-400">
-                  No se encontraron consultas registradas con los filtros seleccionados.
+                  No se encontraron eventos registrados con los filtros seleccionados.
                 </td>
               </tr>
             ) : (

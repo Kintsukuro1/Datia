@@ -5,7 +5,7 @@ import math
 from typing import Optional, Any
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from app.api.deps import get_db, get_current_admin
 from app.core.security import sanitize_spreadsheet_value
 from app.core.time import utcnow_naive
@@ -75,12 +75,23 @@ def get_audit_logs(
         .limit(page_size) \
         .all()
 
+    # El detalle se agrega solo para eventos de permisos (ver `AuditLogOut`):
+    # incluirlo en todas las filas multiplicaria el payload de la pagina por
+    # snapshots de consultas que pueden pesar 100 KB cada uno. `model_validate`
+    # copia el atributo del ORM, asi que hay que LIMPIARLO en el resto.
+    items_out = []
+    for item in items:
+        out = AuditLogOut.model_validate(item)
+        if not (item.validation_status or "").startswith("PERMISOS_"):
+            out.result_snapshot = None
+        items_out.append(out)
+
     return AuditLogsPage(
         total=total,
         page=page,
         page_size=page_size,
         total_pages=total_pages,
-        items=[AuditLogOut.model_validate(item) for item in items]
+        items=items_out
     )
 
 @router.get("/export")
@@ -107,7 +118,40 @@ def export_audit_logs_csv(
         validation_status=validation_status
     )
 
-    logs = filtered_query.order_by(AuditLog.timestamp.desc()).limit(EXPORT_MAX_ROWS).all()
+    total = filtered_query.count()
+    truncated = total > EXPORT_MAX_ROWS
+
+    # `load_only` evita traer `result_snapshot` (hasta ~108 KB por fila) de las
+    # 50.000 filas del tope. El CSV no lo usa para las consultas; el detalle se
+    # pide aparte solo para los eventos de permisos, que son los unicos que lo
+    # necesitan. Sin esto, un export grande carga el snapshot completo en RAM
+    # aunque no lo escriba.
+    logs = filtered_query.options(load_only(
+        AuditLog.id,
+        AuditLog.timestamp,
+        AuditLog.username,
+        AuditLog.user_role,
+        AuditLog.question_prompt,
+        AuditLog.sql_generated,
+        AuditLog.validation_status,
+        AuditLog.target_database,
+        AuditLog.execution_time_ms,
+        AuditLog.rows_returned,
+        AuditLog.error_message,
+    )).order_by(AuditLog.timestamp.desc()).limit(EXPORT_MAX_ROWS).all()
+
+    permission_ids = [
+        log.id for log in logs
+        if (log.validation_status or "").startswith("PERMISOS_")
+    ]
+    snapshots = {}
+    if permission_ids:
+        snapshots = {
+            row[0]: row[1]
+            for row in db.query(AuditLog.id, AuditLog.result_snapshot)
+            .filter(AuditLog.id.in_(permission_ids))
+            .all()
+        }
 
     output = io.StringIO()
     output.write('\ufeff')
@@ -124,7 +168,8 @@ def export_audit_logs_csv(
         "Base de Datos",
         "Tiempo Ejecución (ms)",
         "Filas Devueltas",
-        "Mensaje de Error"
+        "Mensaje de Error",
+        "Detalle del Evento"
     ])
 
     for log in logs:
@@ -139,7 +184,20 @@ def export_audit_logs_csv(
             sanitize_spreadsheet_value(log.target_database or ""),
             log.execution_time_ms or 0,
             log.rows_returned or 0,
-            sanitize_spreadsheet_value(log.error_message or "")
+            sanitize_spreadsheet_value(log.error_message or ""),
+            sanitize_spreadsheet_value(snapshots.get(log.id) or "")
+        ])
+
+    # El tope es una proteccion de memoria, no una promesa de export completo.
+    # Si se corta, el CSV lo dice: un documento de compliance que se presenta
+    # como total cuando no lo es vuelve inutil el rastro.
+    if truncated:
+        writer.writerow([
+            "AVISO", "", "", "", "", "", "", "", "", "", "",
+            (
+                f"Exportación truncada: se exportaron {EXPORT_MAX_ROWS} de {total} "
+                "eventos. Acote el rango de fechas o los filtros."
+            ),
         ])
 
     csv_data = output.getvalue()

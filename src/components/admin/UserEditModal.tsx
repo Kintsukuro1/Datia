@@ -29,7 +29,7 @@ export const UserEditModal: React.FC<UserEditModalProps> = ({
   // movió el checkbox: mandarlo siempre convertiría un "guardar rol" en un
   // "reactivar cuenta" para una cuenta dada de baja.
   const [initialIsActive, setInitialIsActive] = useState(true);
-  const [roles, setRoles] = useState<{ id: number; name: string; description: string }[]>([]);
+  const [roles, setRoles] = useState<{ id: number; name: string; description: string | null }[]>([]);
   const [rolesError, setRolesError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
