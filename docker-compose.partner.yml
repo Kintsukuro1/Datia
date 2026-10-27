@@ -104,8 +104,10 @@ services:
     ports:
       # Loopback por defecto. Para otra maquina, define DATIA_BIND_IP=0.0.0.0
       # (ver cabecera); no se abre a la LAN sin esa decision explicita.
-      - "${DATIA_BIND_IP:-127.0.0.1}:80:80"
-      - "${DATIA_BIND_IP:-127.0.0.1}:5173:80"
+      # El contenedor escucha en 8080 (nginx sin privilegios); el host conserva
+      # los puertos 80 y 5173 para no cambiar la URL que usa el cliente.
+      - "${DATIA_BIND_IP:-127.0.0.1}:80:8080"
+      - "${DATIA_BIND_IP:-127.0.0.1}:5173:8080"
     networks:
       - datia-network
 

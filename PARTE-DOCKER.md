@@ -111,7 +111,7 @@ docker compose -f docker-compose.partner.yml up -d
 **El puerto 80 está ocupado** (a veces lo agarra otro programa en Windows):
 ```bash
 docker compose -f docker-compose.partner.yml down
-# cambiá "127.0.0.1:80:80" por "127.0.0.1:8080:80" en docker-compose.partner.yml (sección frontend)
+# cambiá "127.0.0.1:80:8080" por "127.0.0.1:8080:8080" en docker-compose.partner.yml (sección frontend)
 # y abrí http://127.0.0.1:8080
 ```
 
