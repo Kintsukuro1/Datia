@@ -1,7 +1,8 @@
 from contextlib import contextmanager
 from typing import Generator
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
 from app.core.logging import logger
@@ -30,6 +31,48 @@ def get_database_url(
         database=db_name,
     ).render_as_string(hide_password=False)
 
+def _create_missing_database(db_name: str) -> bool:
+    """Crea `db_name` si falta. Devuelve True solo cuando la creó.
+
+    `CREATE DATABASE` no corre dentro de una transacción: el engine de
+    mantenimiento va en AUTOCOMMIT. Todo lo demás es best-effort a propósito:
+    si el servidor no responde, la clave es incorrecta o el rol no puede crear
+    bases, devuelve False y el `connect()` principal vuelve a lanzar su error,
+    que es el que explica la causa real. No se inspecciona el texto del error
+    para decidir: PostgreSQL lo traduce al idioma del servidor ("no existe la
+    base de datos"), y psycopg no expone SQLSTATE en errores de conexión.
+    """
+    admin = None
+    try:
+        admin = create_engine(
+            get_database_url(db_name="postgres"),
+            isolation_level="AUTOCOMMIT",
+            pool_pre_ping=True,
+            connect_args={"connect_timeout": 5},
+        )
+        with admin.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :dbname"),
+                {"dbname": db_name},
+            ).scalar()
+            if exists:
+                return False
+            # Los identificadores no aceptan bind params; se escapan las comillas
+            # dobles para que un nombre con `"` no rompa el DDL.
+            safe_db = db_name.replace('"', '""')
+            conn.execute(text(f'CREATE DATABASE "{safe_db}"'))
+            logger.warning(f"La base de datos '{db_name}' no existía: creada automáticamente.")
+            return True
+    except Exception:
+        # Sin el detalle a proposito: el error real lo re-lanza el `connect()`
+        # principal, y el texto de psycopg puede traer U+FFFD (el servidor
+        # responde en su locale), que rompe el handler de log en cp1252.
+        logger.warning(f"No se pudo crear automáticamente la base de datos '{db_name}'.")
+        return False
+    finally:
+        if admin is not None:
+            admin.dispose()
+
 # Motor unico de la metadata: PostgreSQL. Sin fallback a SQLite a proposito:
 # una segunda base interna en un archivo solo producia dos verdades distintas
 # (una instalacion con dos juegos de usuarios, permisos e historial) y estados
@@ -44,8 +87,17 @@ engine = create_engine(
     echo=False,
     connect_args={"connect_timeout": 5},
 )
-with engine.connect() as conn:
-    pass
+try:
+    with engine.connect():
+        pass
+except OperationalError:
+    # Instalación nueva: la base de metadata todavía no existe. Sin esto el
+    # import muere acá y `scripts/setup_postgres_full.run()` (lifespan de
+    # main.py), que es quien crea las bases y siembra, nunca llega a correr.
+    if not _create_missing_database(settings.POSTGRES_DB):
+        raise
+    with engine.connect():
+        pass
 
 def ensure_schema_migrations(eng):
     """
