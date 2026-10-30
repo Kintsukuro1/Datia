@@ -40,6 +40,20 @@ export interface ConnectionTestResult {
 const STORAGE_KEY_PREFIX = 'datia_corporate_connectors:v1';
 const USER_KEY = 'datia_auth_user:v1';
 
+// El chat guarda su propia lista de conectores en un provider que NO se remonta
+// al navegar (vive en ProtectedLayout). Sin este aviso, crear/editar/activar o
+// borrar una fuente en Admin dejaba el selector del chat con la foto vieja hasta
+// recargar la pagina. Mismo patron que PASSWORD_CHANGE_PENDING_EVENT.
+// ponytail: el evento cubre esta pestana; otra pestana/sesion sigue necesitando
+// recarga. Agregar un listener de `storage` si el caso cross-tab importa.
+export const CONNECTORS_CHANGED_EVENT = 'datia:connectors-changed';
+
+function notifyConnectorsChanged(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(CONNECTORS_CHANGED_EVENT));
+  }
+}
+
 // El cache guarda host, database_name y username: es infraestructura de un
 // usuario concreto. Con una clave global, el usuario B en la misma maquina
 // leia los conectores de A cuando la API caia. Namespace por user.id.
@@ -105,6 +119,7 @@ export const connectorService = {
       ? current.map((c) => (c.id === id ? res.data : c))
       : [res.data, ...current];
     this.saveConnectorsToStorage(updated);
+    notifyConnectorsChanged();
     return updated;
   },
 
@@ -114,6 +129,7 @@ export const connectorService = {
       const current = this.getStoredConnectors();
       const updated = [res.data, ...current.filter((c) => c.id !== res.data.id)];
       this.saveConnectorsToStorage(updated);
+      notifyConnectorsChanged();
       return res.data;
     } catch (err) {
       // Sin fallback: una conexion solo existe si el servidor la creo.
@@ -131,6 +147,7 @@ export const connectorService = {
     const current = this.getStoredConnectors();
     const updated = [res.data, ...current.filter((c) => c.id !== res.data.id)];
     this.saveConnectorsToStorage(updated);
+    notifyConnectorsChanged();
     return res.data;
   },
 
@@ -143,6 +160,7 @@ export const connectorService = {
     const current = this.getStoredConnectors();
     const updated = current.map((c) => (c.id === id ? res.data : c));
     this.saveConnectorsToStorage(updated);
+    notifyConnectorsChanged();
     return res.data;
   },
 
@@ -152,6 +170,7 @@ export const connectorService = {
     await apiClient.delete(`/connectors/${id}`);
     const current = this.getStoredConnectors();
     this.saveConnectorsToStorage(current.filter((c) => c.id !== id));
+    notifyConnectorsChanged();
   },
 
   async testConnection(data: ConnectionFormData): Promise<ConnectionTestResult> {

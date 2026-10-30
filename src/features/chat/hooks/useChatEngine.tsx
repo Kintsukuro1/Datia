@@ -5,7 +5,7 @@ import { QueryResult } from '../../../types';
 import { createStreamBuffer } from '../../../shared/stream_buffer';
 import { ChatThread } from '../../../components/chat/SidebarChatHistory';
 import { queryService, isPredictionQuestion } from '../services/query_service';
-import { connectorService, CorporateConnection } from '../../admin/services/connector_service';
+import { connectorService, CorporateConnection, CONNECTORS_CHANGED_EVENT } from '../../admin/services/connector_service';
 import { resolveRoleLabel } from '../../../constants';
 
 // El motor encadena hasta 3 llamadas al LLM en CPU (clasificar intencion ->
@@ -138,21 +138,39 @@ function useChatEngineInternal() {
     });
   }, []);
 
-  // 1. Load initial connectors & suggestions
+  // 1. Load initial connectors & suggestions. El provider vive en ProtectedLayout
+  // y NO se remonta al navegar, asi que esta no puede ser la unica carga: cada
+  // mutacion de conectores (crear, subir, editar, activar o borrar) avisa por
+  // CONNECTORS_CHANGED_EVENT y se reaplica la misma regla que al inicio. Sin eso
+  // el selector del chat seguia mostrando (y consultando) la fuente anterior
+  // hasta recargar la pagina.
   useEffect(() => {
     let isMounted = true;
+
+    const applyConnectors = (conns: CorporateConnection[]) => {
+      setConnectors(conns);
+      const active = conns.find((c) => c.is_active) || conns[0] || null;
+      setActiveConnectionId(active?.id ?? null);
+      setActiveDatabaseName(
+        active ? `${active.name} (${active.db_type.toUpperCase()})` : 'BD Corporativa Local'
+      );
+      loadSuggestions(active?.id);
+    };
+
+    const load = () => {
+      connectorService.getConnectors().then((conns) => {
+        if (isMounted && Array.isArray(conns)) {
+          applyConnectors(conns);
+        }
+      });
+    };
+
     loadSuggestions();
-    connectorService.getConnectors().then((conns) => {
-      if (isMounted && conns && conns.length > 0) {
-        setConnectors(conns);
-        const active = conns.find((c) => c.is_active) || conns[0];
-        setActiveConnectionId(active.id);
-        setActiveDatabaseName(`${active.name} (${active.db_type.toUpperCase()})`);
-        loadSuggestions(active.id);
-      }
-    });
+    load();
+    window.addEventListener(CONNECTORS_CHANGED_EVENT, load);
     return () => {
       isMounted = false;
+      window.removeEventListener(CONNECTORS_CHANGED_EVENT, load);
     };
   }, [loadSuggestions]);
 

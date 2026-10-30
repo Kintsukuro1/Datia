@@ -26,9 +26,13 @@ vi.mock('../context/NotificationContext', () => ({
   useNotifications: () => ({ notify: spies.notify }),
 }));
 
-vi.mock('../features/admin/services/connector_service', () => ({
-  connectorService: { getConnectors: spies.getConnectors },
-}));
+vi.mock('../features/admin/services/connector_service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../features/admin/services/connector_service')>();
+  return {
+    ...actual,
+    connectorService: { getConnectors: spies.getConnectors },
+  };
+});
 
 vi.mock('../features/chat/services/query_service', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../features/chat/services/query_service')>();
