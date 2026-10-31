@@ -4,9 +4,9 @@
 **Estado revisado:** contra el árbol actual, no contra `c5f1af4`.
 
 > Las cifras de línea base del documento de auditoría (`103 passed, 1 failed`)
-> quedaron desactualizadas: la suite de `backend/tests/` tiene hoy del orden de
-> 500 tests en 65 archivos. Verificar con `cd backend && pytest` antes de
-> fiarse de cualquier plan.
+> quedaron desactualizadas: al 30/10/2026 la suite de `backend/tests/` tiene
+> **844 tests en 91 archivos** (244 subtests). Verificar con
+> `cd backend && pytest` antes de fiarse de cualquier plan.
 
 ---
 

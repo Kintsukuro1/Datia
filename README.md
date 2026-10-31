@@ -45,6 +45,42 @@ flowchart LR
 
 ---
 
+## 📚 Documentación
+
+La documentación completa vive en [`DOCS/`](DOCS/README.md), con enlaces relativos y diagramas Mermaid. Estos son los 17 entregables:
+
+| # | Entregable | Documento | Qué encontrarás |
+|---:|---|---|---|
+| 1 | Documento de inicio | [`DOCS/12_DOCUMENTO_DE_INICIO.md`](DOCS/12_DOCUMENTO_DE_INICIO.md) | Problema, objetivos, alcance, interesados, riesgos y plan de Fase 1 |
+| 2 | Metodología | [`DOCS/13_METODOLOGIA.md`](DOCS/13_METODOLOGIA.md) | Scrum, roles, ceremonias y límites de aplicación |
+| 3 | Product Vision | [`DOCS/14_PRODUCT_VISION.md`](DOCS/14_PRODUCT_VISION.md) | Visión, usuarios, propuesta de valor y métricas |
+| 4 | Product Backlog | [`DOCS/15_PRODUCT_BACKLOG.md`](DOCS/15_PRODUCT_BACKLOG.md) | 66 historias en 10 épicas, con evidencia y estado |
+| 5 | Sprint Backlog | [`DOCS/16_SPRINT_BACKLOG.md`](DOCS/16_SPRINT_BACKLOG.md) | 5 iteraciones reconstruidas desde 144 commits |
+| 6 | Definition of Done | [`DOCS/17_DEFINITION_OF_DONE.md`](DOCS/17_DEFINITION_OF_DONE.md) | Checklist de terminado y comandos de evidencia |
+| 7 | Retrospectivas | [`DOCS/18_RETROSPECTIVAS.md`](DOCS/18_RETROSPECTIVAS.md) | 4 retrospectivas y acciones abiertas |
+| 8 | SRS | [`DOCS/19_SRS.md`](DOCS/19_SRS.md) | 81 requisitos funcionales, criterios y matriz de trazabilidad |
+| 9 | README | Este archivo | Qué es, cómo se levanta y cómo se verifica |
+| 10 | Arquitectura | [`DOCS/02_ARQUITECTURA_TECNICA.md`](DOCS/02_ARQUITECTURA_TECNICA.md) | Capas, componentes y decisiones técnicas |
+| 11 | Modelo de datos | [`DOCS/21_MODELO_DE_DATOS.md`](DOCS/21_MODELO_DE_DATOS.md) | 13 tablas de metadata + 9 demo, ER, diccionario y cascadas |
+| 12 | Diagramas UML | [`DOCS/22_DIAGRAMAS_UML.md`](DOCS/22_DIAGRAMAS_UML.md) | Casos de uso, componentes, clases, secuencias, estados y despliegue |
+| 13 | Requisitos no funcionales | [`DOCS/20_REQUISITOS_NO_FUNCIONALES.md`](DOCS/20_REQUISITOS_NO_FUNCIONALES.md) | 77 RNF con objetivo, verificación y estado |
+| 14 | Docker y despliegue | [`DOCS/26_DOCKER.md`](DOCS/26_DOCKER.md) | Tres compose, imágenes, puertos, backup y seguridad |
+| 15 | Pruebas | [`DOCS/24_PRUEBAS.md`](DOCS/24_PRUEBAS.md) | Suite, cobertura real, CI y deuda declarada |
+| 16 | Manual técnico | [`DOCS/23_MANUAL_TECNICO.md`](DOCS/23_MANUAL_TECNICO.md) | Instalación, API, tareas frecuentes y troubleshooting |
+| 17 | Innovación | [`DOCS/25_INNOVACION.md`](DOCS/25_INNOVACION.md) | Aportes diferenciales y lo que no es innovación |
+
+| Recurso | Documento |
+|---|---|
+| Hub de documentación | [`DOCS/README.md`](DOCS/README.md) |
+| Guía rápida Docker (sin Node ni Python) | [`DOCKER-RAPIDO.md`](DOCKER-RAPIDO.md) |
+| Instalación on-prem, TLS, backup y upgrade | [`deploy/README.md`](deploy/README.md) |
+| Planes de implementación | [`plans/README.md`](plans/README.md) |
+| Evidencias académicas de Fase 1 | [`DOCS/entregables-academicos/fase-1/`](DOCS/entregables-academicos/fase-1/) |
+
+> **Visión vs. producto:** lo que está planificado pero no implementado se marca explícitamente en cada documento. El README y `DOCS/` no presentan visión como funcionalidad entregada.
+
+---
+
 ## 🛠️ Stack Tecnológico
 
 | Capa | Tecnologías |
@@ -242,7 +278,24 @@ El frontend queda en `http://127.0.0.1/` (publicado solo en loopback) y Nginx ha
 > [`deploy/README.md`](deploy/README.md).
 
 > Si algo falla al levantar el stack (puertos, secretos, volúmenes), los
-> problemas frecuentes y su diagnóstico están en [`PARTE-DOCKER.md`](PARTE-DOCKER.md).
+> problemas frecuentes y su diagnóstico están en [`DOCKER-RAPIDO.md`](DOCKER-RAPIDO.md).
+
+---
+
+## 🧪 Pruebas y verificación
+
+| Comando | Qué prueba | Resultado medido (30/10/2026) |
+| :--- | :--- | :--- |
+| `cd backend; venv\Scripts\python.exe -m pytest -q` | Backend completo sobre PostgreSQL real | **844 passed, 244 subtests, 0 failed** (6:36) |
+| `npm test` | Lógica del frontend (Vitest) | **18 archivos, 135 tests, 0 failed** (6,56 s) |
+| `npx tsc --noEmit` | Tipos de todo el proyecto | **exit 0** |
+| `npm run build` | Build de producción | **exit 0** (10,72 s; warning esperado de echarts 665,26 kB) |
+
+- La suite de backend **no arranca sin PostgreSQL** en `localhost:5432`: crea bases temporales reales, no usa mocks.
+- CI corre backend, frontend, typecheck y build en cada push/PR (`.github/workflows/ci.yml`).
+- **Lo que no está cubierto:** specifications E2E de Playwright, renderizado de componentes React, lint bloqueante y umbral de cobertura. Está declarado en [`DOCS/24_PRUEBAS.md`](DOCS/24_PRUEBAS.md) y en [`DOCS/20_REQUISITOS_NO_FUNCIONALES.md`](DOCS/20_REQUISITOS_NO_FUNCIONALES.md).
+
+> Si una cifra no coincide con tu corrida, la fuente de verdad es el comando, no este número. El detalle de la estrategia y el mapa de tests está en [`DOCS/24_PRUEBAS.md`](DOCS/24_PRUEBAS.md).
 
 ---
 

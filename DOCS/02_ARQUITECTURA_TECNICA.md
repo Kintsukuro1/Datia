@@ -115,12 +115,12 @@ flowchart TD
     C --> D[Construir Prompt con Esquema Autorizado]
     D --> E[Inferencia LLM Local - Generar SQL]
     E --> F{Validador AST / SQL Guard}
-    F -- ¿Consulta No Válida / No Permitida? --> G[Rechazar / Reintento de Autocorrección]
+    F -- ¿Consulta No Válida / No Permitida? --> G["Rechazar / Reintento de Autocorrección"]
     G --> E
-    F -- ¿Consulta Válida y Autorizada? --> H[Ejecutar SQL en BD Corporativa (Solo Lectura)]
+    F -- ¿Consulta Válida y Autorizada? --> H["Ejecutar SQL en BD Corporativa (Solo Lectura)"]
     H --> I[Obtener Dataset de Resultados]
     I --> J[Generar Configuración de Gráfico + Resumen de Negocio con LLM]
-    J --> K[Renderizar en UI: Dashboard + KPIs + Resumen + Tabla + Trazabilidad]
+    J --> K["Renderizar en UI: Dashboard + KPIs + Resumen + Tabla + Trazabilidad"]
 ```
 
 ---

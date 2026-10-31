@@ -3,6 +3,7 @@
 > **Documento:** 07 - Arquitectura de Carpetas y Organización del Código  
 > **Estado:** Aprobado tras Alineación Técnica y Migración DDD  
 > **Área:** Ingeniería de Software y Estructura Monorepo  
+> **Última actualización:** 30 de octubre de 2026  
 
 > **Árbol verificado contra el filesystem.** No describe estructura planeada ni
 > directorios de una versión anterior (Electron, `alembic/`, `app/models/`,
@@ -22,12 +23,16 @@
 
 ```
 democratizacion-de-datos/
-├── .github/workflows/ci.yml     # pytest + tsc + npm run build
-├── DOCS/                        # Documentación técnica y funcional (01 a 11)
-├── plans/                       # Planes de implementación (001-003) + README
+├── .github/workflows/ci.yml     # pytest + npm test + tsc + build
+├── DOCS/                        # Documentación técnica y funcional (01 a 26)
+├── plans/                       # Planes de implementación (001-005) + README
+├── deploy/                      # Bundle on-prem: compose, setup, backup, restore, upgrade, Caddy
 ├── data_sources/                # Bases de datos subidas por el usuario (NO versionado)
 ├── public/                      # Assets estáticos copiados tal cual por Vite
 ├── scripts/                     # Utilidades Node de dev (run-backend, init-db, checks)
+├── DOCKER-RAPIDO.md             # Instalación con Docker sin Node ni Python
+├── docker-compose.partner.yml   # Stack con imágenes publicadas (demo/partner)
+├── docker-compose.yml           # Stack de desarrollo (build local)
 │
 ├── src/                         # APLICACIÓN FRONTEND (React 18 + Vite + TS)
 │   ├── App.tsx                  # Proveedores raíz y rutas
@@ -94,7 +99,7 @@ democratizacion-de-datos/
 │   │       ├── reports/         # generator, data_compiler, pdf_exporter, excel_exporter, schemas
 │   │       ├── telemetry_audit/ # models, schemas, router (auditoría y compliance)
 │   │       └── system/          # health_service, router, schemas
-│   ├── tests/                   # Suite pytest (~675 tests, cambia casi cada semana)
+│   ├── tests/                   # Suite pytest (91 archivos, 844 tests al 30/10/2026)
 │   ├── scripts/                 # Utilidades de operación (PostgreSQL, credenciales, RBAC)
 │   ├── main.py                  # Punto de entrada FastAPI (app, CORS, startup, /health)
 │   ├── Dockerfile
@@ -150,9 +155,10 @@ conoce el router. Los hooks que hablan con el backend viven en `src/features/`.
 
 ### 3.6. `backend/app/modules/ml_forecast/`
 Motor de proyecciones ML sobre la serie de una tabla de hechos:
-- `ml_models.py`: candidatos de ajuste (naive, media, tendencia OLS, Holt
-  amortiguado con `statsmodels`) y backtest walk-forward que mide el error por
-  paso; `select_model`/`build_projection` dictaminan método, banda y MAPE.
+- `ml_models.py`: métodos `naive`, `mean` y `ols_trend`; backtest walk-forward
+  que mide el error por paso; `build_projection` dictamina método, banda, MAPE y
+  `beats_naive`. Holt amortiguado se retiró en el plan 004: un modelo más
+  complejo que empata no es una mejora.
 - `ml_service.py`: `run_projection` (carga el contexto de la tabla, arma SQL de
   la serie, ejecuta y proyecta), narrativa (plantilla del servidor o modelo
   local) y `estimate_seconds` para la barra de progreso.
