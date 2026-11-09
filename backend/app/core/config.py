@@ -26,6 +26,15 @@ class Settings(BaseSettings):
     
     ENVIRONMENT: str = "development" # development | production
 
+    # `auto` usa texto legible en desarrollo y JSON en producción. JSON permite
+    # que el colector del cliente (Loki, ELK, CloudWatch) parsee sin regex.
+    LOG_FORMAT: Literal["auto", "text", "json"] = "auto"
+
+    # Build info para `/version` y soporte. El release los inyecta; en local
+    # quedan vacíos y `/version` informa "dev".
+    DATIA_VERSION: Optional[str] = None
+    DATIA_COMMIT: Optional[str] = None
+
     # Publica `/docs` y `/api/v1/openapi.json`. Sin autenticacion: describen los
     # 50 endpoints con todos sus parametros y esquemas a cualquiera que alcance
     # el puerto. Por eso en produccion viene apagado y hay que encenderlo a mano.
@@ -76,6 +85,10 @@ class Settings(BaseSettings):
     FERNET_KEY: Optional[str] = None # Si falta, se deriva de SECRET_KEY (no es aleatoria)
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 # 24 hours local session
+    # La sesion se corta aunque el JWT siga vigente. El acceso token dura 24 h;
+    # estos topes son la red de seguridad para una estacion desatendida.
+    SESSION_IDLE_TIMEOUT_MINUTES: int = 60 * 8
+    SESSION_ABSOLUTE_TIMEOUT_MINUTES: int = 60 * 24
 
     # Dias de validez de la clave temporal de una cuenta creada por un
     # administrador. El cambio se exige en el primer login; si el usuario no
@@ -108,6 +121,13 @@ class Settings(BaseSettings):
     # ventana que se quiera de verdad.
     LLM_NUM_CTX: int = 32768
 
+    # Cuántas inferencias simultáneas acepta el backend. Un Ollama en CPU con
+    # un 7B no gana nada con paralelismo: encola y protege la memoria. Subirlo
+    # solo con GPU/VRAM medida. Las requests que esperan más de
+    # `LLM_QUEUE_TIMEOUT_SECONDS` se rechazan con un error claro.
+    LLM_MAX_CONCURRENCY: int = 1
+    LLM_QUEUE_TIMEOUT_SECONDS: float = 30.0
+
     # --- Enriquecimiento de catalogo con IA (knobs de hardware) --------------
     # Una llamada al modelo por LOTE de columnas (no por tabla entera ni por
     # columna). El lote chico evita los dos cortes que perdian la tabla completa:
@@ -122,6 +142,9 @@ class Settings(BaseSettings):
     # Security Defaults
     DEFAULT_ROW_LIMIT: int = 500
     QUERY_TIMEOUT_SECONDS: int = 15
+    # Tope server-side para archivos subidos. nginx ya limita 512m, pero el
+    # backend no debe depender de que el proxy este delante ni de su config.
+    MAX_UPLOAD_BYTES: int = 512 * 1024 * 1024
 
     # Path to Uploaded and Structured Data Sources
     @property

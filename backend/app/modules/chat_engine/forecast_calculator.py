@@ -36,6 +36,7 @@ from __future__ import annotations
 import decimal
 import re
 import statistics
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # Menos periodos que esto y el forecast NO se publica. Con 5 periodos hay 4
@@ -43,6 +44,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # si fuera una propiedad de la serie. No es un umbral conservador, es el punto
 # en que el numero deja de ser informacion.
 MIN_PERIODS = 6
+
+# Granularidades que acepta la proyeccion. El chat y la retencion siguen usando
+# el default mensual: el parametro nuevo no cambia su contrato.
+GRANULARITIES = ("day", "week", "month")
+DEFAULT_GRANULARITY = "month"
 
 # Minimo de observaciones para publicar una probabilidad de retorno. Por debajo
 # la proporcion es ruido con decimales: "12,5%" sobre 8 casos no es una
@@ -55,42 +61,118 @@ MIN_EVIDENCE = 20
 
 _PERIOD_RE = re.compile(r"^\s*(\d{4})[-/](\d{1,2})\s*$")
 _ISO_PREFIX_RE = re.compile(r"^(\d{4}-\d{2})")
+_DAY_PREFIX_RE = re.compile(
+    r"^\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?=$|[ T])"
+)
+_WEEK_RE = re.compile(r"^\s*(\d{4})-[Ww](\d{1,2})\s*$")
 
 
-def normalize_period(value: Any) -> Optional[str]:
-    """Normaliza un periodo a 'YYYY-MM', o None si no se puede leer.
+def _check_granularity(granularity: str) -> str:
+    if granularity not in GRANULARITIES:
+        raise ValueError(
+            f"Granularidad no soportada: {granularity!r}; "
+            f"use una de {list(GRANULARITIES)}."
+        )
+    return granularity
 
-    Acepta '2026-01', '2026/1', '2026-01-15T00:00:00' y `datetime.date`. Rechaza
-    'ene 2026' y cualquier etiqueta libre: adivinar el periodo de una cadena no
-    parseable seria inventar el eje temporal, que es lo que sostiene todo el
-    calculo.
+
+def _normalize_datetime(value: Any, granularity: str) -> str:
+    if granularity == "day":
+        return value.strftime("%Y-%m-%d")
+    if granularity == "week":
+        return value.strftime("%G-W%V")
+    return value.strftime("%Y-%m")
+
+
+def _parse_day_prefix(text: str) -> Optional[date]:
+    match = _DAY_PREFIX_RE.match(text)
+    if match is None:
+        return None
+    try:
+        return date(
+            int(match.group(1)), int(match.group(2)), int(match.group(3))
+        )
+    except ValueError:
+        return None
+
+
+def normalize_period(
+    value: Any, granularity: str = DEFAULT_GRANULARITY
+) -> Optional[str]:
+    """Normaliza un periodo al formato de la granularidad, o None.
+
+    - `month`: 'YYYY-MM' (contrato historico).
+    - `day`: 'YYYY-MM-DD'.
+    - `week`: 'YYYY-Www' (semana ISO).
+
+    Acepta texto, `datetime.date` y prefijos ISO con hora. Rechaza etiquetas
+    libres: adivinar el periodo de una cadena no parseable seria inventar el eje
+    temporal, que es lo que sostiene todo el calculo.
     """
+    granularity = _check_granularity(granularity)
     if value is None:
         return None
     if hasattr(value, "strftime"):
-        return value.strftime("%Y-%m")
+        return _normalize_datetime(value, granularity)
 
     text = str(value).strip()
     if not text:
         return None
 
-    m = _PERIOD_RE.match(text)
-    if m:
-        year, month = int(m.group(1)), int(m.group(2))
-        return f"{year:04d}-{month:02d}" if 1 <= month <= 12 else None
+    if granularity == "month":
+        match = _PERIOD_RE.match(text)
+        if match:
+            year, month = int(match.group(1)), int(match.group(2))
+            return f"{year:04d}-{month:02d}" if 1 <= month <= 12 else None
+        match = _ISO_PREFIX_RE.match(text)
+        return match.group(1) if match else None
 
-    m = _ISO_PREFIX_RE.match(text)
-    return m.group(1) if m else None
+    if granularity == "day":
+        parsed = _parse_day_prefix(text)
+        return parsed.isoformat() if parsed else None
+
+    # week
+    match = _WEEK_RE.match(text)
+    if match:
+        year, week = int(match.group(1)), int(match.group(2))
+        try:
+            date.fromisocalendar(year, week, 1)
+        except ValueError:
+            return None
+        return f"{year:04d}-W{week:02d}"
+    parsed = _parse_day_prefix(text)
+    if parsed is None:
+        return None
+    iso = parsed.isocalendar()
+    return f"{iso.year:04d}-W{iso.week:02d}"
 
 
-def next_period(period: str) -> str:
-    """El periodo siguiente a 'YYYY-MM'."""
+def next_period(period: str, granularity: str = DEFAULT_GRANULARITY) -> str:
+    """El periodo siguiente al formato de la granularidad."""
+    granularity = _check_granularity(granularity)
+    if granularity == "day":
+        return (date.fromisoformat(period) + timedelta(days=1)).isoformat()
+    if granularity == "week":
+        monday = date.fromisocalendar(
+            int(period[:4]), int(period[6:8]), 1
+        ) + timedelta(weeks=1)
+        iso = monday.isocalendar()
+        return f"{iso.year:04d}-W{iso.week:02d}"
     year, month = int(period[:4]), int(period[5:7])
     return f"{year + 1:04d}-01" if month == 12 else f"{year:04d}-{month + 1:02d}"
 
 
-def period_distance(a: str, b: str) -> int:
-    """Meses entre 'a' y 'b'. Positivo si `b` es posterior, negativo si anterior."""
+def period_distance(
+    a: str, b: str, granularity: str = DEFAULT_GRANULARITY
+) -> int:
+    """Distancia entre dos periodos, en la unidad de la granularidad."""
+    granularity = _check_granularity(granularity)
+    if granularity == "day":
+        return (date.fromisoformat(b) - date.fromisoformat(a)).days
+    if granularity == "week":
+        monday_a = date.fromisocalendar(int(a[:4]), int(a[6:8]), 1)
+        monday_b = date.fromisocalendar(int(b[:4]), int(b[6:8]), 1)
+        return (monday_b - monday_a).days // 7
     ya, ma = int(a[:4]), int(a[5:7])
     yb, mb = int(b[:4]), int(b[5:7])
     return (yb - ya) * 12 + (mb - ma)

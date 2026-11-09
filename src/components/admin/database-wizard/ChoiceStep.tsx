@@ -71,14 +71,15 @@ export const ChoiceStep: React.FC<ChoiceStepProps> = ({
       </div>
 
       {/* Mode Selection Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div role="radiogroup" aria-label="Modo de creación del diccionario" className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Option 1: AI */}
         <div
-          role="button"
+          role="radio"
+          aria-checked={creationMode === 'ai'}
           tabIndex={aiDisabled ? -1 : 0}
           aria-disabled={aiDisabled}
           onClick={() => { if (!aiDisabled) onCreationModeChange('ai'); }}
-          onKeyDown={(e) => { if (!aiDisabled && (e.key === 'Enter' || e.key === ' ')) onCreationModeChange('ai'); }}
+          onKeyDown={(e) => { if (!aiDisabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onCreationModeChange('ai'); } }}
           className={`p-4 rounded-2xl border transition-all text-left space-y-3 relative ${
             aiDisabled
               ? 'border-app-border bg-app-card/40 opacity-60 cursor-not-allowed'
@@ -174,10 +175,11 @@ export const ChoiceStep: React.FC<ChoiceStepProps> = ({
 
         {/* Option 2: Manual */}
         <div
-          role="button"
+          role="radio"
+          aria-checked={creationMode === 'manual'}
           tabIndex={0}
           onClick={() => onCreationModeChange('manual')}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onCreationModeChange('manual'); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onCreationModeChange('manual'); } }}
           className={`p-4 rounded-2xl border transition-all cursor-pointer text-left space-y-3 relative ${
             creationMode === 'manual'
               ? 'border-brand-500 bg-brand-500/10 shadow-lg shadow-brand-500/10 ring-1 ring-brand-500'

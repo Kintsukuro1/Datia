@@ -2,7 +2,7 @@
 
 > **Documento:** Hub de documentación
 > **Estado:** Vigente
-> **Última actualización:** 30 de octubre de 2026
+> **Última actualización:** 06 de noviembre de 2026
 > **Producto:** Dat.ia 1.0.0 — plataforma de analítica conversacional con IA local
 
 Punto de entrada único a la documentación del proyecto. Todos los enlaces son **relativos** y resuelven desde este archivo o desde el repositorio.
@@ -33,9 +33,17 @@ Punto de entrada único a la documentación del proyecto. Todos los enlaces son 
 
 > **Estados:** ✅ vigente y verificado · 🟡 parcial o con secciones de visión · ⚠️ histórico con cifras desactualizadas.
 
+> El [Manual de Usuario](27_MANUAL_DE_USUARIO.md) es un documento de apoyo para operar la plataforma; no forma parte de los 17 entregables académicos.
+
 ---
 
 ## 2. Rutas de lectura
+
+### Para usar la plataforma
+
+1. [Manual de Usuario](27_MANUAL_DE_USUARIO.md) — login, consultas, tablero, proyecciones y administración paso a paso.
+2. [`../README.md`](../README.md) — qué es y cómo se levanta.
+3. [`26_DOCKER.md`](26_DOCKER.md) — despliegue y operación.
 
 ### Para evaluar el proyecto
 
@@ -104,7 +112,7 @@ Punto de entrada único a la documentación del proyecto. Todos los enlaces son 
 | [`18_RETROSPECTIVAS.md`](18_RETROSPECTIVAS.md) | 4 retrospectivas y acciones abiertas |
 | [`19_SRS.md`](19_SRS.md) | 81 requisitos funcionales, criterios y trazabilidad |
 
-### 3.3 Documentos técnicos (20–26)
+### 3.3 Documentos técnicos y de usuario (20–27)
 
 | Documento | Contenido |
 |---|---|
@@ -115,6 +123,7 @@ Punto de entrada único a la documentación del proyecto. Todos los enlaces son 
 | [`24_PRUEBAS.md`](24_PRUEBAS.md) | 844 tests backend, 135 frontend, CI y deuda |
 | [`25_INNOVACION.md`](25_INNOVACION.md) | Aportes diferenciales y lo que no es innovación |
 | [`26_DOCKER.md`](26_DOCKER.md) | Tres compose, imágenes, puertos, backup y seguridad |
+| [`27_MANUAL_DE_USUARIO.md`](27_MANUAL_DE_USUARIO.md) | Guía de uso: login, consultas, tablero, proyecciones y administración |
 
 ### 3.4 Evidencias académicas
 

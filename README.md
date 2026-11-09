@@ -72,6 +72,7 @@ La documentación completa vive en [`DOCS/`](DOCS/README.md), con enlaces relati
 | Recurso | Documento |
 |---|---|
 | Hub de documentación | [`DOCS/README.md`](DOCS/README.md) |
+| Manual de usuario | [`DOCS/27_MANUAL_DE_USUARIO.md`](DOCS/27_MANUAL_DE_USUARIO.md) |
 | Guía rápida Docker (sin Node ni Python) | [`DOCKER-RAPIDO.md`](DOCKER-RAPIDO.md) |
 | Instalación on-prem, TLS, backup y upgrade | [`deploy/README.md`](deploy/README.md) |
 | Planes de implementación | [`plans/README.md`](plans/README.md) |
@@ -284,16 +285,17 @@ El frontend queda en `http://127.0.0.1/` (publicado solo en loopback) y Nginx ha
 
 ## 🧪 Pruebas y verificación
 
-| Comando | Qué prueba | Resultado medido (30/10/2026) |
+| Comando | Qué prueba | Resultado medido (05/11/2026) |
 | :--- | :--- | :--- |
-| `cd backend; venv\Scripts\python.exe -m pytest -q` | Backend completo sobre PostgreSQL real | **844 passed, 244 subtests, 0 failed** (6:36) |
-| `npm test` | Lógica del frontend (Vitest) | **18 archivos, 135 tests, 0 failed** (6,56 s) |
+| `cd backend; venv\Scripts\python.exe -m pytest -q` | Backend completo sobre PostgreSQL real | **888 passed, 244 subtests, 0 failed** (7:05) |
+| `npm test` | Lógica del frontend (Vitest) | **18 archivos, 136 tests, 0 failed** (8,60 s) |
 | `npx tsc --noEmit` | Tipos de todo el proyecto | **exit 0** |
-| `npm run build` | Build de producción | **exit 0** (10,72 s; warning esperado de echarts 665,26 kB) |
+| `npm run build` | Build de producción | **exit 0** (11,66 s; warning esperado de echarts 704,15 kB) |
+| `npm run test:e2e` | Smoke E2E con Playwright | **1 passed** (10,5 s) |
 
 - La suite de backend **no arranca sin PostgreSQL** en `localhost:5432`: crea bases temporales reales, no usa mocks.
 - CI corre backend, frontend, typecheck y build en cada push/PR (`.github/workflows/ci.yml`).
-- **Lo que no está cubierto:** specifications E2E de Playwright, renderizado de componentes React, lint bloqueante y umbral de cobertura. Está declarado en [`DOCS/24_PRUEBAS.md`](DOCS/24_PRUEBAS.md) y en [`DOCS/20_REQUISITOS_NO_FUNCIONALES.md`](DOCS/20_REQUISITOS_NO_FUNCIONALES.md).
+- **Lo que sigue sin cubrir:** E2E de todos los flujos críticos (hoy hay un smoke de login), renderizado de componentes React, cobertura medida y lint de estilo completo (el gate de CI cubre errores F/E9). Está declarado en [`DOCS/24_PRUEBAS.md`](DOCS/24_PRUEBAS.md) y en [`DOCS/20_REQUISITOS_NO_FUNCIONALES.md`](DOCS/20_REQUISITOS_NO_FUNCIONALES.md).
 
 > Si una cifra no coincide con tu corrida, la fuente de verdad es el comando, no este número. El detalle de la estrategia y el mapa de tests está en [`DOCS/24_PRUEBAS.md`](DOCS/24_PRUEBAS.md).
 
@@ -346,6 +348,31 @@ El alcance de una política es la **conexión**: el guard resuelve BLOCKED/MASKE
 Cada cambio de tabla o de política de columna queda registrado en `audit_logs` (`PERMISOS_TABLA` / `PERMISOS_COLUMNA`) con el rol, la conexión y las columnas afectadas; el reset a **Sin política** solo audita cuando borró una fila. En *Administración → Auditoría* se filtra por esos eventos, por familia de acceso (`AUTH_*`), exportaciones (`EXPORTADO_*`), proyecciones (`PROYECCION_*`), política de nulos (`NULL_POLICY_*`) y errores (`ERROR_*`), y el inspector muestra el detalle. El listado no transporta los snapshots de consultas, que pesan hasta ~100 KB cada uno.
 
 La exportación CSV conserva el detalle de los eventos de permisos en la columna **Detalle del Evento** y carga en memoria solo las columnas que escribe (no los snapshots de todas las filas). El tope de 50.000 filas sigue vigente por memoria; si el filtro supera ese tope, el archivo agrega una fila **AVISO** al final con el total real para que no se confunda un export truncado con uno completo.
+
+---
+
+## 🔌 Integración sistema-a-sistema
+
+Para que un sistema corporativo consulte la API sin un usuario interactivo, un
+administrador crea una **credencial de servicio**:
+
+```http
+POST /api/v1/auth/api-clients
+Authorization: Bearer <token-admin>
+Content-Type: application/json
+
+{"name": "ETL-finanzas", "role": "Analista Financiero & Comercial"}
+```
+
+La respuesta incluye `api_key` **una sola vez**. El cliente la envía en
+`X-API-Key`; la credencial queda asociada a una cuenta de servicio con el rol
+elegido, así que RBAC, CLS y `audit_logs` siguen atribuyendo cada consulta. No
+se permite crear una credencial con rol administrador. Para revocarla:
+
+```http
+DELETE /api/v1/auth/api-clients/{id}
+Authorization: Bearer <token-admin>
+```
 
 ---
 

@@ -31,10 +31,16 @@ jobs:
             context: ./backend
             file: ./backend/Dockerfile
             image: datia-backend
+            build_args: |
+              DATIA_VERSION=${{ github.ref_name }}
+              DATIA_COMMIT=${{ github.sha }}
           - service: frontend
             context: .
             file: ./Dockerfile
             image: datia-frontend
+            build_args: |
+              VITE_DEMO_MODE=false
+              VITE_API_BASE_URL=/api/v1
 
     steps:
       - name: Checkout
@@ -80,9 +86,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VITE_DEMO_MODE=false
-            VITE_API_BASE_URL=/api/v1
+          build-args: ${{ matrix.build_args }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
           provenance: true

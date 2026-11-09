@@ -44,6 +44,7 @@ from app.modules.chat_engine.governance_guard import GovernanceGuard
 # y tiene que ser UNA sola definicion. Una copia aca podria divergir y el mismo
 # hecho quedaria en dos bases distintas del CSV de compliance.
 from app.modules.chat_engine.router import _resolve_target_database
+from app.modules.catalog.services.schema_inspector import SchemaInspector
 from app.modules.ml_forecast import ml_service
 from app.modules.ml_forecast.schemas import (
     DEFAULT_HORIZON,
@@ -60,7 +61,7 @@ from app.modules.telemetry_audit.models import AuditLog
 router = APIRouter()
 
 
-async def _in_thread(fn, *args):
+async def _in_thread(fn, *args, **kwargs):
     """Corre un bloque sincronico (SQLAlchemy + backtest) en un hilo con SU sesion.
 
     El SQL y el backtest son sincronos: dentro de un `async def` en serie
@@ -74,11 +75,24 @@ async def _in_thread(fn, *args):
     def _call():
         session = SessionLocal()
         try:
-            return fn(session, *args)
+            return fn(session, *args, **kwargs)
         finally:
             session.close()
 
     return await asyncio.to_thread(_call)
+
+
+def _resolve_projection_connection(db: Session, requested_id: Optional[int]):
+    """Conexión de proyección: explícita, o la ACTIVA; nunca la 1 por default."""
+    if requested_id is not None:
+        return SchemaInspector.resolve_connection(db, requested_id)
+    conn = SchemaInspector.active_connection(db)
+    if conn is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No hay ninguna conexión de datos activa para proyectar.",
+        )
+    return conn
 
 
 def _projection_gates(
@@ -157,7 +171,8 @@ async def run_ml_projection(
     {3, 6, 12}; si no, queda `DEFAULT_HORIZON`. El origen viaja en
     `horizon_source`.
     """
-    conn_id = payload.connection_id or 1
+    conn_record = _resolve_projection_connection(db, payload.connection_id)
+    conn_id = conn_record.id
     target_db_name, user_role_name, budget = _projection_gates(
         current_user, db, payload.question, conn_id
     )
@@ -171,11 +186,14 @@ async def run_ml_projection(
         context = await _in_thread(
             ml_service.load_fact_context, conn_id, user_role_name,
             current_user.is_admin, current_user.role_id, budget,
+            question=payload.question, table_name=payload.table_name,
         )
         analysis = await ml_service.analyze_question(
             payload.question, context["table"], context["candidate_cols"],
             context["heuristic"], horizon,
             payload.metric_column, payload.date_column,
+            resolution=context.get("resolution"),
+            requested_agg=payload.metric_agg,
         )
         horizon = analysis["horizon"]
         data = await _in_thread(
@@ -184,6 +202,9 @@ async def run_ml_projection(
             user_role_name, current_user.is_admin, current_user.role_id, budget,
             context["candidate_cols"], payload.include_partial_period,
             payload.dimension_column,
+            resolution=context.get("resolution"),
+            metric_agg=analysis.get("metric_agg"),
+            granularity=payload.granularity or "month",
         )
     except (ForecastUnavailable, ASTValidationError) as exc:
         # "No se puede calcular" no es un error del servidor: es una respuesta con
@@ -202,7 +223,14 @@ async def run_ml_projection(
                 or ("pedido" if payload.horizon is not None else "default")
             ),
             table=context.get("table"),
+            table_source=context.get("table_source"),
             metric_column=(analysis or {}).get("metric_column"),
+            metric_agg=(
+                (analysis or {}).get("metric_agg")
+                or payload.metric_agg
+                or "sum"
+            ),
+            granularity=payload.granularity or "month",
             date_column=(analysis or {}).get("date_column"),
             connection_id=conn_id,
             analysis_source=(analysis or {}).get("source"),
@@ -224,8 +252,30 @@ async def run_ml_projection(
             rows_returned=0,
             error_message=reason,
             result_snapshot=response.model_dump_json(),
+            required=True,
         )
         return response
+    except Exception as exc:
+        # Un fallo inesperado (conector caido, bug de calculo) tambien tiene que
+        # dejar rastro. Antes producia 500 sin fila en audit_logs.
+        reason = f"ERROR_EJECUCION: {type(exc).__name__}"
+        logger.exception("Proyeccion ML fallo de forma inesperada: %s", exc)
+        _persist_audit_log(
+            db=db,
+            user_id=current_user.id,
+            username=current_user.username,
+            user_role=user_role_name,
+            question_prompt=payload.question,
+            sql_generated=None,
+            validation_status="ERROR_EJECUCION",
+            target_database=target_db_name,
+            execution_time_ms=int((time.perf_counter() - started_at) * 1000),
+            rows_returned=0,
+            error_message=reason,
+            result_snapshot=None,
+            required=True,
+        )
+        raise
 
     response = ProjectionResponse(
         **{k: v for k, v in data.items() if k in ProjectionResponse.model_fields},
@@ -237,15 +287,24 @@ async def run_ml_projection(
         analysis_source=analysis.get("source"),
         horizon_source=analysis.get("horizon_source"),
         connection_id=conn_id,
+        table_source=context.get("table_source"),
     )
 
     if data["available"]:
         # La narrativa se pide SOLO cuando hay numeros que explicar. Sobre un
         # `available=False` el texto del LLM seria una opinion sobre una
         # proyeccion que no existe; el motivo ya lo dice `reason`.
-        narration, narration_source = await ml_service.narrate(data)
-        response.narration = narration
-        response.narration_source = narration_source
+        #
+        # Un fallo de la plantilla/LLM no puede tirar una proyeccion valida:
+        # los numeros ya estan calculados y auditados. Se publica sin prosa.
+        try:
+            narration, narration_source = await ml_service.narrate(data)
+            response.narration = narration
+            response.narration_source = narration_source
+        except Exception as exc:
+            logger.warning("Narracion de proyeccion no disponible: %s", exc)
+            response.narration = None
+            response.narration_source = None
 
     # La proyeccion tambien deja rastro, igual que el forecast del chat: un numero
     # publicado sin registro de quien lo pidio y con que SQL no tiene trazabilidad.
@@ -263,22 +322,27 @@ async def run_ml_projection(
         execution_time_ms=int((time.perf_counter() - started_at) * 1000),
         rows_returned=len(data.get("series") or []),
         result_snapshot=response.model_dump_json(),
+        required=True,
     )
     return response
 
 
 @router.get("/projections/context", response_model=ProjectionContextResponse)
 async def projection_context(
-    connection_id: int = 1,
+    connection_id: Optional[int] = Query(None),
+    table_name: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Any:
-    """Columnas permitidas para el selector manual de metrica, eje y dimension.
+    """Columnas permitidas para el selector manual de tabla, metrica, eje y dimension.
 
     Pasa por los mismos gates que la corrida: el selector no es un inventario
     del esquema, es la lista de lo que este rol puede leer en esta conexion.
+    `table_name` fija la tabla; sin el, se elige por pregunta o la mayor.
     """
     question = "Contexto de columnas para proyeccion"
+    conn_record = _resolve_projection_connection(db, connection_id)
+    connection_id = conn_record.id
     _, user_role_name, budget = _projection_gates(
         current_user, db, question, connection_id
     )
@@ -286,6 +350,7 @@ async def projection_context(
         data = await _in_thread(
             ml_service.projection_context, connection_id, user_role_name,
             current_user.is_admin, current_user.role_id, budget,
+            table_name=table_name,
         )
     except (ForecastUnavailable, ASTValidationError) as exc:
         return ProjectionContextResponse(
@@ -397,3 +462,44 @@ async def verify_ml_projection(
         result_snapshot=response.model_dump_json(),
     )
     return response
+
+
+@router.get("/projections/{audit_log_id}", response_model=ProjectionResponse)
+async def get_ml_projection(
+    audit_log_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Devuelve el resultado publicado de una proyeccion propia ya auditada.
+
+    El historial solo lista un resumen; para revisar los pasos, la banda y la
+    lectura de una corrida anterior se sirve el snapshot tal como se publico.
+    Solo el dueño del registro puede leerlo; el snapshot no se recalcula ni se
+    completa con datos actuales (para eso esta `/verification`).
+    """
+    audit = (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.id == audit_log_id,
+            AuditLog.user_id == current_user.id,
+            AuditLog.validation_status == "PROYECCION_ML",
+        )
+        .first()
+    )
+    if audit is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No existe una proyeccion auditada tuya con ese id.",
+        )
+
+    snapshot = ml_service.parse_projection_snapshot(audit.result_snapshot)
+    if snapshot is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El registro de auditoria no tiene un snapshot de proyeccion legible.",
+        )
+    # Los snapshots viejos no guardaban su propio id; la fila de auditoria si lo
+    # tiene y es el que necesitan el export y la verificacion.
+    if snapshot.audit_log_id is None:
+        snapshot.audit_log_id = audit.id
+    return snapshot

@@ -9,7 +9,7 @@ import { createRoot } from 'react-dom/client';
 const spies = vi.hoisted(() => ({
   notify: vi.fn(),
   getThreads: vi.fn(async () => []),
-  getSuggestions: vi.fn(async () => []),
+  getSuggestions: vi.fn(async () => ({ suggestions: [], builder: null })),
   sendQueryStreaming: vi.fn(),
   sendQuery: vi.fn(),
   getConnectors: vi.fn(async () => []),

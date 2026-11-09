@@ -6,6 +6,9 @@ import { useAdminConnectors } from '../../features/admin/hooks/useAdminConnector
 
 interface AdminConnectorsTabProps {
   connectors: CorporateConnection[];
+  /** `false` mientras no llegó la primera respuesta (no es "no hay fuentes"). */
+  connectorsLoaded?: boolean;
+  connectorsError?: string | null;
   onOpenCreateModal: () => void;
   onOpenEditModal: (conn: CorporateConnection) => void;
   onDeleteConnector: (id: number, name: string) => void;
@@ -15,6 +18,8 @@ interface AdminConnectorsTabProps {
 
 export const AdminConnectorsTab: React.FC<AdminConnectorsTabProps> = ({
   connectors,
+  connectorsLoaded = true,
+  connectorsError = null,
   onOpenCreateModal: _onOpenCreateModal,
   onOpenEditModal,
   onDeleteConnector,
@@ -213,8 +218,42 @@ export const AdminConnectorsTab: React.FC<AdminConnectorsTabProps> = ({
         </div>
       </div>
 
+      {connectorsError && counters.total > 0 && (
+        <div
+          role="alert"
+          className="px-3.5 py-2.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-300 text-xs"
+        >
+          {connectorsError} La lista sigue mostrando la última respuesta confirmada por el servidor.
+        </div>
+      )}
+
       {/* Empty States */}
-      {counters.total === 0 ? (
+      {counters.total === 0 && !connectorsLoaded ? (
+        <div className="text-center py-12 border border-dashed border-app-border rounded-2xl p-8 bg-app-bg/50">
+          <RefreshCw className="w-6 h-6 animate-spin text-app-muted mx-auto" />
+          <p className="mt-3 text-xs text-app-muted">Consultando las fuentes de datos del servidor…</p>
+        </div>
+      ) : counters.total === 0 && connectorsError ? (
+        <div className="text-center py-12 border border-dashed border-rose-300 dark:border-rose-800 rounded-2xl p-8 space-y-3 bg-rose-500/5">
+          <AlertCircle className="w-8 h-8 text-rose-500 mx-auto" />
+          <div className="space-y-1">
+            <h4 className="text-sm font-bold text-app-text">No se pudo consultar las fuentes de datos</h4>
+            <p role="alert" className="text-xs text-rose-700 dark:text-rose-300 max-w-md mx-auto">
+              {connectorsError} La lista no se muestra vacía porque no haya fuentes: el servidor no confirmó ninguna.
+            </p>
+          </div>
+          {onRefreshConnectors && (
+            <button
+              type="button"
+              onClick={onRefreshConnectors}
+              className="inline-flex items-center gap-1.5 text-xs bg-app-card hover:bg-app-hover text-app-text border border-app-border font-bold px-4 py-2 rounded-xl transition-colors cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Reintentar</span>
+            </button>
+          )}
+        </div>
+      ) : counters.total === 0 ? (
         <div className="text-center py-12 border border-dashed border-app-border rounded-2xl p-8 space-y-4 bg-app-bg/50">
           <div className="w-12 h-12 rounded-full bg-brand-500/10 text-brand-600 dark:text-brand-300 flex items-center justify-center mx-auto border border-brand-500/20 shadow-xs">
             <Database className="w-6 h-6" />

@@ -1,9 +1,8 @@
-import os
 import unittest
 from unittest.mock import patch, MagicMock
 from app.modules.chat_engine.ast_validator import ASTValidator, ASTValidationError
 from app.modules.chat_engine.engine import QueryEngine
-from app.modules.admin_catalog.models import DatabaseType
+from app.modules.chat_engine.sql_executor import SQLExecutor
 
 class TestCLSSelectStar(unittest.IsolatedAsyncioTestCase):
     """
@@ -113,13 +112,12 @@ class TestCLSSelectStar(unittest.IsolatedAsyncioTestCase):
     @patch("app.modules.chat_engine.llm_service.LLMService.generate_completion")
     @patch("app.modules.chat_engine.dynamic_schema.DynamicSchemaPruningService.get_physical_db_tables", return_value=set())
     @patch("app.modules.chat_engine.dynamic_schema.DynamicSchemaPruningService.get_physical_table_columns")
-    async def test_self_healing_fallback_respects_cls(
+    async def test_self_healing_failure_does_not_invent_an_answer(
         self, mock_get_cols, mock_physical_tables, mock_llm
     ):
         """
-        Simulates that when primary SQL fails and self-healing LLM correction also fails,
-        the emergency fallback path (SELECT * FROM table) passes through ASTValidator
-        and enforces Column-Level Security (CLS) by masking blocked columns.
+        Si el SQL inicial y el self-healing fallan, NO se ejecuta un fallback
+        `SELECT *` de una tabla arbitraria. El motor devuelve un error honesto.
         """
         mock_get_cols.return_value = [
             {"name": "id", "type": "INTEGER"},
@@ -136,12 +134,12 @@ class TestCLSSelectStar(unittest.IsolatedAsyncioTestCase):
         db.query.return_value.filter.return_value.first.return_value = conn
         db.query.return_value.filter.return_value.order_by.return_value.first.return_value = conn
 
-        with patch("app.modules.chat_engine.sql_executor.SQLExecutor.execute_raw_sql") as mock_exec:
-            # SQL inicial falla, SQL auto-corregido falla, fallback de emergencia responde.
+        with patch("app.modules.chat_engine.sql_executor.SQLExecutor.execute_raw_sql") as mock_exec, \
+             patch.object(SQLExecutor, "persist_learning_memory") as mock_memory:
+            # SQL inicial falla y el auto-corregido tambien: no hay tercera llamada.
             mock_exec.side_effect = [
                 Exception("no such column: non_existent"),
                 Exception("no such column: non_existent"),
-                [{"id": 1, "nombre": "Juan"}],
             ]
 
             with patch.object(QueryEngine, "get_allowed_tables_for_role", return_value={"dim_empleados"}):
@@ -153,11 +151,14 @@ class TestCLSSelectStar(unittest.IsolatedAsyncioTestCase):
                         db=db,
                     )
 
-                    executed_sql = response.traceability.sql_executed.lower()
+                    executed_sql = (response.traceability.sql_executed or "").lower()
                     self.assertNotIn("salario_bruto", executed_sql)
-                    self.assertIn("dim_empleados", executed_sql)
-                    self.assertIn("id", executed_sql)
-                    self.assertIn("nombre", executed_sql)
+                    self.assertNotIn("select * from", executed_sql)
+                    self.assertEqual(response.response_type, "error")
+                    self.assertEqual(response.traceability.validation_status, "ERROR_EJECUCION")
+                    self.assertEqual(response.traceability.rows_returned, 0)
+                    self.assertEqual(mock_exec.call_count, 2, "no debe existir un tercer intento arbitrario")
+                    mock_memory.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

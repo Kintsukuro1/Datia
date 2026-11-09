@@ -209,6 +209,13 @@ class TestEndpointsSinRolAsignado(unittest.TestCase):
 
     # --- 3. Contrapunto: el Consultor con rol sigue entrando ---------------
 
+    def test_catalogo_semantico_es_solo_admin(self):
+        """El catálogo lista metadata de todas las conexiones: no es lectura de rol."""
+        user = self._cuenta(role_name=ROLE_USUARIO)
+        resp = self.client.get("/api/v1/catalog", headers=self._headers(user))
+        self.assertEqual(resp.status_code, 403, resp.text[:300])
+        self.assertNotIn("table_name", resp.text)
+
     def test_consultor_con_rol_asignado_sigue_recibiendo_su_diccionario(self):
         """El corte es "sin rol", no "es el Consultor".
 

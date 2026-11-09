@@ -1,5 +1,6 @@
 import datetime
 import math
+import re
 import secrets
 import uuid
 from typing import List, Any, Optional
@@ -10,10 +11,13 @@ from app.api.deps import (
     get_db, get_current_user, get_current_admin, display_role_name, is_admin_user,
     _persist_audit_log,
 )
-from app.core.security import verify_password, get_password_hash, create_access_token, decode_token_payload
+from app.core.security import (
+    verify_password, get_password_hash, create_access_token, decode_token_payload,
+    generate_api_key, hash_api_key,
+)
 from app.core.config import settings
 from app.core.time import utcnow_naive
-from app.modules.auth.models import User, Role, Domain, UserSession
+from app.modules.auth.models import User, Role, Domain, UserSession, ApiClient
 from app.modules.admin_catalog.models import SemanticCatalog
 from app.core.constants import (
     MAX_FAILED_LOGIN_ATTEMPTS, ACCOUNT_LOCKOUT_DURATION_MINUTES, ADMIN_ROLES,
@@ -23,6 +27,7 @@ from app.modules.auth.schemas import (
     UserLogin, UserAdminCreate, UserCreationResponse, UserOut, Token,
     PasswordChangeRequest, PasswordResetResponse, SessionOut, UserRoleUpdate,
     RoleCreate, RoleUpdate, RoleOut, DomainCreate, DomainUpdate, DomainOut,
+    ApiClientCreate, ApiClientOut, ApiClientCreated,
     validate_password_strength
 )
 
@@ -158,6 +163,136 @@ def create_user(
         temporary_password=temporary_password,
         user=user_out,
     )
+
+def _api_client_out(client: ApiClient) -> ApiClientOut:
+    user = client.user
+    return ApiClientOut(
+        id=client.id,
+        name=client.name,
+        user_id=client.user_id,
+        username=user.username if user else "",
+        role_name=display_role_name(user) if user else None,
+        is_active=client.is_active,
+        created_at=client.created_at,
+        last_used_at=client.last_used_at,
+    )
+
+
+@router.post("/api-clients", response_model=ApiClientCreated, status_code=status.HTTP_201_CREATED)
+def create_api_client(
+    payload: ApiClientCreate,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Crea una credencial de servicio (Admin only) y devuelve la clave una vez.
+
+    La cuenta de servicio es un `User` sin privilegios de admin y con el rol
+    elegido, así que la auditoría y el RBAC no necesitan un camino paralelo. No
+    se permite asociar la credencial al rol administrador: una clave de larga
+    duración con control total es justo lo que este mecanismo debe evitar.
+    """
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="El nombre del cliente no puede estar vacío.")
+    if db.query(ApiClient).filter(func.lower(ApiClient.name) == name.lower()).first():
+        raise HTTPException(status_code=409, detail=f"Ya existe un cliente API llamado '{name}'.")
+
+    role_name = (payload.role or "").strip()
+    role = db.query(Role).filter(Role.name == role_name).first()
+    if role is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El rol '{role_name}' no existe en el catálogo.",
+        )
+    if role.name in ADMIN_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede crear una credencial de servicio con rol administrador.",
+        )
+
+    slug = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")[:30] or "cliente"
+    username = f"svc_{slug}_{uuid.uuid4().hex[:8]}"[:50]
+    service_user = User(
+        username=username,
+        email=None,
+        hashed_password=get_password_hash(secrets.token_urlsafe(32)),
+        is_admin=False,
+        is_active=True,
+        role_id=role.id,
+        must_change_password=False,
+        temp_password_issued_at=None,
+        failed_login_attempts=0,
+        locked_until=None,
+    )
+    db.add(service_user)
+    db.flush()
+
+    raw_key = generate_api_key()
+    client = ApiClient(
+        name=name,
+        key_hash=hash_api_key(raw_key),
+        user_id=service_user.id,
+        is_active=True,
+    )
+    db.add(client)
+    db.commit()
+    db.refresh(client)
+    db.refresh(service_user)
+
+    _persist_audit_log(
+        db=db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=display_role_name(current_admin),
+        question_prompt=(
+            f"Alta de cliente API '{client.name}' (id={client.id}) con la cuenta "
+            f"de servicio '{service_user.username}' y rol '{role.name}'."
+        ),
+        sql_generated=None,
+        validation_status="AUTH_API_CLIENT_CREADO",
+        target_database="metadata",
+    )
+    out = _api_client_out(client)
+    return ApiClientCreated(**out.model_dump(), api_key=raw_key)
+
+
+@router.get("/api-clients", response_model=List[ApiClientOut])
+def list_api_clients(
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Lista credenciales de servicio sin exponer hashes ni claves (Admin only)."""
+    clients = db.query(ApiClient).order_by(ApiClient.id.desc()).all()
+    return [_api_client_out(c) for c in clients]
+
+
+@router.delete("/api-clients/{client_id}")
+def revoke_api_client(
+    client_id: int,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Revoca una credencial y desactiva su cuenta de servicio (Admin only)."""
+    client = db.query(ApiClient).filter(ApiClient.id == client_id).first()
+    if client is None:
+        raise HTTPException(status_code=404, detail="Cliente API no encontrado.")
+    client.is_active = False
+    if client.user:
+        client.user.is_active = False
+    db.commit()
+
+    _persist_audit_log(
+        db=db,
+        user_id=current_admin.id,
+        username=current_admin.username,
+        user_role=display_role_name(current_admin),
+        question_prompt=f"Revocación del cliente API '{client.name}' (id={client.id}).",
+        sql_generated=None,
+        validation_status="AUTH_API_CLIENT_REVOCADO",
+        target_database="metadata",
+    )
+    return {"message": f"El cliente API '{client.name}' fue revocado."}
+
 
 @router.post("/login", response_model=Token)
 def login_user(

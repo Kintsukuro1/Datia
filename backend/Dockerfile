@@ -44,6 +44,13 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && \
 
 WORKDIR /app
 
+# Build info para /version y soporte. El release pasa el tag y el SHA; un
+# `docker build` local deja "dev".
+ARG DATIA_VERSION=dev
+ARG DATIA_COMMIT=
+ENV DATIA_VERSION=$DATIA_VERSION \
+    DATIA_COMMIT=$DATIA_COMMIT
+
 # COPY explicito, no `COPY . .`: la imagen no lleva tests, .env, venv ni datos.
 COPY app ./app
 COPY main.py ./

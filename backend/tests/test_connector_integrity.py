@@ -18,7 +18,10 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
 from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
-from app.modules.admin_catalog.schemas import CorporateConnectionCreate
+from app.modules.admin_catalog.schemas import (
+    CorporateConnectionCreate,
+    CorporateConnectionUpdate,
+)
 from app.modules.catalog.services.connector_service import ConnectorDomainService
 from app.modules.catalog.services.catalog_service import CatalogDomainService
 
@@ -111,6 +114,35 @@ class TestConnectorCreateDatabaseFailure(unittest.TestCase):
                 ConnectorDomainService.create_connector(self.db, conn_in)
 
         m_engine.dispose.assert_called_once()
+
+    def test_uploaded_connector_database_name_cannot_be_repointed(self):
+        """Cambiar database_name de un uploaded redirigiría el DROP de delete."""
+        conn = CorporateConnection(
+            name="probe_uploaded_guard",
+            db_type=DatabaseType.POSTGRESQL,
+            host="localhost",
+            port=5432,
+            database_name="probe_real_db",
+            username="probe_user",
+            encrypted_password="",
+            is_uploaded=True,
+        )
+        self.db.add(conn)
+        self.db.commit()
+        self.db.refresh(conn)
+        try:
+            with self.assertRaises(Exception) as ctx:
+                ConnectorDomainService.update_connector(
+                    self.db,
+                    conn.id,
+                    CorporateConnectionUpdate(database_name="probe_other_db"),
+                )
+            self.assertEqual(getattr(ctx.exception, "status_code", None), 400)
+        finally:
+            self.db.query(CorporateConnection).filter(
+                CorporateConnection.id == conn.id
+            ).delete()
+            self.db.commit()
 
     def test_creation_succeeds_when_database_exists(self):
         """El camino bueno no se rompió: si la base ya existe, se crea el conector."""

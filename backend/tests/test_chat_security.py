@@ -104,6 +104,36 @@ class TestChatSecurity(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertIn("999999", resp.text)
 
+    def test_query_without_connection_id_does_not_fall_back_to_demo(self):
+        """Sin connection_id se usa la ACTIVA; si no hay, se diagnostica."""
+        from app.modules.admin_catalog.models import CorporateConnection
+
+        original = {
+            c.id: c.is_active
+            for c in self.db.query(CorporateConnection).all()
+        }
+        try:
+            for conn in self.db.query(CorporateConnection).all():
+                conn.is_active = False
+            self.db.commit()
+
+            resp = self.client.post(
+                "/api/v1/chat/query",
+                json={"question": "¿Cuántos registros hay?"},
+                headers=self.headers,
+            )
+            self.assertEqual(resp.status_code, 200, resp.text[:400])
+            data = resp.json()
+            self.assertEqual(
+                data.get("traceability", {}).get("validation_status"),
+                "SIN_CONEXION_ACTIVA",
+            )
+            self.assertTrue(data.get("no_active_connection"))
+        finally:
+            for conn in self.db.query(CorporateConnection).all():
+                conn.is_active = original.get(conn.id, conn.is_active)
+            self.db.commit()
+
     def test_suggestions_with_missing_connection_returns_404(self):
         """Las sugerencias resuelven la conexion con el mismo criterio que el chat."""
         resp = self.client.get(

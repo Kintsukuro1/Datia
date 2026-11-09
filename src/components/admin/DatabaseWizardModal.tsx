@@ -119,6 +119,10 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   // Descarta respuestas viejas del health check si el paso se re-entra o el
   // usuario cambia de conexión mientras una corrida anterior está en vuelo.
   const llmCheckIdRef = useRef(0);
+  // Invalida operaciones asincronicas del wizard al cerrarlo/reabrirlo: una
+  // respuesta vieja (upload, test, generacion) no puede escribir el estado de la
+  // sesion nueva.
+  const operationIdRef = useRef(0);
 
   const llmConfig = React.useMemo(
     () => ({
@@ -217,6 +221,8 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   const generationPct = Math.min(96, Math.max(3, Math.round((generationElapsed / generationExpectedSeconds) * 100)));
 
   const resetState = () => {
+    operationIdRef.current += 1;
+    llmCheckIdRef.current += 1;
     setCurrentStep('input');
     setIngestionMode(initialMode);
     setCreationMode('ai');
@@ -287,6 +293,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
 
   const handleIngestDatabase = async (e: React.FormEvent) => {
     e.preventDefault();
+    const opId = ++operationIdRef.current;
     setErrorMessage(null);
     setIsProcessing(true);
 
@@ -319,14 +326,15 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
         });
       }
 
+      // La fuente ya existe en el backend: el refresh del padre corre aunque el
+      // wizard se haya cerrado mientras el POST estaba en vuelo.
+      onSuccess();
+      if (opId !== operationIdRef.current) return;
       setRegisteredConnection(createdConn);
       setIsProcessing(false);
       setCurrentStep('choice');
-      // La fuente ya existe en el backend. Refrescar aca (y no solo al
-      // terminar el wizard) cubre al usuario que cierra en el paso 2 y
-      // tambien al que cierra mientras el POST todavia estaba en vuelo.
-      onSuccess();
     } catch (err) {
+      if (opId !== operationIdRef.current) return;
       const msg = getApiErrorMessage(err, 'Error al conectar/ingresar la fuente de datos.', true);
       setErrorMessage(msg);
       setIsProcessing(false);
@@ -337,6 +345,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   // No valida usuario ni contraseña, y el mensaje del backend dice qué se
   // verificó.
   const handleTestRemoteConnection = async () => {
+    const opId = ++operationIdRef.current;
     setIsTestingConnection(true);
     setTestResult(null);
     const result = await connectorService.testConnection({
@@ -350,6 +359,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
       is_active: remoteForm.isActive,
       is_uploaded: false,
     });
+    if (opId !== operationIdRef.current) return;
     setTestResult(result);
     setIsTestingConnection(false);
   };
@@ -357,6 +367,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   // --- Step 2 to Step 3/4: Proceed with AI or Manual ---
   const handleStartDictionaryCreation = async () => {
     if (!registeredConnection) return;
+    const opId = ++operationIdRef.current;
     setErrorMessage(null);
 
     if (creationMode === 'ai') {
@@ -388,10 +399,12 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
         // Phase 1: Introspect
         setGenerationPhaseIndex(0);
         await sleep(1100);
+        if (opId !== operationIdRef.current) return;
 
         // Phase 2: Samples
         setGenerationPhaseIndex(1);
         await sleep(1200);
+        if (opId !== operationIdRef.current) return;
 
         // Phase 3: enriquecimiento real con el modelo local (acotado en el
         // backend: una llamada por lote de columnas, techo por llamada y
@@ -407,13 +420,16 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
         } catch {
           enrich = null;
         }
+        if (opId !== operationIdRef.current) return;
 
         // Phase 4: Compile
         setGenerationPhaseIndex(3);
         await sleep(900);
+        if (opId !== operationIdRef.current) return;
 
         // Load resulting data dictionary
         const dict = await catalogService.getDataDictionary(registeredConnection.id);
+        if (opId !== operationIdRef.current) return;
         setDictionaryData(dict);
         initializeEditedColumns(dict);
 
@@ -437,6 +453,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
         }
         setCurrentStep('review');
       } catch {
+        if (opId !== operationIdRef.current) return;
         // Acá solo puede caer `getDataDictionary`: `autoEnrich` ya se manejó
         // arriba. Antes esta rama reintentaba la carga; ahora el único fallo
         // posible es la introspección, así que se reporta de una.
@@ -448,11 +465,13 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
       setIsProcessing(true);
       try {
         const dict = await catalogService.getDataDictionary(registeredConnection.id);
+        if (opId !== operationIdRef.current) return;
         setDictionaryData(dict);
         initializeEditedColumns(dict);
         setIsProcessing(false);
         setCurrentStep('review');
       } catch {
+        if (opId !== operationIdRef.current) return;
         setIsProcessing(false);
         setErrorMessage('No se pudo introspeccionar la base de datos para edición manual.');
       }
@@ -493,6 +512,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   // --- Step 4: Save reviewed dictionary ---
   const handleSaveDictionaryReview = async () => {
     if (!registeredConnection || !dictionaryData) return;
+    const opId = ++operationIdRef.current;
     setIsSavingReview(true);
     setErrorMessage(null);
 
@@ -531,6 +551,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
       }
 
       if (failed.length > 0) {
+        if (opId !== operationIdRef.current) return;
         setIsSavingReview(false);
         setErrorMessage(
           `No se pudieron guardar ${failed.length} de ${pending.length} columnas (por ejemplo ${failed
@@ -540,11 +561,19 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
         return;
       }
 
+      if (opId !== operationIdRef.current) {
+        // El guardado terminó después de cerrar el wizard: los datos ya están
+        // en el servidor y el padre debe refrescarse, pero no se toca la UI.
+        onSuccess();
+        return;
+      }
+
       setIsSavingReview(false);
 
       // Audit for NULL values across the connection
       try {
         const audit = await catalogService.getNullsAudit(registeredConnection.id);
+        if (opId !== operationIdRef.current) return;
         if (audit && audit.has_nulls && audit.tables && audit.tables.length > 0) {
           setNullsData(audit);
           setCurrentStep('nulls_check');
@@ -554,9 +583,11 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
         // If audit encounters an issue, proceed to complete directly
       }
 
+      if (opId !== operationIdRef.current) return;
       setCurrentStep('complete');
       onSuccess();
     } catch {
+      if (opId !== operationIdRef.current) return;
       setErrorMessage('Error al persistir algunas modificaciones del diccionario.');
       setIsSavingReview(false);
     }
@@ -565,15 +596,18 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
   // --- Step 4.5: Apply chosen NULL remediation policy ---
   const handleApplyNullPolicy = async () => {
     if (!registeredConnection) return;
+    const opId = ++operationIdRef.current;
     setIsApplyingNullPolicy(true);
     setErrorMessage(null);
 
     try {
       await catalogService.applyNullPolicy(registeredConnection.id, selectedNullPolicy);
+      onSuccess();
+      if (opId !== operationIdRef.current) return;
       setIsApplyingNullPolicy(false);
       setCurrentStep('complete');
-      onSuccess();
     } catch (err) {
+      if (opId !== operationIdRef.current) return;
       setIsApplyingNullPolicy(false);
       setErrorMessage(getApiErrorMessage(err, 'Error al aplicar el tratamiento de valores nulos.', true));
     }

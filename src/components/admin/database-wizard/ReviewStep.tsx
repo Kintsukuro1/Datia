@@ -45,7 +45,7 @@ export const ReviewStep: React.FC<ReviewStepProps> = ({
         <h4 className="text-sm font-bold text-app-text">Revisión y validación del diccionario de datos</h4>
         <p className="text-xs text-app-muted leading-relaxed max-w-2xl">
           {creationMode === 'ai'
-            ? 'Verificá que la IA haya generado descripciones correctas. Podés ajustar cualquier campo antes de autorizar.'
+            ? 'La IA usó un perfil calculado sobre los datos de cada columna. Las columnas con política MASKED/BLOCKED se describieron solo con agregados, sin valores crudos. Verificá que las descripciones sean correctas y ajustá lo que haga falta antes de autorizar.'
             : 'Definí los nombres de negocio, fórmulas y descripciones para cada columna detectada.'}
         </p>
       </div>

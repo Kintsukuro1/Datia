@@ -25,9 +25,9 @@ interface MandatoryPasswordChangeModalProps {
 }
 
 // Regla dura única del backend: `backend/app/modules/auth/schemas.py`
-// (`MIN_PASSWORD_LENGTH = 6`). No exige composición: por eso mayúsculas,
+// (`MIN_PASSWORD_LENGTH = 12`). No exige composición: por eso mayúsculas,
 // números y símbolos alimentan el medidor como recomendación, no bloquean.
-const MIN_PASSWORD_LENGTH = 6;
+const MIN_PASSWORD_LENGTH = 12;
 
 export interface PasswordStrength {
   score: number;

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { connectorService } from '../services/connector_service';
 import { CorporateConnection } from '../services/connector_service';
 import { GoldenQuery, learningMemoryService } from '../services/learning_memory_service';
@@ -22,6 +22,9 @@ export function useAdminLearned() {
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Ver `useAdminCatalog`: la respuesta de la fuente anterior no puede pisar la
+  // lista de la fuente actual.
+  const itemsSeqRef = useRef(0);
 
   useEffect(() => {
     connectorService
@@ -43,12 +46,17 @@ export function useAdminLearned() {
   }, []);
 
   const fetchItems = useCallback(async (connectionId: number) => {
+    const seq = ++itemsSeqRef.current;
     setIsLoading(true);
     setError(null);
+    setItems([]);
+    setLoaded(false);
     try {
       const data = await learningMemoryService.listGoldenQueries(connectionId);
+      if (seq !== itemsSeqRef.current) return;
       setItems(data.items);
     } catch (err: any) {
+      if (seq !== itemsSeqRef.current) return;
       // No se pisa la lista con []: "no se pudo leer" y "no hay nada aprendido"
       // son afirmaciones distintas y esta pantalla es de control.
       setItems([]);
@@ -56,8 +64,10 @@ export function useAdminLearned() {
         getApiErrorMessage(err, 'No se pudo leer la memoria de aprendizaje del servidor. No se puede afirmar qué se está inyectando en el prompt.')
       );
     } finally {
-      setIsLoading(false);
-      setLoaded(true);
+      if (seq === itemsSeqRef.current) {
+        setIsLoading(false);
+        setLoaded(true);
+      }
     }
   }, []);
 
@@ -92,7 +102,12 @@ export function useAdminLearned() {
     connectors,
     selectedConnectionId,
     selectedConnector: connectors.find((c) => c.id === selectedConnectionId) || null,
-    handleSelectConnection: setSelectedConnectionId,
+    handleSelectConnection: (id: number) => {
+      // No se espera al efecto: la lista anterior no puede verse bajo otra fuente.
+      setItems([]);
+      setLoaded(false);
+      setSelectedConnectionId(id);
+    },
     items,
     isLoading,
     loaded,

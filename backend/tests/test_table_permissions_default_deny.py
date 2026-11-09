@@ -22,12 +22,14 @@ import unittest
 from fastapi.testclient import TestClient
 
 from main import app
+from app.core.constants import ROLE_USUARIO
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
 from app.modules.admin_catalog.models import (
     CorporateConnection, DatabaseType, RoleTablePermission,
 )
 from app.modules.auth.models import Role
+from app.modules.catalog.services.connector_service import ConnectorDomainService
 
 from conftest import make_auth_headers
 
@@ -113,6 +115,31 @@ class TestDefaultDenyPermissions(unittest.TestCase):
                 "Subir un dataset no puede crear permisos: default-deny significa "
                 "que sin decision explicita no hay acceso.",
             )
+        finally:
+            if conn_id:
+                self.client.delete(f"/api/v1/connectors/{conn_id}", headers=self.headers)
+
+    def test_revoke_table_is_case_insensitive_and_leaves_one_deny(self):
+        """Revocar con otro case no puede dejar el allow original ganando."""
+        conn_id = None
+        try:
+            body = self._upload_csv("Case Sensitive Permission")
+            conn_id = body["id"]
+            table = body["detected_tables"][0]
+            role = self._role(ROLE_USUARIO)
+            self.assertIsNotNone(role)
+
+            ConnectorDomainService.set_role_table_permissions(
+                self.db, conn_id, role.id, [table], True
+            )
+            ConnectorDomainService.set_role_table_permissions(
+                self.db, conn_id, role.id, [table.upper()], False
+            )
+
+            rows = self._perms_for(conn_id)
+            self.assertEqual(len(rows), 1, "el revoke con otro case creó otra fila")
+            self.assertFalse(rows[0].is_allowed)
+            self.assertEqual(rows[0].table_name, table.lower())
         finally:
             if conn_id:
                 self.client.delete(f"/api/v1/connectors/{conn_id}", headers=self.headers)

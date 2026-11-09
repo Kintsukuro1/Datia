@@ -29,9 +29,11 @@ interface ChatMessageItemProps {
   user: User | null;
   userRole: string;
   activeThreadId?: string | null;
+  /** Conexión del hilo, para resultados viejos sin `result.connection_id`. */
+  connectionId?: number;
   onOpenTraceability: (traceability: QueryResult['traceability']) => void;
   onEditPrompt?: (question: string) => void;
-  onFeedback?: (result: QueryResult, rating: 'positive' | 'negative') => void;
+  onFeedback?: (result: QueryResult, rating: 'positive' | 'negative') => void | Promise<unknown>;
   onFollowUp?: (prompt: string) => void;
 }
 
@@ -73,6 +75,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
   user,
   userRole,
   activeThreadId,
+  connectionId,
   onOpenTraceability,
   onEditPrompt,
   onFeedback,
@@ -82,7 +85,9 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
   const { copied: copiedSql, copy: copySql } = useCopyFeedback();
   const { copied: copiedShareLink, copy: copyShareLink } = useCopyFeedback();
   const [isGolden, setIsGolden] = useState(false);
+  const [isTogglingGolden, setIsTogglingGolden] = useState(false);
   const [feedbackStatus, setFeedbackStatus] = useState<'positive' | 'negative' | null>(null);
+  const [isSendingFeedback, setIsSendingFeedback] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
   const [isPinning, setIsPinning] = useState(false);
   const [isSqlOpen, setIsSqlOpen] = useState(false);
@@ -121,14 +126,15 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
   };
 
   const handleToggleGolden = async () => {
-    if (!result.traceability?.sql_executed) return;
+    if (!result.traceability?.sql_executed || isTogglingGolden) return;
     const nextState = !isGolden;
     setIsGolden(nextState);
+    setIsTogglingGolden(true);
     try {
       const res = await queryService.toggleGoldenQuery({
         question: result.question,
         sql: result.traceability.sql_executed,
-        connection_id: (result as any).connection_id || 1,
+        connection_id: result.connection_id ?? connectionId,
         is_golden: nextState,
       });
       // toggleGoldenQuery no lanza: devuelve {success:false}. El catch de abajo
@@ -142,6 +148,8 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
     } catch {
       setIsGolden(!nextState);
       notify('error', 'No se pudo guardar la consulta dorada.');
+    } finally {
+      setIsTogglingGolden(false);
     }
   };
 
@@ -168,7 +176,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
 
       const ok = await queryService.pinWidget({
         title: result.question,
-        connection_id: (result as any).connection_id || 1,
+        connection_id: result.connection_id ?? connectionId,
         chart_type: result.chart_type || 'bar',
         chart_option_json: optionToSave ? JSON.stringify(optionToSave) : undefined,
         kpis_json: result.kpis ? JSON.stringify(result.kpis) : undefined,
@@ -192,10 +200,20 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
     }
   };
 
-  const handleSendRating = (rating: 'positive' | 'negative') => {
+  const handleSendRating = async (rating: 'positive' | 'negative') => {
+    if (isSendingFeedback) return;
+    const previous = feedbackStatus;
     setFeedbackStatus(rating);
-    if (onFeedback) {
-      onFeedback(result, rating);
+    setIsSendingFeedback(true);
+    try {
+      const res = (await onFeedback?.(result, rating)) as { success?: boolean } | void;
+      // El service no lanza: devuelve {success:false}. Sin este rollback, el
+      // pulgar quedaba marcado como si el feedback se hubiera guardado.
+      if (res && res.success === false) setFeedbackStatus(previous);
+    } catch {
+      setFeedbackStatus(previous);
+    } finally {
+      setIsSendingFeedback(false);
     }
   };
 
@@ -323,8 +341,10 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
             <div className="flex items-center space-x-1">
               <button
                 type="button"
-                onClick={() => handleSendRating('positive')}
-                className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 cursor-pointer ${
+                onClick={() => void handleSendRating('positive')}
+                disabled={isSendingFeedback}
+                aria-pressed={feedbackStatus === 'positive'}
+                className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 cursor-pointer disabled:cursor-wait ${
                   feedbackStatus === 'positive'
                     ? 'text-emerald-700 dark:text-emerald-400 bg-emerald-500/20 border border-emerald-500/30'
                     : 'text-app-muted hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-app-hover'
@@ -337,8 +357,10 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => handleSendRating('negative')}
-                className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 cursor-pointer ${
+                onClick={() => void handleSendRating('negative')}
+                disabled={isSendingFeedback}
+                aria-pressed={feedbackStatus === 'negative'}
+                className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 cursor-pointer disabled:cursor-wait ${
                   feedbackStatus === 'negative'
                     ? 'text-rose-700 dark:text-rose-400 bg-rose-500/20 border border-rose-500/30'
                     : 'text-app-muted hover:text-rose-600 dark:hover:text-rose-400 hover:bg-app-hover'

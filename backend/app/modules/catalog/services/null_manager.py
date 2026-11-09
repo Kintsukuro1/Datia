@@ -174,7 +174,9 @@ class NullManagerService:
 
         try:
             from app.core.database import connector_engine
-            with connector_engine(conn) as eng:
+            # Unica mutacion fisica permitida (endpoint administrativo con
+            # confirm=true): este engine NO puede nacer en solo lectura.
+            with connector_engine(conn, read_only=False) as eng:
                 with eng.connect() as connection:
                     for tbl in audit["tables"]:
                         tbl_name = tbl["table_name"]

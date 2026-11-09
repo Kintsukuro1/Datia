@@ -27,6 +27,7 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.core.security import mask_query_rows
 from app.modules.admin_catalog.models import CorporateConnection
+from app.modules.catalog.services.schema_inspector import quote_sql_identifier
 from app.modules.chat_engine.ast_validator import ASTValidator
 from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
 from app.modules.chat_engine.forecast_calculator import (
@@ -127,13 +128,17 @@ def resolve_columns(cols: List[Dict[str, Any]]) -> Dict[str, Optional[str]]:
 def _quote(identifier: str, dialect: str = "postgres") -> str:
     """Comillas dobles para identificadores PostgreSQL.
 
+    Se preserva el nombre completo y se escapa `"` como `""`. El filtrado
+    anterior (`solo [A-Za-z0-9_]`) convertia `"Monto ($)"` en `"Monto"` y podia
+    medir otra columna en silencio. El AST sigue rechazando cualquier `;` fuera
+    o dentro de comillas, asi que un identificador hostil falla cerrado.
+
     `dialect` no se usa: se mantiene en la firma para que el punto de llamada
     pase el contexto explicito y quede claro que la decision es deliberada.
     """
-    safe = "".join(ch for ch in identifier if ch.isalnum() or ch == "_")
-    if not safe:
+    if not identifier or not str(identifier).strip():
         raise ForecastUnavailable(f"Identificador no utilizable: {identifier!r}")
-    return f'"{safe}"'
+    return quote_sql_identifier(str(identifier))
 
 
 def build_series_sql(
@@ -142,6 +147,11 @@ def build_series_sql(
     value_col: str,
     dialect: str = "postgres",
     diagnostic_periods: bool = False,
+    *,
+    granularity: str = "month",
+    agg: str = "sum",
+    date_expr: Optional[str] = None,
+    value_expr: Optional[str] = None,
 ) -> str:
     """Serie mensual del valor. Solo montos positivos: es una serie de ingresos.
 
@@ -151,28 +161,62 @@ def build_series_sql(
     la respuesta (`income_only: True`) para que quien lee sepa que la vista es
     "ingresos", no "neto".
 
+    `date_expr`/`value_expr` permiten usar la fórmula del catálogo semántico o un
+    cast seguro resuelto por `ml_forecast.resolver`. La columna física sigue
+    viajando para el diagnostico y para el validador; la expresión es la que se
+    agrega. `agg="count"` no usa `value_expr` y no filtra por valor.
+
     `diagnostic_periods=True` agrega `MAX(fecha)` y `COUNT(DISTINCT fecha)` por
     periodo, y descarta fechas nulas. Lo usa la proyeccion para saber si el mes
     en curso esta incompleto; el forecast del chat lo deja apagado para no
     cambiar su contrato. El SQL lo valida igual el ASTValidator.
     """
     t, d, v = _quote(table, dialect), _quote(date_col, dialect), _quote(value_col, dialect)
-    period_expr = f"TO_CHAR({d}, 'YYYY-MM')"
+    date_sql = date_expr or d
+    value_sql = value_expr or v
+    if granularity == "day":
+        period_expr = f"TO_CHAR({date_sql}, 'YYYY-MM-DD')"
+    elif granularity == "week":
+        # ISO year/week: '2026-W45'. La misma etiqueta que `normalize_period`.
+        period_expr = f"TO_CHAR({date_sql}, 'IYYY-\"W\"IW')"
+    elif granularity == "month":
+        period_expr = f"TO_CHAR({date_sql}, 'YYYY-MM')"
+    else:
+        raise ForecastUnavailable(
+            f"Granularidad no soportada: {granularity!r}; use day, week o month."
+        )
+
+    if agg == "count":
+        value_sql = None
+        aggregate = "COUNT(*)"
+        where = ""
+    elif agg == "count_distinct":
+        aggregate = f"COUNT(DISTINCT {value_sql})"
+        where = ""
+    elif agg == "formula":
+        aggregate = str(value_sql)
+        where = ""
+    else:
+        aggregate = f"SUM({value_sql})"
+        where = f"WHERE {value_sql} > 0"
+
     diagnostics = ""
-    where = f"WHERE {v} > 0"
     if diagnostic_periods:
         # `TO_CHAR(fecha, 'YYYY-MM-DD')` y no `fecha` a secas: si la columna de
         # fecha es un timestamp, COUNT(DISTINCT fecha) cuenta transacciones, no
         # dias, y el mes en curso nunca pareceria incompleto.
         diagnostics = (
-            f", MAX({d}) AS ultima_fecha, "
-            f"COUNT(DISTINCT TO_CHAR({d}, 'YYYY-MM-DD')) AS dias_con_datos"
+            f", MAX({date_sql}) AS ultima_fecha, "
+            f"COUNT(DISTINCT TO_CHAR({date_sql}, 'YYYY-MM-DD')) AS dias_con_datos"
         )
         # Una fecha nula no es un periodo: agruparla como NULL dejaria una fila
         # que no se puede fechar y que ademas rompe el diagnostico del mes.
-        where += f" AND {d} IS NOT NULL"
+        where = (
+            f"{where} AND {date_sql} IS NOT NULL" if where
+            else f"WHERE {date_sql} IS NOT NULL"
+        )
     return (
-        f"SELECT {period_expr} AS periodo, SUM({v}) AS valor{diagnostics} "
+        f"SELECT {period_expr} AS periodo, {aggregate} AS valor{diagnostics} "
         f"FROM {t} {where} GROUP BY 1 ORDER BY 1 LIMIT {settings.DEFAULT_ROW_LIMIT}"
     )
 
@@ -192,20 +236,35 @@ def build_group_totals_sql(
     dimension_col: str,
     dialect: str = "postgres",
     top_n: int = 5,
+    *,
+    agg: str = "sum",
+    date_expr: Optional[str] = None,
+    value_expr: Optional[str] = None,
 ) -> str:
     """Top de grupos por volumen historico, con el MISMO filtro de ingresos.
 
     El top se elige por historia observada, no por la proyeccion: ordenar por un
     valor proyectado elegiria los grupos que mas crecieron en el modelo, que es
-    justo el sesgo que el desglose intenta evitar.
+    justo el sesgo que el desglose intenta evitar. `date_expr`/`value_expr`
+    permiten usar la expresion resuelta (catalogo o cast seguro).
     """
     t, d, v, g = (
         _quote(table, dialect), _quote(date_col, dialect),
         _quote(value_col, dialect), _quote(dimension_col, dialect),
     )
+    date_sql = date_expr or d
+    value_sql = value_expr or v
+    if agg == "count":
+        aggregate, value_filter = "COUNT(*)", ""
+    elif agg == "count_distinct":
+        aggregate, value_filter = f"COUNT(DISTINCT {value_sql})", ""
+    elif agg == "formula":
+        aggregate, value_filter = str(value_sql), ""
+    else:
+        aggregate, value_filter = f"SUM({value_sql})", f" AND {value_sql} > 0"
     return (
-        f"SELECT {g} AS grupo, SUM({v}) AS total FROM {t} "
-        f"WHERE {v} > 0 AND {d} IS NOT NULL AND {g} IS NOT NULL "
+        f"SELECT {g} AS grupo, {aggregate} AS total FROM {t} "
+        f"WHERE {date_sql} IS NOT NULL AND {g} IS NOT NULL{value_filter} "
         f"GROUP BY 1 ORDER BY total DESC LIMIT {int(top_n)}"
     )
 
@@ -217,17 +276,41 @@ def build_group_series_sql(
     dimension_col: str,
     group_value: Any,
     dialect: str = "postgres",
+    *,
+    granularity: str = "month",
+    agg: str = "sum",
+    date_expr: Optional[str] = None,
+    value_expr: Optional[str] = None,
 ) -> str:
-    """Serie mensual de UN grupo, con el literal escapado y el mismo AST."""
+    """Serie de UN grupo, con el literal escapado y el mismo AST."""
     t, d, v, g = (
         _quote(table, dialect), _quote(date_col, dialect),
         _quote(value_col, dialect), _quote(dimension_col, dialect),
     )
-    period_expr = f"TO_CHAR({d}, 'YYYY-MM')"
+    date_sql = date_expr or d
+    value_sql = value_expr or v
+    if granularity == "day":
+        period_expr = f"TO_CHAR({date_sql}, 'YYYY-MM-DD')"
+    elif granularity == "week":
+        period_expr = f"TO_CHAR({date_sql}, 'IYYY-\"W\"IW')"
+    elif granularity == "month":
+        period_expr = f"TO_CHAR({date_sql}, 'YYYY-MM')"
+    else:
+        raise ForecastUnavailable(
+            f"Granularidad no soportada: {granularity!r}; use day, week o month."
+        )
+    if agg == "count":
+        aggregate, value_filter = "COUNT(*)", ""
+    elif agg == "count_distinct":
+        aggregate, value_filter = f"COUNT(DISTINCT {value_sql})", ""
+    elif agg == "formula":
+        aggregate, value_filter = str(value_sql), ""
+    else:
+        aggregate, value_filter = f"SUM({value_sql})", f" AND {value_sql} > 0"
     return (
-        f"SELECT {period_expr} AS periodo, SUM({v}) AS valor FROM {t} "
-        f"WHERE {v} > 0 AND {d} IS NOT NULL AND {g} = {_sql_literal(group_value)} "
-        f"GROUP BY 1 ORDER BY 1 LIMIT {settings.DEFAULT_ROW_LIMIT}"
+        f"SELECT {period_expr} AS periodo, {aggregate} AS valor FROM {t} "
+        f"WHERE {date_sql} IS NOT NULL AND {g} = {_sql_literal(group_value)}"
+        f"{value_filter} GROUP BY 1 ORDER BY 1 LIMIT {settings.DEFAULT_ROW_LIMIT}"
     )
 
 
@@ -351,33 +434,36 @@ def _run_guarded_sql(
     return rows, secured
 
 
-def _load_fact_table(db: Session, connection: CorporateConnection, is_admin: bool, user_role: str,
-                     role_id: Optional[int], connection_id: int, dialect: str,
-                     budget: Optional[Dict[str, Any]] = None) -> Tuple[str, List[Dict[str, Any]]]:
-    """Elige la tabla autorizada con mas filas: la tabla de hechos.
+def _load_table_columns(
+    connection: CorporateConnection, table: str
+) -> List[Dict[str, Any]]:
+    """Columnas físicas de UNA tabla, sin muestras (las muestras se perfilan aparte)."""
+    return DynamicSchemaPruningService.get_physical_table_columns(
+        table, connection, include_samples=False
+    )
 
-    Se elige por conteo, no por heuristica de nombre. "La tabla que mas filas
-    tiene" es la definicion operacional de la tabla de movimientos, y con 1.645
-    filas y 15 columnas un nombre como `movimientos` o `ventas` la describes
-    igual de bien sin hardcodear nada.
 
-    ponytail: son N COUNT(*) —uno por tabla autorizada— y `COUNT(*)` exacto en
-    Postgres es un scan completo de cada tabla. Antes se pagaba eso TRES veces
-    por request: `run_forecast`, `run_retention` y `audit_data_quality` elegian
-    la tabla de hechos por separado, y con la auditoria encendida eran `3N + 3`
-    scans completos para una sola peticion. `budget` es el cache de ESTA request
-    (lo crea y lo pasa `run_prediction`): sharing explicito por parametro, no un
-    global mutable, porque lo cacheado son los permisos de UN usuario y un
-    global lo serviria a otro rol.
+def _list_fact_tables(
+    db: Session,
+    connection: CorporateConnection,
+    is_admin: bool,
+    user_role: str,
+    role_id: Optional[int],
+    connection_id: int,
+    dialect: str,
+    budget: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Todas las tablas autorizadas con filas, con su conteo, cacheadas por request.
 
-    Sigue siendo N COUNT(*), pero una sola vez. Si aparece latencia aun asi, la
-    salida perezosa es guardar el conteo en `corporate_connections` al conectar
-    y leerlo de ahi.
+    Es la fuente única del conteo: la usa `_load_fact_table` para el forecast del
+    chat y `load_fact_context` para la elección por pregunta o por override
+    manual. Devuelve `[{"name", "row_count"}]`; las tablas que no se pueden
+    contar se omiten, y si ninguna tiene filas se falla cerrado.
     """
     if budget is None:
         budget = {}
-    if "fact_table" in budget:
-        return budget["fact_table"]
+    if "fact_tables" in budget:
+        return budget["fact_tables"]
 
     # Los tres bloques de `/predict` corren en paralelo (`asyncio.to_thread`),
     # asi que los tres pueden caer al cache vacio a la vez. Sin este lock los N
@@ -386,8 +472,8 @@ def _load_fact_table(db: Session, connection: CorporateConnection, is_admin: boo
     if lock is None:
         lock = budget["lock"] = threading.Lock()
     with lock:
-        if "fact_table" in budget:
-            return budget["fact_table"]
+        if "fact_tables" in budget:
+            return budget["fact_tables"]
 
         allowed = budget.get("allowed_tables")
         if allowed is None:
@@ -398,7 +484,7 @@ def _load_fact_table(db: Session, connection: CorporateConnection, is_admin: boo
         if not allowed:
             raise ForecastUnavailable("El perfil no tiene tablas autorizadas en esta conexion.")
 
-        best: Optional[Tuple[int, str]] = None
+        tables: List[Dict[str, Any]] = []
         for table in sorted(allowed):
             try:
                 secured = ASTValidator.validate_and_secure_sql(
@@ -414,17 +500,52 @@ def _load_fact_table(db: Session, connection: CorporateConnection, is_admin: boo
             if not rows:
                 continue
             n = rows[0].get("n")
-            if isinstance(n, (int, float)) and (best is None or n > best[0]):
-                best = (int(n), table)
+            if isinstance(n, (int, float)) and n > 0:
+                tables.append({"name": table, "row_count": int(n)})
 
-        if not best or best[0] == 0:
+        if not tables:
             raise ForecastUnavailable("Ninguna tabla autorizada contiene filas.")
+        budget["fact_tables"] = tables
+        return tables
 
-        cols = DynamicSchemaPruningService.get_physical_table_columns(
-            best[1], connection, include_samples=False
-        )
-        budget["fact_table"] = (best[1], cols)
-        return best[1], cols
+
+def _load_fact_table(db: Session, connection: CorporateConnection, is_admin: bool, user_role: str,
+                     role_id: Optional[int], connection_id: int, dialect: str,
+                     budget: Optional[Dict[str, Any]] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    """Elige la tabla autorizada con mas filas: la tabla de hechos del chat.
+
+    Se elige por conteo, no por heuristica de nombre. "La tabla que mas filas
+    tiene" es la definicion operacional de la tabla de movimientos, y con 1.645
+    filas y 15 columnas un nombre como `movimientos` o `ventas` la describes
+    igual de bien sin hardcodear nada.
+
+    La proyeccion NO usa esta funcion para elegir: usa `_list_fact_tables` +
+    `resolver.pick_table` (auto por pregunta) o el override manual. Aca se
+    conserva el comportamiento del chat y de la retencion.
+
+    ponytail: son N COUNT(*) —uno por tabla autorizada— y `COUNT(*)` exacto en
+    Postgres es un scan completo de cada tabla. `budget` es el cache de ESTA
+    request (lo crea y lo pasa `run_prediction`): sharing explicito por
+    parametro, no un global mutable, porque lo cacheado son los permisos de UN
+    usuario y un global lo serviria a otro rol.
+    """
+    if budget is None:
+        budget = {}
+    if "fact_table" in budget:
+        return budget["fact_table"]
+
+    tables = _list_fact_tables(
+        db, connection, is_admin, user_role, role_id, connection_id, dialect, budget
+    )
+    best = max(tables, key=lambda item: item["row_count"])
+    table = best["name"]
+    cols = _load_table_columns(connection, table)
+    budget["fact_table"] = (table, cols)
+    # El resolvedor de proyecciones necesita el conteo para calcular la
+    # proporcion de valores distintos (identificador vs metrica). Es el
+    # MISMO COUNT(*) que ya se pago aca: no se repite la consulta.
+    budget["fact_row_count"] = best["row_count"]
+    return table, cols
 
 
 def run_forecast(

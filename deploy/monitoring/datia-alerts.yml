@@ -1,0 +1,46 @@
+# Reglas de ejemplo para Prometheus. Ajustar `job` al scrape real.
+# El backend expone /metrics en su puerto interno (8000); no se publica en el
+# host. Prometheus debe correr en la red de compose o scrapear por un exporter.
+groups:
+  - name: datia
+    rules:
+      - alert: DatiaBackendDown
+        expr: up{job="datia-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Datia backend no responde al scrape"
+          description: "El backend no está publicando métricas desde hace 2 minutos."
+
+      - alert: DatiaHigh5xxRate
+        expr: |
+          (
+            sum(rate(datia_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(datia_http_requests_total[5m])), 0.001)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Más de 5% de requests HTTP en 5xx"
+          description: "Revisar logs del backend por request_id y el estado de PostgreSQL/LLM."
+
+      - alert: DatiaLLMErrors
+        expr: increase(datia_llm_errors_total[10m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Errores repetidos del motor LLM"
+          description: "Verificar Ollama, modelo cargado y memoria del host."
+
+      - alert: DatiaLLMQueueSaturated
+        expr: increase(datia_llm_requests_total[10m]) > 0 and increase(datia_llm_errors_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Hay errores de LLM con tráfico activo"
+          description: "Si los errores son por cola, bajar concurrencia o subir LLM_MAX_CONCURRENCY con hardware medido."

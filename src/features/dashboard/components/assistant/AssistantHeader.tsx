@@ -36,10 +36,10 @@ export const AssistantHeader: React.FC<AssistantHeaderProps> = ({
             type="button"
             onClick={onSwitchToStudio}
             className="flex items-center space-x-1 px-2.5 py-1 rounded-xl text-xs font-medium bg-slate-100 hover:bg-slate-200 dark:bg-dark-base dark:hover:bg-dark-card text-brand-700 dark:text-brand-300 border border-brand-500/30 transition-all shadow-xs cursor-pointer"
-            title="Ver proyección en Studio Analítico"
+            title="Ver detalles y gráfico"
           >
             <BarChart3 className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />
-            <span className="hidden sm:inline">Ver en Studio</span>
+            <span className="hidden sm:inline">Ver detalles</span>
           </button>
         )}
 

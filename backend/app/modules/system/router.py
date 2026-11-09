@@ -1,3 +1,4 @@
+import asyncio
 import time
 import datetime
 from typing import Optional, List
@@ -110,12 +111,15 @@ async def get_system_health(
     healthy_count = 0
 
     for c in active_conns:
-        res = HealthService.check_db_connectivity(
+        # El probe es un socket sincrónico: en un `async def` bloquea el event
+        # loop hasta 2 s por conector y congela todas las requests.
+        res = await asyncio.to_thread(
+            HealthService.check_db_connectivity,
             host=c.host,
             port=c.port,
             timeout=2.0,
             db_type=c.db_type.value if hasattr(c.db_type, 'value') else str(c.db_type),
-            database_name=c.database_name
+            database_name=c.database_name,
         )
         conn_ok = res["success"]
         conn_msg = res["message"]
@@ -144,7 +148,8 @@ async def get_system_health(
     total_conns = len(active_conns)
     if not llm_ok:
         global_status = SYSTEM_STATUS_CRITICAL
-    elif not meta_ok or (total_conns > 0 and healthy_count < total_conns):
+    elif not meta_ok or total_conns == 0 or healthy_count < total_conns:
+        # Cero fuentes activas no es "operativo": no hay nada que consultar.
         global_status = SYSTEM_STATUS_DEGRADED
     else:
         global_status = SYSTEM_STATUS_OPERATIONAL
@@ -280,7 +285,7 @@ async def get_system_anomalies(
             "title": f"{slow_queries} consultas lentas detectadas",
             "description": f"Se detectaron ejecuciones con tiempos superiores a {SLOW_QUERY_THRESHOLD_MS // 1000}s en {target_conn.name if target_conn else 'la base de datos'}. Podría requerirse optimización de índices.",
             "action_label": "Investigar Rendimiento",
-            "query_prompt": f"¿Cuáles son las consultas más lentas ejecutadas recientemente y qué tablas involucran?",
+            "query_prompt": "¿Cuáles son las consultas más lentas ejecutadas recientemente y qué tablas involucran?",
             "action_route": "/admin/audit" if current_user.is_admin else None
         })
 

@@ -6,7 +6,7 @@ import { ExecutiveAssistantView } from './ExecutiveAssistantView';
 import { KPISection } from '../../features/dashboard/components/KPISection';
 import { ChartSection } from '../../features/dashboard/components/ChartSection';
 import { OfflineAlertView } from '../../features/dashboard/components/OfflineAlertView';
-import { FileText, Table as TableIcon, Sparkles } from 'lucide-react';
+import { FileText, Table as TableIcon, Sparkles, BarChart3 } from 'lucide-react';
 
 interface ExecutiveDashboardViewProps {
   result: QueryResult;
@@ -25,10 +25,17 @@ export const ExecutiveDashboardView: React.FC<ExecutiveDashboardViewProps> = ({
   const hasConversationalResponse = Boolean(result.conversational_response || result.summary_text);
   const hasDataRows = Boolean(result.data_rows && result.data_rows.length > 0);
   const hasChart = Boolean(result.chart_type && result.chart_type !== 'none' && result.chart_option);
+  const hasDetails = Boolean((result.kpis && result.kpis.length > 0) || hasChart);
 
   const initialMode = useMemo<ViewMode>(() => {
     if (result.presentation_hints?.preferred_view === 'table') {
       return 'table';
+    }
+    if (
+      result.presentation_hints?.preferred_view === 'report' &&
+      result.executive_report
+    ) {
+      return 'report';
     }
     return 'assistant';
   }, [result]);
@@ -57,7 +64,7 @@ export const ExecutiveDashboardView: React.FC<ExecutiveDashboardViewProps> = ({
   return (
     <div className="w-full space-y-4 animate-fadeIn font-sans">
       {/* Optional Mode Switcher Tabs (Only if there are specialized alternative views like Report or Full Table) */}
-      {(result.executive_report || hasDataRows) && (
+      {(hasDetails || result.executive_report || hasDataRows) && (
         <div className="executive-dashboard-header flex items-center space-x-1.5 bg-slate-100 dark:bg-dark-base/80 p-1 rounded-xl border border-slate-200 dark:border-dark-border/80 w-fit">
           <button
             type="button"
@@ -69,8 +76,23 @@ export const ExecutiveDashboardView: React.FC<ExecutiveDashboardViewProps> = ({
             }`}
           >
             <Sparkles className="w-3.5 h-3.5" />
-            <span>Síntesis y Gráficos</span>
+            <span>Respuesta</span>
           </button>
+
+          {hasDetails && (
+            <button
+              type="button"
+              onClick={() => setViewMode('studio')}
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                viewMode === 'studio'
+                  ? 'bg-brand-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <BarChart3 className="w-3.5 h-3.5" />
+              <span>Detalles</span>
+            </button>
+          )}
 
           {result.executive_report && (
             <button
@@ -111,21 +133,9 @@ export const ExecutiveDashboardView: React.FC<ExecutiveDashboardViewProps> = ({
             result={result}
             onOpenTraceability={onOpenTraceability}
             onFollowUp={onFollowUp}
+            onSwitchToStudio={() => setViewMode('studio')}
+            onSwitchToTable={() => setViewMode('table')}
           />
-
-          {/* Auto-render KPIs directly under narrative if present */}
-          {result.kpis && result.kpis.length > 0 && (
-            <KPISection kpis={result.kpis} />
-          )}
-
-          {/* Auto-render interactive Chart directly under narrative if present */}
-          {hasChart && (
-            <ChartSection
-              result={result}
-              onDrillDown={(cat) => onFollowUp?.(`Detalla en profundidad los registros para: ${cat}`)}
-              onTimeFilter={(label) => onFollowUp?.(`Filtra los datos de la consulta anterior para el periodo: ${label}`)}
-            />
-          )}
         </div>
       )}
 
@@ -137,14 +147,6 @@ export const ExecutiveDashboardView: React.FC<ExecutiveDashboardViewProps> = ({
             onDrillDown={(cat) => onFollowUp?.(`Detalla en profundidad los registros para: ${cat}`)}
             onTimeFilter={(label) => onFollowUp?.(`Filtra los datos de la consulta anterior para el periodo: ${label}`)}
           />
-          {result.data_rows && result.data_rows.length > 0 && (
-            <DataGridTable
-              columns={result.data_columns}
-              rows={result.data_rows}
-              question={result.question}
-              auditLogId={result.traceability?.audit_log_id || result.audit_log_id}
-            />
-          )}
         </div>
       )}
 

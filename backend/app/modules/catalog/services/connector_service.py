@@ -2,12 +2,12 @@ import json
 import os
 import re
 import secrets
-import shutil
 import time
 import uuid
 from typing import List, Optional, Any, Dict
 from fastapi import HTTPException, status, UploadFile
-from sqlalchemy import func, text
+from sqlalchemy import func
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -45,6 +45,30 @@ class ConnectorDomainService:
         d = settings.DATA_SOURCES_DIR
         os.makedirs(d, exist_ok=True)
         return d
+
+    @staticmethod
+    def _url_for(db_name: str) -> str:
+        """URL de PostgreSQL con usuario/clave escapados por SQLAlchemy.
+
+        `URL.create` es obligatorio: interpolar la clave rompe la conexion si
+        trae `@`, `:` o `/`, y el fallo aparece recien al subir el archivo.
+        """
+        return URL.create(
+            "postgresql+psycopg",
+            username=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
+            host=settings.POSTGRES_SERVER,
+            port=settings.POSTGRES_PORT,
+            database=db_name,
+        ).render_as_string(hide_password=False)
+
+    @classmethod
+    def _maintenance_url(cls) -> str:
+        return cls._url_for("postgres")
+
+    @classmethod
+    def _dataset_url(cls, db_name: str) -> str:
+        return cls._url_for(db_name)
 
     @classmethod
     def _activate_exclusively(cls, db: Session, conn_id: int) -> None:
@@ -168,16 +192,20 @@ class ConnectorDomainService:
             username=conn_in.username or "admin",
             encrypted_password=encrypted_pwd,
             is_active=conn_in.is_active,
-            is_uploaded=conn_in.is_uploaded
+            # Server-controlled: solo `/connectors/upload` marca un conector
+            # como uploaded. Aceptarlo del payload permitia apuntar a una base
+            # real y luego borrarla con DROP DATABASE.
+            is_uploaded=False
         )
 
         db.add(new_conn)
-        db.commit()
-        db.refresh(new_conn)
-
+        # Un solo commit: si la exclusión de las demás falla, no queda una
+        # conexión activa a medias. El flush asigna el id sin publicar la fila.
+        db.flush()
         if new_conn.is_active:
             cls._activate_exclusively(db, new_conn.id)
-            db.commit()
+        db.commit()
+        db.refresh(new_conn)
 
         CatalogDomainService.seed_catalog_heuristics_for_connection(db, new_conn.id)
 
@@ -269,6 +297,51 @@ class ConnectorDomainService:
         finally:
             m_engine.dispose()
 
+    @staticmethod
+    def _copy_upload_with_limit(file: UploadFile, target_path: str, max_bytes: int) -> int:
+        """Copia el upload en chunks y corta si supera `max_bytes`.
+
+        `nginx` ya limita 512m, pero el backend no debe confiar en el proxy: si
+        alguien lo expone directo o cambia el proxy, el proceso no puede
+        quedarse sin disco/memoria. El archivo parcial se borra siempre.
+        """
+        total = 0
+        try:
+            with open(target_path, "wb") as buffer:
+                while True:
+                    chunk = file.file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail=(
+                                f"El archivo supera el límite de "
+                                f"{max_bytes // (1024 * 1024)} MB."
+                            ),
+                        )
+                    buffer.write(chunk)
+        except HTTPException:
+            if os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except OSError:
+                    pass
+            raise
+        except Exception as exc:
+            if os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except OSError:
+                    pass
+            logger.warning("Error guardando upload: %s", type(exc).__name__)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No se pudo guardar el archivo en el servidor.",
+            ) from exc
+        return total
+
     @classmethod
     async def upload_database_file(
         cls,
@@ -286,11 +359,25 @@ class ConnectorDomainService:
         # imagen oficial es superusuario), y los errores se tragaban reportando 201.
         # Conectar a Oracle/MySQL/MSSQL es otra funcionalidad (connectors) y no
         # depende de esto.
-        allowed_exts = [".sqlite", ".db", ".sqlite3", ".csv", ".xlsx", ".xls", ".tsv", ".txt"]
+        #
+        # `.xls` tampoco: es el formato binario viejo y `openpyxl` no lo lee. Se
+        # rechaza con un mensaje que dice qué hacer, en vez de aceptarlo y fallar
+        # dentro del importador.
+        if ext == ".xls":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "El formato .xls antiguo no está soportado. Guarde el archivo "
+                    "como .xlsx y vuelva a subirlo."
+                ),
+            )
+        allowed_exts = [
+            ".sqlite", ".db", ".sqlite3", ".csv", ".xlsx", ".xlsm", ".xltx", ".tsv", ".txt"
+        ]
         if ext not in allowed_exts:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Formato no soportado. Debe ser un archivo SQLite, Excel o CSV."
+                detail="Formato no soportado. Debe ser un archivo SQLite, Excel (.xlsx) o CSV."
             )
 
         # NO se le mete un uuid acá a propósito: el importador toma el nombre de la tabla
@@ -300,14 +387,16 @@ class ConnectorDomainService:
         unique_raw_name = f"raw_{int(time.time())}_{clean_filename}"
         raw_target_path = os.path.join(ds_dir, unique_raw_name)
 
-        try:
-            with open(raw_target_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-        except Exception as e:
+        declared_size = getattr(file, "size", None)
+        if declared_size is not None and declared_size > settings.MAX_UPLOAD_BYTES:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error al guardar el archivo en el servidor: {str(e)}"
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    f"El archivo supera el límite de "
+                    f"{settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+                ),
             )
+        cls._copy_upload_with_limit(file, raw_target_path, settings.MAX_UPLOAD_BYTES)
 
         base_display_name = name.strip() if (name and name.strip()) else os.path.splitext(original_filename)[0]
         final_name = base_display_name
@@ -341,8 +430,9 @@ class ConnectorDomainService:
         # reutilizacion de una base preexistente no puede ocurrir; si aparece,
         # es una colision de uuid y conviene que se vea en vez de importarse
         # encima de los datos de otro.
-        maint_url = f"postgresql+psycopg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/postgres"
-        m_engine = create_engine(maint_url, isolation_level="AUTOCOMMIT", pool_pre_ping=True)
+        m_engine = create_engine(
+            cls._maintenance_url(), isolation_level="AUTOCOMMIT", pool_pre_ping=True
+        )
         try:
             with m_engine.connect() as m_conn:
                 exists = m_conn.execute(text("SELECT 1 FROM pg_database WHERE datname = :dbname"), {"dbname": pg_target_db_name}).scalar()
@@ -351,11 +441,14 @@ class ConnectorDomainService:
                         status_code=status.HTTP_409_CONFLICT,
                         detail=f"La base '{pg_target_db_name}' ya existe en el servidor. No se importa encima."
                     )
-                m_conn.execute(text(f'CREATE DATABASE "{pg_target_db_name}" OWNER "{settings.POSTGRES_USER}"'))
+                m_conn.execute(text(
+                    f"CREATE DATABASE {quote_sql_identifier(pg_target_db_name)} "
+                    f"OWNER {quote_sql_identifier(settings.POSTGRES_USER)}"
+                ))
         finally:
             m_engine.dispose()
 
-        business_url = f"postgresql+psycopg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/{pg_target_db_name}"
+        business_url = cls._dataset_url(pg_target_db_name)
         pg_engine = create_engine(business_url, pool_pre_ping=True)
         try:
             detected_tables = convert_uploaded_file_to_postgres(
@@ -429,15 +522,12 @@ class ConnectorDomainService:
             detected_tables=json.dumps(detected_tables)
         )
         db.add(new_conn)
-        db.commit()
-        db.refresh(new_conn)
-
-        # El dataset nuevo pasa a ser la unica fuente de la consulta: antes se
-        # dejaba la anterior en `is_active=True` y el motor, que elige por
-        # `ORDER BY id DESC`, se quedaba con este por defecto sin que nadie lo
-        # hubiera pedido. Ver `_activate_exclusively`.
+        db.flush()
+        # El dataset nuevo pasa a ser la unica fuente de la consulta. Activación
+        # y exclusión de las demás en un solo commit.
         cls._activate_exclusively(db, new_conn.id)
         db.commit()
+        db.refresh(new_conn)
 
         # Default-deny: subir un dataset NO concede acceso a nadie.
         #
@@ -473,6 +563,22 @@ class ConnectorDomainService:
                 detail="Conexión de base de datos no encontrada."
             )
 
+        # `database_name` de un dataset subido identifica la base fisica que
+        # creo la app y que DELETE puede dropear. Cambiarlo a mano podia
+        # redirigir ese DROP a una base corporativa real.
+        if (
+            conn.is_uploaded
+            and conn_in.database_name is not None
+            and conn_in.database_name != conn.database_name
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "El nombre de la base de un dataset subido no se puede cambiar: "
+                    "identifica la base fisica que la plataforma creó y puede eliminar."
+                ),
+            )
+
         if conn_in.name and conn_in.name != conn.name:
             existing = db.query(CorporateConnection).filter(CorporateConnection.name == conn_in.name).first()
             if existing:
@@ -497,12 +603,12 @@ class ConnectorDomainService:
         if conn_in.is_active is not None:
             conn.is_active = conn_in.is_active
 
-        db.commit()
-        db.refresh(conn)
+        # Activar y desactivar las demás en la MISMA transacción. Antes había
+        # dos commits y una caída entre ambos dejaba dos conexiones activas.
         if conn.is_active:
             cls._activate_exclusively(db, conn.id)
-            db.commit()
-            db.refresh(conn)
+        db.commit()
+        db.refresh(conn)
         return cls.connector_to_out(db, conn)
 
     @classmethod
@@ -514,15 +620,11 @@ class ConnectorDomainService:
                 detail="Conexión de base de datos no encontrada."
             )
         conn.is_active = not conn.is_active
+        if conn.is_active:
+            # Encender una conexion apaga las demas en el mismo commit.
+            cls._activate_exclusively(db, conn.id)
         db.commit()
         db.refresh(conn)
-        if conn.is_active:
-            # Encender una conexion apaga las demas: el toggle de la UI es la via
-            # normal para cambiar de fuente, y si no las apagara el estado
-            # "hay varias activas" volveria a ser alcanzable desde el producto.
-            cls._activate_exclusively(db, conn.id)
-            db.commit()
-            db.refresh(conn)
         return cls.connector_to_out(db, conn)
 
     @classmethod
@@ -641,20 +743,30 @@ class ConnectorDomainService:
 
         touched = []
         for raw_name in table_names:
-            tbl = (raw_name or "").strip()
+            # Canonicalizar a minuscula y buscar sin distinguir mayusculas: el
+            # guard compara contra nombres fisicos en minuscula. Sin esto,
+            # revocar "FACT_VENTAS" creaba una fila deny nueva mientras el
+            # allow de "fact_ventas" seguia ganando y la UI decia "revocado".
+            tbl = (raw_name or "").strip().lower()
             if not tbl:
                 continue
-            perm = db.query(RoleTablePermission).filter(
+            matching = db.query(RoleTablePermission).filter(
                 RoleTablePermission.role_id == role_id,
                 RoleTablePermission.connection_id == connection_id,
-                RoleTablePermission.table_name == tbl,
-            ).first()
-            if perm:
-                perm.is_allowed = is_allowed
-                # Toda fila que pasa por aqui es decision de un admin, no el
-                # auto-grant: es lo que la migracion de default-deny distingue.
-                perm.granted_by_admin = True
-                perm.schema_name = perm.schema_name or schema_name
+                func.lower(RoleTablePermission.table_name) == tbl,
+            ).all()
+            if matching:
+                # Actualizar TODAS las coincidencias: sin unique, dos PUT
+                # concurrentes pudieron dejar un allow y un deny para la misma
+                # tabla. Actualizar solo `.first()` dejaba el allow viejo vivo.
+                for perm in matching:
+                    perm.table_name = tbl
+                    perm.is_allowed = is_allowed
+                    # Toda fila que pasa por aqui es decision de un admin, no el
+                    # auto-grant: es lo que la migracion de default-deny distingue.
+                    perm.granted_by_admin = True
+                    perm.schema_name = perm.schema_name or schema_name
+                touched.extend(matching)
             else:
                 perm = RoleTablePermission(
                     role_id=role_id,
@@ -665,7 +777,7 @@ class ConnectorDomainService:
                     granted_by_admin=True,
                 )
                 db.add(perm)
-            touched.append(perm)
+                touched.append(perm)
 
         db.commit()
 
@@ -885,16 +997,20 @@ class ConnectorDomainService:
                 detail="Tabla y columna son obligatorias para borrar una política.",
             )
 
-        row = db.query(RoleColumnPermission).filter(
+        rows = db.query(RoleColumnPermission).filter(
             RoleColumnPermission.connection_id == connection_id,
             RoleColumnPermission.role_id == role_id,
             func.lower(RoleColumnPermission.table_name) == table.lower(),
             func.lower(RoleColumnPermission.column_name) == column.lower(),
-        ).first()
-        if not row:
+        ).all()
+        if not rows:
             return False
 
-        db.delete(row)
+        # Borrar TODAS las coincidencias: sin unique, un PUT concurrente pudo
+        # dejar duplicados. Borrar solo `.first()` reportaba "deleted: true"
+        # mientras otra fila seguia aplicando la politica.
+        for row in rows:
+            db.delete(row)
         db.commit()
 
         # Mismo motivo que en el PUT: el prompt cacheado seguiria enmascarando

@@ -119,6 +119,8 @@ export interface QueryResult {
   question: string;
   timestamp: string;
   summary_text: string;
+  /** Conexión real de la consulta; el backend la resuelve, no el frontend. */
+  connection_id?: number;
   executive_report?: ExecutiveReport;
   kpis: KPICard[];
   chart_type: 'bar' | 'line' | 'area' | 'pie' | 'donut' | 'none';

@@ -91,7 +91,7 @@ class NullHandler:
         conversational = (
             f"⚠️ **Valores nulos detectados en la consulta**\n\n"
             f"Se detectaron valores nulos en la tabla `{primary_table}` (columnas: {cols_text}), "
-            f"afectando a {null_rows_count} de {len(rows)} registros analizados.\n\n"
+            f"afectando a {null_rows_count} de {total_rows_count} registros analizados.\n\n"
             f"Para entregarte un análisis confiable y evitar distorsiones en los resultados o gráficos "
             f"(como considerar los valores nulos como una categoría de datos), "
             f"por favor selecciona cómo deseas procesar estos registros antes de calcular la respuesta definitiva:"

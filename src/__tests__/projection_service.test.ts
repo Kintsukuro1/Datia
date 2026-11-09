@@ -76,11 +76,15 @@ describe('run: contrato del pedido', () => {
 
     await projectionService.run('proyectá ventas', 9, 6);
 
-    expect(apiClient.post).toHaveBeenCalledWith('/ml/projections/run', {
-      question: 'proyectá ventas',
-      horizon: 6,
-      connection_id: 9,
-    });
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/ml/projections/run',
+      {
+        question: 'proyectá ventas',
+        horizon: 6,
+        connection_id: 9,
+      },
+      expect.objectContaining({ timeoutMs: 180_000 })
+    );
   });
 
   it('omite connection_id cuando no hay conexion: el backend usa su default', async () => {
@@ -99,11 +103,24 @@ describe('run: contrato del pedido', () => {
 
     await projectionService.run('proyectá ventas', 9, null);
 
-    expect(apiClient.post).toHaveBeenCalledWith('/ml/projections/run', {
-      question: 'proyectá ventas',
-      horizon: null,
-      connection_id: 9,
-    });
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/ml/projections/run',
+      {
+        question: 'proyectá ventas',
+        horizon: null,
+        connection_id: 9,
+      },
+      expect.objectContaining({ timeoutMs: 180_000 })
+    );
+  });
+
+  it('reenvía la señal de aborto para poder cancelar una corrida en vuelo', async () => {
+    apiClient.post.mockResolvedValue({ data: { available: true } });
+    const controller = new AbortController();
+
+    await projectionService.run('p', 9, 6, undefined, controller.signal);
+
+    expect(apiClient.post.mock.calls[0][2].signal).toBe(controller.signal);
   });
 });
 

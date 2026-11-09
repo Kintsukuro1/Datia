@@ -16,9 +16,29 @@ from fastapi.testclient import TestClient
 from main import app
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
+from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
 from app.modules.chat_engine.models import QueryLearningMemory
 
 from conftest import make_auth_headers
+
+
+def _ensure_connection(db, connection_id: int):
+    if db.query(CorporateConnection).filter(
+        CorporateConnection.id == connection_id
+    ).first():
+        return
+    db.add(CorporateConnection(
+        id=connection_id,
+        name=f"test-lm-{connection_id}",
+        db_type=DatabaseType.POSTGRESQL,
+        host="localhost",
+        port=5432,
+        database_name=f"test_lm_{connection_id}",
+        username="test_lm",
+        encrypted_password="",
+        is_active=False,
+    ))
+    db.commit()
 
 
 # Prefijo de las filas que crea el test. El aislamiento por `connection_id` es lo
@@ -47,10 +67,15 @@ class TestLearningMemoryGovernance(unittest.TestCase):
         # Dos conexiones distintas para probar el aislamiento por `connection_id`.
         self.conn_a = 91001
         self.conn_b = 91002
+        _ensure_connection(self.db, self.conn_a)
+        _ensure_connection(self.db, self.conn_b)
 
     def tearDown(self):
         self.db.query(QueryLearningMemory).filter(
             QueryLearningMemory.question_pattern.like(f"%{TAG}%")
+        ).delete(synchronize_session=False)
+        self.db.query(CorporateConnection).filter(
+            CorporateConnection.id.in_([self.conn_a, self.conn_b])
         ).delete(synchronize_session=False)
         self.db.commit()
         self.db.close()

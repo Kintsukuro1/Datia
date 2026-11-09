@@ -365,7 +365,9 @@ class TestMustChangePasswordEnforcement(unittest.TestCase):
         # Y con el flag limpio vuelve a usar la API.
         self.db.expire_all()
         self.assertFalse(self.db.query(User).filter(User.id == self.user.id).first().must_change_password)
-        after = self.client.get("/api/v1/catalog/", headers=self.headers)
+        # `/catalog` es admin-only; para probar que la API volvió a responder
+        # se usa un endpoint autenticado de lectura que no exige admin.
+        after = self.client.get("/api/v1/connectors", headers=self.headers)
         self.assertEqual(after.status_code, 200, after.text)
 
 

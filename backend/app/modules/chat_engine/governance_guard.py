@@ -233,7 +233,7 @@ class GovernanceGuard:
         is_admin: bool,
         db: Optional[Session] = None,
         role_id: Optional[int] = None,
-        connection_id: int = 1
+        connection_id: Optional[int] = None
     ) -> Set[str]:
         if is_admin or user_role in ADMIN_ROLES:
             return set()
@@ -246,7 +246,7 @@ class GovernanceGuard:
         is_admin: bool,
         db: Optional[Session] = None,
         role_id: Optional[int] = None,
-        connection_id: int = 1
+        connection_id: Optional[int] = None
     ) -> Set[str]:
         """Columnas MASKED cuyo VALOR debe ocultarse a este perfil.
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ChevronDown,
@@ -9,6 +9,7 @@ import {
 import {
   projectionService,
   type ProjectionHistoryItem,
+  type ProjectionResult,
   type ProjectionVerification,
 } from '../services/projection_service';
 import { getApiErrorMessage } from '../../../shared/api/api_client';
@@ -33,7 +34,11 @@ const pct = (n: number | null | undefined): string =>
 
 const dateLabel = (value: string): string => {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString('es-CL');
+  // Fecha y hora: dos corridas del mismo dia tienen el mismo tablero y el
+  // resumen identico; sin la hora no se pueden distinguir en el historial.
+  return Number.isNaN(date.getTime())
+    ? '—'
+    : date.toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' });
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -164,9 +169,11 @@ const VerificationCard: React.FC<{ verification: ProjectionVerification }> = ({
   );
 };
 
-export const ProjectionHistory: React.FC<{ refreshKey?: number | null }> = ({
-  refreshKey,
-}) => {
+export const ProjectionHistory: React.FC<{
+  refreshKey?: number | null;
+  /** Reabre el resultado publicado de una corrida anterior. */
+  onOpenProjection?: (result: ProjectionResult, item: ProjectionHistoryItem) => void;
+}> = ({ refreshKey, onOpenProjection }) => {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<ProjectionHistoryItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -174,17 +181,25 @@ export const ProjectionHistory: React.FC<{ refreshKey?: number | null }> = ({
   const [verification, setVerification] = useState<ProjectionVerification | null>(null);
   const [verificationError, setVerificationError] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<number | null>(null);
+  const [openingId, setOpeningId] = useState<number | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const loadSeqRef = useRef(0);
+  const verifySeqRef = useRef(0);
 
   const load = async () => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setError(null);
     try {
       const data = await projectionService.history(10);
+      if (seq !== loadSeqRef.current) return;
       setItems(data.items ?? []);
     } catch (err: any) {
+      if (seq !== loadSeqRef.current) return;
+      setItems([]);
       setError(getApiErrorMessage(err, 'No se pudo cargar el historial.', true));
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   };
 
@@ -194,18 +209,37 @@ export const ProjectionHistory: React.FC<{ refreshKey?: number | null }> = ({
 
   const verify = async (item: ProjectionHistoryItem) => {
     if (!item.verifiable || verifyingId !== null) return;
+    const seq = ++verifySeqRef.current;
     setVerifyingId(item.audit_log_id);
     setVerification(null);
     setVerificationError(null);
     try {
       const data = await projectionService.verify(item.audit_log_id);
+      if (seq !== verifySeqRef.current) return;
       setVerification(data);
     } catch (err: any) {
+      if (seq !== verifySeqRef.current) return;
       setVerificationError(
         getApiErrorMessage(err, 'No se pudo verificar esta proyección.', true)
       );
     } finally {
-      setVerifyingId(null);
+      if (seq === verifySeqRef.current) setVerifyingId(null);
+    }
+  };
+
+  const openItem = async (item: ProjectionHistoryItem) => {
+    if (!onOpenProjection || openingId !== null || item.readable === false) return;
+    setOpeningId(item.audit_log_id);
+    setOpenError(null);
+    try {
+      const result = await projectionService.getSaved(item.audit_log_id);
+      onOpenProjection(result, item);
+    } catch (err: any) {
+      setOpenError(
+        getApiErrorMessage(err, 'No se pudo abrir esta proyección guardada.', true)
+      );
+    } finally {
+      setOpeningId(null);
     }
   };
 
@@ -262,10 +296,21 @@ export const ProjectionHistory: React.FC<{ refreshKey?: number | null }> = ({
                     {item.metric_column ?? '—'}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2">
                   <span className="text-xs font-semibold tabular-nums text-app-text">
                     {money(item.total_point)}
                   </span>
+                  {onOpenProjection && item.readable !== false && (
+                    <button
+                      type="button"
+                      onClick={() => void openItem(item)}
+                      disabled={openingId !== null}
+                      aria-label={`Ver detalle de la proyección ${item.audit_log_id}`}
+                      className="rounded-lg border border-violet-500/40 bg-violet-500/10 px-2 py-1 text-[11px] font-semibold text-violet-700 transition-colors hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-40 dark:text-violet-300"
+                    >
+                      {openingId === item.audit_log_id ? 'Abriendo…' : 'Ver detalle'}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => void verify(item)}
@@ -284,6 +329,12 @@ export const ProjectionHistory: React.FC<{ refreshKey?: number | null }> = ({
               )}
             </article>
           ))}
+
+          {openError && (
+            <p role="alert" className="text-xs leading-relaxed text-rose-700 dark:text-rose-300">
+              {openError}
+            </p>
+          )}
 
           {verificationError && (
             <p role="alert" className="text-xs leading-relaxed text-rose-700 dark:text-rose-300">

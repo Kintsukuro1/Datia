@@ -2,11 +2,12 @@ import base64
 import hashlib
 import json
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Union, Optional
 import bcrypt
 from cryptography.fernet import Fernet
-from jose import jwt
+import jwt
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,20 @@ def decrypt_credential(encrypted_text: str) -> str:
     except Exception as e:
         logger.warning(f"Credential decryption error: {type(e).__name__}")
         return ""
+
+def generate_api_key() -> str:
+    """Clave de servicio con 256 bits de entropía y prefijo identificable."""
+    return "datia_sk_" + secrets.token_urlsafe(32)
+
+
+def hash_api_key(api_key: str) -> str:
+    """SHA-256 de la clave.
+
+    La clave es aleatoria de 256 bits, así que no hace falta bcrypt: un hash
+    lento solo encarecería cada request sin aportar nada contra fuerza bruta.
+    """
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
 
 import uuid
 

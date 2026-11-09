@@ -96,7 +96,7 @@ class TestInterruptedStreamEndToEnd(unittest.TestCase):
         with patch("app.modules.chat_engine.router.QueryEngine.execute_query", new=engine_raises):
             resp = self.client.post(
                 "/api/v1/chat/query/stream",
-                json={"question": "Total de ventas"},
+                json={"question": "Total de ventas", "connection_id": 1},
                 headers=self.headers(),
             )
 
@@ -126,7 +126,7 @@ class TestInterruptedStreamEndToEnd(unittest.TestCase):
         with patch("app.modules.chat_engine.router.QueryEngine.execute_query", new=ok_engine):
             resp = self.client.post(
                 "/api/v1/chat/query/stream",
-                json={"question": "Total de ventas"},
+                json={"question": "Total de ventas", "connection_id": 1},
                 headers=self.headers(),
             )
 
@@ -155,7 +155,7 @@ class TestInterruptedStreamEndToEnd(unittest.TestCase):
         with patch("app.modules.chat_engine.router.QueryEngine.execute_query", new=half):
             resp = self.client.post(
                 "/api/v1/chat/query/stream",
-                json={"question": "Total de ventas"},
+                json={"question": "Total de ventas", "connection_id": 1},
                 headers=self.headers(),
             )
 

@@ -10,6 +10,10 @@ export default defineConfig({
     },
   },
   server: {
+    // IPv4 explícito: el backend escucha en 127.0.0.1 y Playwright/el README
+    // usan la misma dirección. `localhost` puede resolver a ::1 y romper el
+    // health check del webServer en Windows.
+    host: '127.0.0.1',
     port: 5173,
     strictPort: true,
   },

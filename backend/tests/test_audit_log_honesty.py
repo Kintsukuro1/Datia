@@ -134,6 +134,40 @@ class TestAuditValidationStatusHonesty(unittest.TestCase):
             'Una consulta sin trazabilidad se esta persistiendo como "%s"' % log.validation_status,
         )
 
+    def test_feedback_does_not_mutate_audit_evidence(self):
+        """El feedback va a sus columnas; no reescribe estado ni error."""
+        log = AuditLog(
+            user_id=self.user.id,
+            username=self.user.username,
+            user_role="Administrador de Plataforma",
+            question_prompt="consulta con feedback",
+            validation_status="APROBADO",
+            error_message="mensaje original",
+        )
+        self.db.add(log)
+        self.db.commit()
+        self.db.refresh(log)
+        self.created.append(log.id)
+
+        resp = self.client.post(
+            "/api/v1/chat/feedback",
+            json={
+                "audit_log_id": log.id,
+                "question": "consulta con feedback",
+                "rating": "negative",
+                "comment": "no era lo que pedí",
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.text[:300])
+
+        self.db.expire_all()
+        reloaded = self.db.query(AuditLog).filter(AuditLog.id == log.id).first()
+        self.assertEqual(reloaded.validation_status, "APROBADO")
+        self.assertEqual(reloaded.error_message, "mensaje original")
+        self.assertEqual(reloaded.feedback_rating, "negative")
+        self.assertEqual(reloaded.feedback_comment, "no era lo que pedí")
+
     def test_no_traceability_export_does_not_print_approved(self):
         """El CSV que abre el admin no puede afirmar APROBADO sobre un log sin estado."""
         log = self._run_query(_NoTraceability())

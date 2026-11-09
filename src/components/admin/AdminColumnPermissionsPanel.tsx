@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, EyeOff, Lock, RefreshCw } from 'lucide-react';
 import { ErrorBanner } from '../shared/ErrorBanner';
 import { PLATFORM_ADMIN_ROLE_NAME } from '../../constants';
@@ -71,6 +71,18 @@ export const AdminColumnPermissionsPanel: React.FC<AdminColumnPermissionsPanelPr
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [lastSaved, setLastSaved] = useState<string | null>(null);
+  // Descarta respuestas viejas si el admin cambia de conexión/rol mientras
+  // carga. Sin esto, las columnas de la fuente anterior quedan visibles y se
+  // puede guardar una política contra la conexión nueva con una tabla vieja.
+  const loadSeqRef = useRef(0);
+  // Contexto vigente para descartar respuestas de guardado que llegan después
+  // de que el admin cambió de conexión/rol/tabla.
+  const contextRef = useRef({ connectionId, roleId, table });
+  contextRef.current = { connectionId, roleId, table };
+  const isCurrentContext = (ctx: { connectionId: number | null; roleId: number | null; table: string }) =>
+    contextRef.current.connectionId === ctx.connectionId
+    && contextRef.current.roleId === ctx.roleId
+    && contextRef.current.table === ctx.table;
 
   useEffect(() => {
     if (roleId !== null && eligibleRoles.some((r) => r.id === roleId)) return;
@@ -78,12 +90,19 @@ export const AdminColumnPermissionsPanel: React.FC<AdminColumnPermissionsPanelPr
   }, [eligibleRoles, roleId]);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setSaveError(null);
     setLastSaved(null);
+    setSavingKey(null);
     setTable('');
+    // Limpiar ANTES del await. Si no, mientras carga la conexión nueva se
+    // siguen renderizando las columnas de la anterior y el select permite
+    // guardar una política sobre una tabla que ya no corresponde.
+    setPolicies([]);
+    setDictionary(null);
     if (connectionId === null) {
-      setPolicies([]);
-      setDictionary(null);
+      setLoadError(null);
+      setIsLoading(false);
       return;
     }
     setIsLoading(true);
@@ -96,16 +115,18 @@ export const AdminColumnPermissionsPanel: React.FC<AdminColumnPermissionsPanelPr
         permissionService.getColumnPermissions(connectionId),
         catalogService.getDataDictionary(connectionId),
       ]);
+      if (seq !== loadSeqRef.current) return;
       setPolicies(rows);
       setDictionary(dict);
     } catch (err: any) {
+      if (seq !== loadSeqRef.current) return;
       setPolicies([]);
       setDictionary(null);
       setLoadError(
         getApiErrorMessage(err, 'No se pudieron leer las columnas ni sus políticas. No se puede afirmar qué está protegido.')
       );
     } finally {
-      setIsLoading(false);
+      if (seq === loadSeqRef.current) setIsLoading(false);
     }
   }, [connectionId]);
 
@@ -145,7 +166,8 @@ export const AdminColumnPermissionsPanel: React.FC<AdminColumnPermissionsPanelPr
   const rolePolicyCount = policies.filter((p) => p.role_id === roleId).length;
 
   const resetPolicy = async (columnName: string) => {
-    if (connectionId === null || roleId === null || !table) return;
+    if (isLoading || connectionId === null || roleId === null || !table) return;
+    const ctx = { connectionId, roleId, table };
     const key = keyOf(table, columnName);
     setSavingKey(key);
     setSaveError(null);
@@ -157,6 +179,7 @@ export const AdminColumnPermissionsPanel: React.FC<AdminColumnPermissionsPanelPr
         tableName: table,
         columnName,
       });
+      if (!isCurrentContext(ctx)) return;
       // Sin fila no hay política que mostrar; "Permitida" era el default, no
       // una decisión. El estado local se limpia aunque el servidor diga
       // `deleted: false` (reset repetido): las dos respuestas son "no hay fila".
@@ -174,16 +197,19 @@ export const AdminColumnPermissionsPanel: React.FC<AdminColumnPermissionsPanelPr
       );
       onSaved?.();
     } catch (err: any) {
-      setSaveError(
-        getApiErrorMessage(err, 'El servidor no confirmó el reset. La columna conserva su política.')
-      );
+      if (isCurrentContext(ctx)) {
+        setSaveError(
+          getApiErrorMessage(err, 'El servidor no confirmó el reset. La columna conserva su política.')
+        );
+      }
     } finally {
-      setSavingKey(null);
+      if (isCurrentContext(ctx)) setSavingKey(null);
     }
   };
 
   const changePolicy = async (columnName: string, type: ColumnPermissionType) => {
-    if (connectionId === null || roleId === null || !table) return;
+    if (isLoading || connectionId === null || roleId === null || !table) return;
+    const ctx = { connectionId, roleId, table };
     const key = keyOf(table, columnName);
     setSavingKey(key);
     setSaveError(null);
@@ -195,6 +221,7 @@ export const AdminColumnPermissionsPanel: React.FC<AdminColumnPermissionsPanelPr
         permissionType: type,
         columns: [{ tableName: table, columnName }],
       });
+      if (!isCurrentContext(ctx)) return;
       const confirmed = res.permissions[0];
       if (confirmed) {
         // Solo se pinta lo que el servidor confirmó: la respuesta trae la fila
@@ -214,11 +241,13 @@ export const AdminColumnPermissionsPanel: React.FC<AdminColumnPermissionsPanelPr
       }
       onSaved?.();
     } catch (err: any) {
-      setSaveError(
-        getApiErrorMessage(err, 'El servidor no confirmó la política. La columna conserva la anterior.')
-      );
+      if (isCurrentContext(ctx)) {
+        setSaveError(
+          getApiErrorMessage(err, 'El servidor no confirmó la política. La columna conserva la anterior.')
+        );
+      }
     } finally {
-      setSavingKey(null);
+      if (isCurrentContext(ctx)) setSavingKey(null);
     }
   };
 
@@ -382,7 +411,7 @@ export const AdminColumnPermissionsPanel: React.FC<AdminColumnPermissionsPanelPr
                             void changePolicy(col.name, next as ColumnPermissionType);
                           }
                         }}
-                        disabled={savingKey !== null}
+                        disabled={savingKey !== null || isLoading}
                         className={selectClass}
                       >
                         <option value="NONE">Sin política</option>

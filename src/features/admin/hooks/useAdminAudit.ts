@@ -1,7 +1,15 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { auditService } from '../services/audit_service';
 import { AuditLog, AuditFilterParams } from '../../../types';
 import { useNotifications } from '../../../context/NotificationContext';
+
+// `input type="date"` da un dia, no un instante. Mandar el ISO de la medianoche
+// UTC dejaba fuera todo el dia final (y corria el inicio de dia segun la zona).
+// Se usan los bordes del dia LOCAL.
+const dayStartIso = (value: string): string | undefined =>
+  value ? new Date(`${value}T00:00:00`).toISOString() : undefined;
+const dayEndIso = (value: string): string | undefined =>
+  value ? new Date(`${value}T23:59:59.999`).toISOString() : undefined;
 
 export function useAdminAudit() {
   const { notify } = useNotifications();
@@ -23,29 +31,39 @@ export function useAdminAudit() {
   // Selected Log for Inspector Modal
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
 
+  // La ultima consulta gana: tipear en un filtro dispara requests que pueden
+  // volver desordenadas y pintar filas de un filtro anterior.
+  const logsSeqRef = useRef(0);
+
   const fetchLogs = useCallback(async (targetPage: number = 1) => {
+    const seq = ++logsSeqRef.current;
     setLoading(true);
     setError(null);
     try {
       const params: AuditFilterParams = {
         page: targetPage,
         page_size: 20,
-        start_date: startDate ? new Date(startDate).toISOString() : undefined,
-        end_date: endDate ? new Date(endDate).toISOString() : undefined,
+        start_date: dayStartIso(startDate),
+        end_date: dayEndIso(endDate),
         username: filterUsername.trim() || undefined,
         target_database: filterDatabase.trim() || undefined,
         validation_status: filterStatus || undefined,
       };
 
       const res = await auditService.getAuditLogs(params);
+      if (seq !== logsSeqRef.current) return;
       setLogs(res.items);
       setTotal(res.total);
       setPage(res.page);
       setTotalPages(res.total_pages);
     } catch {
+      if (seq !== logsSeqRef.current) return;
+      // No se dejan las filas anteriores: serian de otro filtro.
+      setLogs([]);
+      setTotal(0);
       setError('No se pudieron cargar los registros de auditoría.');
     } finally {
-      setLoading(false);
+      if (seq === logsSeqRef.current) setLoading(false);
     }
   }, [startDate, endDate, filterUsername, filterDatabase, filterStatus]);
 
@@ -77,8 +95,8 @@ export function useAdminAudit() {
     setExporting(true);
     try {
       const params: AuditFilterParams = {
-        start_date: startDate ? new Date(startDate).toISOString() : undefined,
-        end_date: endDate ? new Date(endDate).toISOString() : undefined,
+        start_date: dayStartIso(startDate),
+        end_date: dayEndIso(endDate),
         username: filterUsername.trim() || undefined,
         target_database: filterDatabase.trim() || undefined,
         validation_status: filterStatus || undefined,

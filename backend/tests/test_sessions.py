@@ -1,7 +1,14 @@
+import datetime
 import unittest
+import uuid
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 from main import app
+from app.core.config import settings
 from app.core.database import SessionLocal
+from app.core.security import create_access_token
+from app.core.time import utcnow_naive
 from app.db.init_db import init_db
 from app.modules.auth.models import User, UserSession
 
@@ -87,3 +94,39 @@ class TestSessions(unittest.TestCase):
         # Economista request now fails
         me_after_resp = self.client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {econ_token}"})
         self.assertEqual(me_after_resp.status_code, 401)
+
+    def test_token_without_session_row_is_rejected(self):
+        """Un JWT con JTI pero sin fila de sesión no vale: la sesión es la fuente de verdad."""
+        user = self.db.query(User).filter(User.username == "admin").first()
+        jti = str(uuid.uuid4())
+        token = create_access_token(subject=user.id, jti=jti)
+        res = self.client.get(
+            "/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}
+        )
+        self.assertEqual(res.status_code, 401, res.text[:300])
+        self.assertIn("no existe", res.json()["detail"].lower())
+
+    def test_idle_session_is_revoked(self):
+        """La sesión se corta por inactividad aunque el JWT siga vigente."""
+        user = self.db.query(User).filter(User.username == "admin").first()
+        jti = str(uuid.uuid4())
+        old = utcnow_naive() - datetime.timedelta(minutes=5)
+        session = UserSession(
+            user_id=user.id, jti=jti, is_revoked=False,
+            created_at=old, last_seen_at=old,
+        )
+        self.db.add(session)
+        self.db.commit()
+        token = create_access_token(subject=user.id, jti=jti)
+
+        with patch.object(settings, "SESSION_IDLE_TIMEOUT_MINUTES", 1):
+            res = self.client.get(
+                "/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}
+            )
+
+        self.assertEqual(res.status_code, 401, res.text[:300])
+        self.assertIn("inactividad", res.json()["detail"].lower())
+        self.db.expire_all()
+        self.assertTrue(
+            self.db.query(UserSession).filter(UserSession.jti == jti).one().is_revoked
+        )

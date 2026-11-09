@@ -1,11 +1,12 @@
 import time
 import re
 import logging
+import unicodedata
 from typing import Any, Callable, List, Dict, Optional, Set, Tuple
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.constants import DEFAULT_DEMO_ROLE, ROLE_USUARIO, ADMIN_ROLES
+from app.core.constants import DEFAULT_DEMO_ROLE, ADMIN_ROLES
 from app.core.database import discard_failed_transaction
 from app.core.prompts import PromptManager
 from app.core.security import mask_query_rows
@@ -25,6 +26,20 @@ from app.modules.chat_engine.null_handler import NullHandler
 
 logger = logging.getLogger(__name__)
 
+# Dimensiones de negocio que el modelo suele inventar cuando no las ve en el
+# esquema. Se descartan SOLO si ninguna columna disponible contiene esa palabra:
+# en la base demo, "cliente"/"producto"/"monto" existen y la pregunta se queda.
+# Es un guardia de UX para que un boton no dispare una consulta imposible; el
+# gate duro sigue siendo el AST + la matriz RBAC.
+_UNSUPPORTED_DIMENSION_WORDS = {
+    "pais", "paises", "region", "regiones", "ciudad", "ciudades",
+    "duracion", "duraciones", "vuelo", "vuelos", "clima", "climas",
+    "edad", "edades", "genero", "generos", "salario", "salarios",
+    "margen", "margenes", "costo", "costos", "ganancia", "ganancias",
+    "cliente", "clientes", "producto", "productos", "venta", "ventas",
+    "monto", "montos", "importe", "importes", "precio", "precios",
+}
+
 class QueryEngine:
     """
     Unified Orchestrator for DATIA conversational analytics and data democratization.
@@ -41,6 +56,7 @@ class QueryEngine:
     # --- Suggestions Facade ---
     get_dynamic_suggestions_with_llm = SuggestionsService.get_dynamic_suggestions_with_llm
     get_dynamic_suggestions = SuggestionsService.get_dynamic_suggestions
+    build_builder_options = SuggestionsService.build_builder_options
 
     # --- Null & Remediation Facade ---
     _detect_remediation_intent = NullHandler.detect_remediation_intent
@@ -57,6 +73,84 @@ class QueryEngine:
     _build_dynamic_visualization = KPICalculator.build_dynamic_visualization
     _retrieve_few_shot_memories = SQLExecutor.retrieve_few_shot_memories
     _persist_learning_memory = SQLExecutor.persist_learning_memory
+
+    @staticmethod
+    def _available_columns_for_prompt(
+        table_columns_map: Dict[str, List[str]],
+        blocked_columns: Optional[Set[str]],
+    ) -> List[str]:
+        """Columnas que el prompt de sintesis puede nombrar.
+
+        Nunca incluye columnas BLOCKED: el schema prompt ya las omite y este
+        texto es otra salida hacia el LLM. MASKED si se incluye: la columna es
+        consultable y lo que se enmascara es el valor, no el nombre.
+        """
+        blocked_lower = {col.lower() for col in (blocked_columns or set())}
+        return sorted({
+            DynamicSchemaPruningService._sanitize_prompt_text(col, 80)
+            for table_cols in table_columns_map.values()
+            for col in table_cols
+            if col.lower() not in blocked_lower
+        })
+
+    @staticmethod
+    def _filter_suggested_questions(
+        questions: List[str],
+        available_columns: List[str],
+    ) -> List[str]:
+        """Quita botones que nombran columnas o dimensiones inexistentes.
+
+        El modelo propone preguntas creativas, pero un boton que consulta
+        `campo_8` o "pais de origen" termina en un error de SQL y el usuario
+        pierde la confianza en la accion. Se filtra por dos reglas baratas:
+        toda referencia `campo_N` debe existir, y una dimension conocida
+        (pais, region, duracion, cliente...) solo se acepta si alguna columna
+        disponible contiene esa palabra. No reemplaza al AST: es un guardia
+        de UX para las opciones.
+        """
+        if not questions:
+            return []
+
+        def normalize(value: str) -> str:
+            return "".join(
+                c for c in unicodedata.normalize("NFD", str(value).lower())
+                if unicodedata.category(c) != "Mn"
+            )
+
+        cols_norm = normalize(" ".join(available_columns))
+
+        def dimension_supported(word: str) -> bool:
+            stems = {word, word.rstrip("s")}
+            if word.endswith("es"):
+                stems.add(word[:-2])
+            return any(stem in cols_norm for stem in stems)
+
+        seen: Set[str] = set()
+        filtered: List[str] = []
+
+        for raw in questions:
+            question = str(raw or "").strip()
+            key = question.lower()
+            if not question or key in seen:
+                continue
+
+            q_norm = normalize(question)
+            refs = re.findall(r"campo_\d+", q_norm)
+            if any(ref not in cols_norm for ref in refs):
+                continue
+
+            unsupported = [
+                word for word in _UNSUPPORTED_DIMENSION_WORDS
+                if re.search(rf"\b{re.escape(word)}\b", q_norm)
+                and not dimension_supported(word)
+            ]
+            if unsupported:
+                continue
+
+            seen.add(key)
+            filtered.append(question)
+
+        return filtered
 
     @classmethod
     def _extract_suggested_questions(
@@ -100,7 +194,7 @@ class QueryEngine:
                 table_label = tables_used[0] if tables_used else "esta tabla"
                 suggested = [
                     f"¿Cuántos registros totales existen en {table_label}?",
-                    f"¿Cuáles son los registros más recientes?",
+                    "¿Cuáles son los registros más recientes?",
                     f"¿Cómo se desglosan por {first_col}?"
                 ]
 
@@ -298,7 +392,7 @@ class QueryEngine:
         is_admin: bool = False,
         db: Optional[Session] = None,
         role_id: Optional[int] = None,
-        connection_id: int = 1,
+        connection_id: Optional[int] = None,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         narrative_sink: Optional[Callable[[str], Any]] = None
     ) -> QueryResponse:
@@ -428,6 +522,10 @@ class QueryEngine:
                 tbl, exec_target, include_samples=False
             )
             table_columns_map[tbl.lower()] = [c["name"] for c in phys_cols_info if "name" in c]
+
+        available_columns = cls._available_columns_for_prompt(
+            table_columns_map, blocked_columns
+        )
 
         # BRANCH A: Conversational Assistant
         if response_type == "conversational" and not remediation_action:
@@ -632,6 +730,12 @@ class QueryEngine:
 
         if is_llm_active:
             conv_context = PromptManager.format_conversation_context_for_synthesis(conversation_history) if conversation_history else ""
+            synthesis_profile = KPICalculator.select_synthesis_profile(response_type, pres_hints)
+            data_profile = (
+                KPICalculator.build_data_profile(rows, columns)
+                if synthesis_profile == "minimal"
+                else ""
+            )
             unified_res = await KPICalculator.generate_unified_synthesis_with_llm(
                 question=effective_question,
                 user_role=user_role,
@@ -640,7 +744,10 @@ class QueryEngine:
                 secured_sql=secured_sql,
                 conversation_context=conv_context,
                 is_llm_active=is_llm_active,
-                narrative_sink=narrative_sink
+                narrative_sink=narrative_sink,
+                profile=synthesis_profile,
+                data_profile=data_profile,
+                available_columns=available_columns,
             )
             if unified_res:
                 if unified_res.get("narrative"):
@@ -673,13 +780,23 @@ class QueryEngine:
                 conversational, rows, columns, meta.get("tables_used", list(allowed_tables))
             )
 
+        suggested_questions = cls._filter_suggested_questions(
+            suggested_questions, available_columns
+        )
+        if not suggested_questions:
+            suggested_questions, _ = cls._extract_suggested_questions(
+                None, rows, columns, meta.get("tables_used", list(allowed_tables))
+            )
+            suggested_questions = cls._filter_suggested_questions(
+                suggested_questions, available_columns
+            )
+
         if not pres_hints.show_executive_report:
             final_exec_report = None
-        if not pres_hints.show_kpis:
-            kpis = []
-        if not pres_hints.show_chart:
-            chart_type = "none"
-            chart_option = {"series": []}
+        # Los KPIs y el grafico deterministas se conservan aunque la vista
+        # principal sea texto-first: la UI los muestra en "Detalles" sin volver
+        # a llamar al LLM. `show_kpis`/`show_chart` son pistas de visibilidad,
+        # no una orden de borrar datos que ya se calcularon.
 
         clarification_opts = IntentClassifier.detect_ambiguity_and_options(effective_question, allowed_tables)
         anomalies_detected = KPICalculator.detect_statistical_anomalies(rows, columns)

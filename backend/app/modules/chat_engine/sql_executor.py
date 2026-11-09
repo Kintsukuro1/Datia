@@ -1,19 +1,50 @@
+import asyncio
 import json
 import re
 from typing import List, Dict, Any, Optional, Set, Tuple
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.constants import ADMIN_ROLES
 from app.core.database import discard_failed_transaction
 from app.modules.catalog.services.schema_inspector import quote_sql_identifier
-from app.modules.chat_engine.ast_validator import ASTValidator, ASTValidationError
+from app.modules.chat_engine.ast_validator import ASTValidator
 from app.modules.chat_engine.llm_service import LLMService
+
+class ReadOnlyTransactionError(RuntimeError):
+    """La conexion no pudo abrirse en modo solo-lectura.
+
+    Es un fallo del pilar, no un error de la consulta: se propaga sin intentar
+    auto-correccion ni fallback, porque ambos caminos volverian a ejecutar SQL
+    sobre una conexion cuyo modo no se pudo garantizar.
+    """
+
 
 class SQLExecutor:
     """
     Centralizes raw database execution, context managers, self-healing SQL with local LLM,
     and learning memory persistence.
     """
+
+    @classmethod
+    def _enforce_read_only(cls, conn) -> None:
+        """Fija la transaccion en solo-lectura o aborta.
+
+        `build_engine_for_connector` ya configura `default_transaction_read_only`,
+        pero esto es defensa en profundidad: si el `SET` falla (permisos,
+        version del motor, un engine construido por otro camino), NO se ejecuta
+        la consulta. Antes el error se tragaba y la consulta seguia.
+        """
+        try:
+            conn.execute(text("SET TRANSACTION READ ONLY;"))
+            conn.execute(
+                text(f"SET LOCAL statement_timeout = {settings.QUERY_TIMEOUT_SECONDS * 1000};")
+            )
+        except Exception as exc:
+            raise ReadOnlyTransactionError(
+                "No se pudo garantizar una transaccion de solo lectura en la "
+                "base corporativa; la consulta se cancela."
+            ) from exc
 
     @classmethod
     def _clean_row(cls, row_mapping: Any) -> Dict[str, Any]:
@@ -37,16 +68,11 @@ class SQLExecutor:
         """
         # If target_db is a CorporateConnection model object
         if hasattr(target_db, "db_type"):
-            from sqlalchemy import text
             from app.core.database import connector_engine
             from app.modules.admin_catalog.models import DatabaseType
             with connector_engine(target_db) as eng, eng.connect() as conn:
                 if getattr(target_db, "db_type", None) == DatabaseType.POSTGRESQL or "postgres" in str(getattr(target_db, "db_type", "")).lower():
-                    try:
-                        conn.execute(text("SET TRANSACTION READ ONLY;"))
-                        conn.execute(text(f"SET statement_timeout = {settings.QUERY_TIMEOUT_SECONDS * 1000};"))
-                    except Exception:
-                        pass
+                    cls._enforce_read_only(conn)
                 res = conn.execute(text(sql))
                 return [cls._clean_row(dict(r._mapping)) for r in res.fetchall()]
 
@@ -118,9 +144,13 @@ class SQLExecutor:
         was_self_healed = False
         validation_label = "APROBADO"
 
-        # Pre-flight Physical Table Existence Check (< 1ms)
+        # Pre-flight Physical Table Existence Check. La introspección usa
+        # SQLAlchemy sincrónico: se manda al threadpool para no bloquear el
+        # event loop mientras el conector del cliente responde.
         from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
-        phys_tables = DynamicSchemaPruningService.get_physical_db_tables(target_db_path)
+        phys_tables = await asyncio.to_thread(
+            DynamicSchemaPruningService.get_physical_db_tables, target_db_path
+        )
         if phys_tables:
             missing_tables = [t for t in meta.get("tables_used", []) if t.lower() not in phys_tables]
             if missing_tables:
@@ -133,8 +163,14 @@ class SQLExecutor:
                 )
 
         try:
-            rows = cls.execute_raw_sql(target_db_path, secured_sql, dialect=dialect)
+            rows = await asyncio.to_thread(
+                cls.execute_raw_sql, target_db_path, secured_sql, dialect
+            )
             return rows, secured_sql, meta, was_self_healed, validation_label
+        except ReadOnlyTransactionError:
+            # No es un error de SQL que el LLM pueda corregir: es la garantia
+            # de solo-lectura la que fallo. Se propaga tal cual.
+            raise
         except Exception as err:
             err_str = str(err).lower()
             is_fatal_missing_table = (
@@ -193,28 +229,21 @@ Genera la consulta SQL corregida y funcional para {engine_label}:"""
                         table_columns=table_columns_map,
                         is_admin=is_admin
                     )
-                    rows = cls.execute_raw_sql(target_db_path, healed_secured_sql, dialect=dialect)
+                    rows = await asyncio.to_thread(
+                        cls.execute_raw_sql, target_db_path, healed_secured_sql, dialect
+                    )
                     return rows, healed_secured_sql, healed_meta, True, "APROBADO (Auto-Corregido)"
+                except ReadOnlyTransactionError:
+                    raise
                 except Exception:
                     pass
 
-            # Fallback of emergency
-            first_table = sorted(list(allowed_tables))[0] if allowed_tables else "dual"
-            raw_fb_sql = f"SELECT * FROM {quote_sql_identifier(first_table)} LIMIT 20"
-            try:
-                _, secured_fb_sql, fb_meta = ASTValidator.validate_and_secure_sql(
-                    raw_fb_sql,
-                    dialect=dialect,
-                    allowed_tables=allowed_tables,
-                    blocked_columns=blocked_columns,
-                    table_columns=table_columns_map,
-                    max_limit=20,
-                    is_admin=is_admin
-                )
-                rows = cls.execute_raw_sql(target_db_path, secured_fb_sql, dialect=dialect)
-                return rows, secured_fb_sql, fb_meta, False, "APROBADO (Fallback de Emergencia)"
-            except Exception:
-                raise RuntimeError(f"Error al ejecutar consulta en la BD: {str(err)}")
+            # Sin fallback de emergencia: si el SQL inicial y el self-healing
+            # fallan, no hay datos que respondan la pregunta. Devolver filas de
+            # otra tabla y narrarlas como si contestaran es peor que el error.
+            # `engine.py` convierte esta excepcion en ERROR_EJECUCION sin filas,
+            # sin sintesis y sin persistir memoria de aprendizaje.
+            raise RuntimeError(f"Error al ejecutar consulta en la BD: {str(err)}")
 
     @classmethod
     def persist_learning_memory(

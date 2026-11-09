@@ -66,7 +66,7 @@ class TestChangePasswordRevokesSessions(unittest.TestCase):
 
         res = self.client.post("/api/v1/auth/change-password", json={
             "old_password": "admin123",
-            "new_password": "admin1234",
+            "new_password": "NuevaClaveSegura-123",
         }, headers={"Authorization": f"Bearer {victim_token}"})
         self.assertEqual(res.status_code, 200, res.text[:300])
         self.assertGreaterEqual(res.json()["revoked_sessions"], 1)
@@ -84,7 +84,7 @@ class TestChangePasswordRevokesSessions(unittest.TestCase):
             "/api/v1/auth/me", headers={"Authorization": f"Bearer {victim_token}"}).status_code, 200)
 
     def test_change_password_rejects_short_new_password(self):
-        """El mínimo de 6 caracteres se mantiene (ahora compartido con register)."""
+        """El mínimo de 12 caracteres se mantiene (ahora compartido con register)."""
         jti = str(uuid.uuid4())
         token = self._session_for(jti)
         res = self.client.post("/api/v1/auth/change-password", json={
@@ -151,8 +151,10 @@ class TestAdminCreatePasswordStrength(unittest.TestCase):
             with self.subTest(password=bad):
                 with self.assertRaises(ValueError):
                     validate_password_strength(bad)
-        self.assertEqual(validate_password_strength("abcdef"), "abcdef")
-        self.assertEqual(MIN_PASSWORD_LENGTH, 6)
+        self.assertEqual(validate_password_strength("abcdefghijkl"), "abcdefghijkl")
+        self.assertEqual(MIN_PASSWORD_LENGTH, 12)
+        with self.assertRaises(ValueError):
+            validate_password_strength("password1234")
 
         # Y el mismo umbral vale para el cambio de contraseña
         jti = str(uuid.uuid4())

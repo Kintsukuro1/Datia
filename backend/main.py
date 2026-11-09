@@ -1,12 +1,19 @@
-import uvicorn
+import re
+import time
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import uvicorn
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import text
+from starlette.datastructures import Headers, MutableHeaders
+
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.metrics import observe_http_request, render_metrics
+from app.core.request_context import get_request_id, request_id_var
 from app.api.v1.router import api_router
 from app.core.database import SessionLocal
 
@@ -15,6 +22,48 @@ from app.core.database import SessionLocal
 # apagados salvo que `ENABLE_API_DOCS` los vuelva a encender a proposito.
 _IS_PROD = settings.ENVIRONMENT.lower() == "production"
 _DOCS_ENABLED = settings.ENABLE_API_DOCS if settings.ENABLE_API_DOCS is not None else not _IS_PROD
+
+
+class ObservabilityMiddleware:
+    """Request ID + métricas HTTP sin buffering.
+
+    Es ASGI puro y no `BaseHTTPMiddleware` para no romper SSE: el endpoint de
+    chat streamea y un middleware que bufferiza arruina la experiencia.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        incoming = Headers(scope=scope).get("x-request-id", "").strip()
+        # Solo caracteres seguros: un header de cliente no puede inyectar
+        # separadores ni contenido raro en logs/respuesta.
+        incoming = re.sub(r"[^A-Za-z0-9._-]", "", incoming)[:64]
+        request_id = incoming or uuid.uuid4().hex
+        token = request_id_var.set(request_id)
+        started = time.perf_counter()
+        status_code = 500
+
+        async def send_with_request_id(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+                MutableHeaders(scope=message)["X-Request-ID"] = request_id
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_request_id)
+        finally:
+            observe_http_request(
+                scope.get("method", "UNKNOWN"),
+                status_code,
+                time.perf_counter() - started,
+            )
+            request_id_var.reset(token)
+
 
 def validate_startup_security():
     """Enforces production checks and warns about risky local configurations."""
@@ -33,19 +82,22 @@ def validate_startup_security():
                 "SECRET_KEY no fue configurado para producción. Defina una clave única en su archivo .env antes de desplegar."
             )
         if "*" in settings.CORS_ORIGINS:
-            # `allow_credentials=False` reduce el daño, pero un origen `*` sigue
-            # permitiendo que cualquier sitio haga peticiones a la API. No se
-            # detiene el arranque: es una advertencia, no una condición fatal
-            # como la SECRET_KEY por defecto.
-            _warn(
-                "CORS con origen '*' en producción. Cualquier sitio puede llamar "
-                "a los endpoints públicos; la sesión viaja en el header Bearer, "
-                "no en cookies, pero conviene restringir CORS_ORIGINS a los "
-                "orígenes reales."
+            # En una instalación on-prem el SPA y la API comparten origen;
+            # `*` no tiene uso legítimo y deja la API abierta a cualquier sitio.
+            # Es fatal, no una advertencia: la configuración por defecto debe
+            # fallar cerrada, no depender de que alguien lea el log del arranque.
+            raise RuntimeError(
+                "CORS_ORIGINS no puede contener '*' en producción. Defina los "
+                'orígenes reales (por ejemplo ["http://localhost:8080"]).'
             )
-            logger.error(
-                "CORS: origenes abiertos con '*' en produccion. "
-                "Defina CORS_ORIGINS con los origenes reales."
+        if not settings.FERNET_KEY:
+            # Sin FERNET_KEY la clave se deriva de SECRET_KEY. Rotar SECRET_KEY
+            # (que sí es una operación esperable) deja ilegibles las credenciales
+            # de los conectores, y el fallo aparece recién en la próxima consulta.
+            raise RuntimeError(
+                "FERNET_KEY no fue configurada para producción. Genere una con "
+                "cryptography.fernet.Fernet.generate_key() y guárdela en .env; "
+                "sin ella, rotar SECRET_KEY rompe las credenciales guardadas."
             )
         if settings.ENABLE_API_DOCS:
             _warn("/docs y OpenAPI están habilitados en producción sin autenticación.")
@@ -141,9 +193,43 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(ObservabilityMiddleware)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """500 con ID de correlación; el stack queda en el log, no en la respuesta."""
+    request_id = get_request_id()
+    logger.exception("Error no controlado [%s] en %s", request_id, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Error interno del servidor. Contacte a soporte con el ID de error.",
+            "request_id": request_id,
+        },
+    )
+
 
 # Include API v1 router
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+@app.get("/version")
+def version_info():
+    """Versión y commit del artefacto; el deploy los inyecta como env."""
+    return {
+        "version": (settings.DATIA_VERSION or "dev"),
+        "commit": (settings.DATIA_COMMIT or ""),
+        "environment": settings.ENVIRONMENT,
+    }
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics():
+    """Formato Prometheus. El backend no publica puerto; nginx no proxya /metrics."""
+    return PlainTextResponse(
+        render_metrics(), media_type="text/plain; version=0.0.4"
+    )
+
 
 @app.get("/")
 def root():

@@ -1,28 +1,46 @@
 import React from 'react';
 import {
   Sparkles,
-  TrendingUp,
   DollarSign,
-  AlertTriangle,
   Users,
+  Calendar,
+  FileText,
+  Package,
   ArrowUpRight,
   ShieldCheck,
   Cpu,
 } from 'lucide-react';
 import logoDatiaDark from '../../pages/Logo_datia_2.png';
 import logoDatiaLight from '../../pages/Logo_Datia_3.png';
+import { stripSuggestionEmoji } from '../../features/chat/utils/query_builder';
 
 interface ChatEmptyStateProps {
   promptSuggestions: string[];
   onSelectSuggestion: (suggestion: string) => void;
 }
 
-const SUGGESTION_ICONS = [
-  <TrendingUp className="w-4 h-4 text-cyan-400 shrink-0" key="trend" />,
-  <DollarSign className="w-4 h-4 text-emerald-400 shrink-0" key="dollar" />,
-  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" key="alert" />,
-  <Users className="w-4 h-4 text-purple-400 shrink-0" key="users" />,
-];
+// El backend antepone un emoji a cada sugerencia. La tarjeta ya tiene su propio
+// icono, y el emoji se renderiza como un glifo suelto (o roto) al lado: se quita
+// solo para mostrar y para enviar, sin tocar el texto de la pregunta.
+const suggestionIcon = (suggestion: string) => {
+  const text = suggestion.toLowerCase();
+  if (/(cliente|comprador|usuario|vendedor|proveedor)/.test(text)) {
+    return <Users className="w-4 h-4 text-purple-400 shrink-0" />;
+  }
+  if (/(documento|boleta|factura)/.test(text)) {
+    return <FileText className="w-4 h-4 text-cyan-400 shrink-0" />;
+  }
+  if (/(fecha|periodo|período|mes|año|anio|evoluci|tendencia|tiempo)/.test(text)) {
+    return <Calendar className="w-4 h-4 text-cyan-400 shrink-0" />;
+  }
+  if (/(monto|total|ingreso|venta|precio|costo|margen)/.test(text)) {
+    return <DollarSign className="w-4 h-4 text-emerald-400 shrink-0" />;
+  }
+  if (/(producto|filamento|cantidad|unidad|inventario)/.test(text)) {
+    return <Package className="w-4 h-4 text-amber-400 shrink-0" />;
+  }
+  return <Sparkles className="w-4 h-4 text-brand-400 shrink-0" />;
+};
 
 export const ChatEmptyState: React.FC<ChatEmptyStateProps> = ({
   promptSuggestions,
@@ -63,19 +81,19 @@ export const ChatEmptyState: React.FC<ChatEmptyStateProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
             {promptSuggestions.map((suggestion, idx) => (
               <button
-                key={suggestion}
+                key={`${idx}-${suggestion}`}
                 type="button"
-                onClick={() => onSelectSuggestion(suggestion)}
+                onClick={() => onSelectSuggestion(stripSuggestionEmoji(suggestion))}
                 className="glass-card-interactive group flex flex-col gap-3 p-4 rounded-xl w-full cursor-pointer"
               >
                 <div className="flex items-start justify-between w-full gap-2">
                   <div className="p-2 rounded-lg bg-app-surface border border-app-border group-hover:border-brand-500/40 transition-colors">
-                    {SUGGESTION_ICONS[idx % SUGGESTION_ICONS.length]}
+                    {suggestionIcon(suggestion)}
                   </div>
                   <ArrowUpRight className="w-4 h-4 text-app-muted group-hover:text-brand-400 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all shrink-0" />
                 </div>
                 <span className="text-xs sm:text-sm font-medium text-app-text leading-snug">
-                  {suggestion}
+                  {stripSuggestionEmoji(suggestion)}
                 </span>
               </button>
             ))}

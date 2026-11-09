@@ -23,6 +23,7 @@ from app.modules.chat_engine.llm_service import LLMService
 from app.modules.catalog.services.catalog_enricher import (
     LLM_COLUMNS_PER_CALL,
     LLM_MAX_TOKENS_CAP,
+    LLM_PROMPT_TOKENS_PER_COLUMN,
     LLM_TOKENS_PER_COLUMN,
     LLM_TOTAL_BUDGET_S,
 )
@@ -32,9 +33,10 @@ from app.modules.catalog.services.schema_inspector import SchemaInspector
 # Techo de salida por tabla del enricher: min(cap, 90*columnas + 128). Se estima
 # que el modelo cumple el ~60% de ese techo (los JSON tipicos son mas cortos).
 _EXPECTED_OUTPUT_RATIO = 0.6
-# Costo del prompt: ~8 tokens por columna (nombre+tipo) mas el encabezado.
-_PROMPT_TOKENS_PER_TABLE = 20
-_PROMPT_TOKENS_PER_COLUMN = 8
+# Costo del prompt: perfil de cada columna (nulos, distintos, min/max, top,
+# muestras y patron) mas el contexto de la tabla.
+_PROMPT_TOKENS_PER_TABLE = 80
+_PROMPT_TOKENS_PER_COLUMN = LLM_PROMPT_TOKENS_PER_COLUMN
 # En CPU el procesamiento del prompt suele ser varias veces mas rapido que la
 # generacion; 4x es una referencia conservadora para no prometer de menos.
 _PROMPT_SPEED_FACTOR = 4.0

@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { X, BookOpen, Database, AlertCircle } from 'lucide-react';
-import { CatalogItem } from './CatalogEditModal';
+import type { CatalogRuleDraft } from '../../features/admin/services/catalog_service';
 import { useModalA11y } from '../../hooks/useModalA11y';
 
 interface CatalogAddModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAdd: (item: CatalogItem) => Promise<boolean> | boolean;
+  onAdd: (item: CatalogRuleDraft) => Promise<boolean> | boolean;
   connectionName?: string;
   connectionId?: number;
   errorMsg?: string | null;
@@ -53,7 +53,7 @@ export const CatalogAddModal: React.FC<CatalogAddModalProps> = ({
         formula: formFormula.trim(),
         is_ai: false,
         connection_id: connectionId,
-      } as any);
+      });
 
       if (!ok) return;
 
@@ -111,7 +111,7 @@ export const CatalogAddModal: React.FC<CatalogAddModalProps> = ({
               type="text"
               value={formTable}
               onChange={(e) => setFormTable(e.target.value)}
-              placeholder="ej. Answer o fact_ventas"
+              placeholder="ej. nombre_tabla"
               className="w-full bg-app-bg border border-app-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500 font-mono"
               required
             />
@@ -127,7 +127,7 @@ export const CatalogAddModal: React.FC<CatalogAddModalProps> = ({
               type="text"
               value={formColumn}
               onChange={(e) => setFormColumn(e.target.value)}
-              placeholder="ej. AnswerText o monto_total"
+              placeholder="ej. nombre_columna"
               className="w-full bg-app-bg border border-app-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500 font-mono"
               required
             />

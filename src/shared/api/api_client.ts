@@ -87,6 +87,18 @@ export const revokeCurrentSession = (): void => {
 // cambiar la clave. El evento lo escucha AuthContext y abre el formulario forzado.
 export const PASSWORD_CHANGE_PENDING_EVENT = 'datia:password-change-pending';
 
+/**
+ * Sesión rechazada por el servidor (401 con token presente): el token expiró o
+ * fue revocado desde otra pantalla. Sin este aviso la app seguía mostrando al
+ * usuario "logueado" y cada request fallaba con 401 hasta recargar.
+ */
+export const SESSION_EXPIRED_EVENT = 'datia:session-expired';
+
+const notifySessionExpired = () => {
+  if (typeof window === 'undefined' || !getAuthToken()) return;
+  window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+};
+
 const isPasswordChangePending = (status: number, data: unknown): boolean => {
   const detail = (data as { detail?: unknown } | null)?.detail;
   return status === 403 && typeof detail === 'string' && detail.includes('/auth/change-password');
@@ -153,6 +165,8 @@ interface RequestConfig {
   headers?: Record<string, string>;
   responseType?: string;
   signal?: AbortSignal;
+  /** Tope de la request normal. El stream usa su propio AbortSignal. */
+  timeoutMs?: number;
 }
 
 interface ApiError extends Error {
@@ -223,16 +237,43 @@ async function request<T = unknown>(path: string, options: RequestInit & Request
     headers['Content-Type'] = 'application/json';
   }
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
+  // Sin `signal` del llamador, esta request lleva su propio tope: una conexión
+  // colgada no puede dejar la UI cargando para siempre. Si el llamador ya pasó
+  // un signal (por ejemplo un stream o un cancel), se respeta tal cual.
+  let signal = options.signal;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  if (!signal) {
+    const controller = new AbortController();
+    signal = controller.signal;
+    timeoutHandle = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+      signal,
+    });
+  } catch (error) {
+    if (
+      !options.signal &&
+      (error as { name?: string } | null)?.name === 'AbortError'
+    ) {
+      throw new Error('La solicitud tardó demasiado. Intenta nuevamente.');
+    }
+    throw error;
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
 
   if (!response.ok) {
     const errorData: Record<string, unknown> = await response.json().catch(() => ({ detail: response.statusText }));
     if (isPasswordChangePending(response.status, errorData)) {
       window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_PENDING_EVENT));
     }
+    if (response.status === 401) notifySessionExpired();
+
     const message = detailToMessage(errorData.detail, response.statusText);
     errorData.detail = message;
     const error = new Error(message) as ApiError;
@@ -282,6 +323,7 @@ export const apiClient = {
       if (isPasswordChangePending(response.status, errorData)) {
         window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_PENDING_EVENT));
       }
+      if (response.status === 401) notifySessionExpired();
       const message = detailToMessage(errorData.detail, response.statusText);
       errorData.detail = message;
       const error = new Error(message) as ApiError;

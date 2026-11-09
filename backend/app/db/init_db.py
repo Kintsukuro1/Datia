@@ -1,7 +1,7 @@
-import app.modules.auth.models
-import app.modules.admin_catalog.models
-import app.modules.telemetry_audit.models
-import app.modules.chat_engine.models
+import app.modules.auth.models  # noqa: F401 - registra el modelo en SQLAlchemy
+import app.modules.admin_catalog.models  # noqa: F401
+import app.modules.telemetry_audit.models  # noqa: F401
+import app.modules.chat_engine.models  # noqa: F401
 from sqlalchemy.orm import Session
 from app.core.database import Base, engine, ensure_schema_migrations
 from app.core.constants import (
@@ -12,7 +12,7 @@ from app.core.constants import (
 from app.core.security import get_password_hash
 from app.modules.auth.models import User, Role, Domain
 from app.modules.admin_catalog.models import (
-    CorporateConnection, DatabaseType, SemanticCatalog, RoleTablePermission,
+    CorporateConnection, DatabaseType, RoleTablePermission,
     RoleColumnPermission, ColumnPermissionType
 )
 
@@ -385,7 +385,6 @@ def init_db(db: Session):
         if r_obj:
             role_table_mappings.append((r_obj, tbl_list))
 
-    primary_conn = None
     standard_connections = db.query(CorporateConnection).filter(CorporateConnection.is_uploaded == False).all()
     # Con la demo apagada no se siembra la matriz declarada: es la gobernanza de
     # la demo y sin conector de plataforma (el de arriba) no hay a que asignarla.

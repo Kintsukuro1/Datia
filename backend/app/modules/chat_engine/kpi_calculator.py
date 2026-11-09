@@ -2,20 +2,20 @@ import json
 import re
 import inspect
 import statistics
+from collections import Counter
 from typing import Any, Callable, List, Dict, Optional, Tuple
 from app.core.constants import DATE_COLUMN_KEYWORDS, CURRENCY_COLUMN_KEYWORDS, PERCENTAGE_COLUMN_KEYWORDS
 from app.core.logging import logger
 from app.core.prompts import PromptManager
 from app.modules.chat_engine.llm_service import LLMService
-from app.modules.chat_engine.schemas import KPICard, ExecutiveReport
+from app.modules.chat_engine.schemas import KPICard, ExecutiveReport, PresentationHints
 
 # Parametros de generacion de la sintesis unificada, en un solo lugar.
 #
 # `SYNTHESIS_MAX_TOKENS` estaba en 1000 y el JSON que pide el prompt se estima en
 # 850-950 tokens: narrativa de 2-3 parrafos + 3 KPIs + overview + 2-3 hallazgos +
-# 3 recomendaciones + business_impact + 3 preguntas + el andamiaje JSON. Sin
-# margen, y sin margen no hay margen: basta un acento de mas en una cadena y el
-# cierre se cae.
+# 3 recomendaciones + 3 preguntas + el andamiaje JSON. Sin margen, y sin margen
+# no hay margen: basta un acento de mas en una cadena y el cierre se cae.
 #
 # El techo NO se sube mucho mas a proposito. El cliente corta la espera a 90 s
 # (`useChatEngine.ts`) y un Q4_K_M en CPU va a ~5 tok/s, asi que cada token de
@@ -23,6 +23,12 @@ from app.modules.chat_engine.schemas import KPICard, ExecutiveReport
 # compra JSON truncado a cambio de mas timeout.
 SYNTHESIS_MAX_TOKENS = 1200
 SYNTHESIS_TEMPERATURE = 0.15
+
+# Perfil texto-first (estilo ChatGPT/Claude): narrativa + preguntas de
+# profundizacion. El techo es mas bajo porque la UI ya no pide KPIs ni informe;
+# el modelo debe cortar solo al terminar la narrativa y las opciones.
+MINIMAL_SYNTHESIS_MAX_TOKENS = 500
+MINIMAL_SYNTHESIS_TEMPERATURE = 0.2
 
 # Umbrales de negocio del informe ejecutivo. Estaban sueltos dentro de una
 # cadena ternaria y de un dict, donde el unico nombre que los describia era la
@@ -142,6 +148,28 @@ class KPICalculator:
     """
 
     @classmethod
+    def deterministic_risk(
+        cls,
+        rows: List[Dict[str, Any]],
+        columns: List[str]
+    ) -> Optional[str]:
+        """Riesgo de concentración calculado por el backend, nunca por el modelo.
+
+        `None` significa "no hay concentración medible" (menos de 3 filas, sin
+        métrica numérica, total <= 0 o valores negativos). No se degrada a
+        "BAJO": la UI oculta el badge y "sin dato" no es "riesgo bajo".
+        """
+        pareto = cls.compute_pareto_concentration(rows, columns)
+        if not pareto:
+            return None
+        share = pareto["top_entity_share"]
+        if share > RISK_HIGH_PCT:
+            return "ALTO"
+        if share > RISK_MEDIUM_PCT:
+            return "MEDIO"
+        return "BAJO"
+
+    @classmethod
     def build_dynamic_visualization(
         cls,
         question: str,
@@ -159,7 +187,8 @@ class KPICalculator:
                 overview=f"No se encontraron registros para la consulta '{question}'.",
                 key_findings=["Cero registros coincidentes con los criterios de búsqueda."],
                 recommendations=["Verificar los parámetros de búsqueda o ampliar el rango de fechas/categorías."],
-                risk_level="BAJO"
+                # Sin filas no hay concentración medible: no se inventa "BAJO".
+                risk_level=None
             )
             return kpis, "bar", chart_option, summary, exec_rep
 
@@ -230,8 +259,8 @@ class KPICalculator:
                     "Consultar el detalle completo de cada fila en la pestaña de Datos.",
                     "Cruzar con métricas numéricas o filtros adicionales para profundizar el análisis analítico."
                 ],
-                risk_level="BAJO",
-                business_impact=f"Información disponible para seguimiento y consulta de {cat_title}."
+                # Sin métrica numérica no hay concentración medible.
+                risk_level=None
             )
 
             return kpis, chart_type, chart_option, summary, exec_rep
@@ -279,7 +308,11 @@ class KPICalculator:
             )
         ]
 
-        if date_cols and primary_num:
+        if len(rows) < 2:
+            # Un solo valor no se grafica: un pie/bar de una sola barra no
+            # aporta y hacia que "Detalles" mostrara un grafico vacio.
+            chart_type = "none"
+        elif date_cols and primary_num:
             chart_type = "line"
         elif len(rows) <= 6 and primary_cat and primary_num:
             chart_type = "pie"
@@ -289,7 +322,9 @@ class KPICalculator:
         categories = [str(r.get(primary_cat, f'Item {i+1}')) for i, r in enumerate(rows[:20])]
         values = [(float(r.get(primary_num, 0)) if isinstance(r.get(primary_num), (int, float)) else 0) for r in rows[:20]]
 
-        if chart_type == "pie":
+        if chart_type == "none":
+            chart_option = {"series": []}
+        elif chart_type == "pie":
             pie_data = [{"name": str(r.get(primary_cat, f'Item {i+1}')), "value": float(r.get(primary_num, 0)) if isinstance(r.get(primary_num), (int, float)) else 0} for i, r in enumerate(rows[:8])]
             chart_option = {
                 "tooltip": {"trigger": "item"},
@@ -332,22 +367,21 @@ class KPICalculator:
             f"La entidad principal es **{top_entity}** representando **{formatted_top}** ({pct_top}% del total)."
         )
 
-        risk = "ALTO" if pct_top > RISK_HIGH_PCT else "MEDIO" if pct_top > RISK_MEDIUM_PCT else "BAJO"
+        risk = cls.deterministic_risk(rows, columns)
 
         exec_rep = ExecutiveReport(
-            overview=f"Diagnóstico cuantitativo sobre '{question}': se procesaron {len(rows)} registros con un acumulado de {formatted_total} en {kpi_title}.",
+            overview=f"Composición del resultado de '{question}': se procesaron {len(rows)} registros con un acumulado de {formatted_total} en {kpi_title}.",
             key_findings=[
                 f"Volumen y dispersión: {len(rows)} registros evaluados con un promedio de {formatted_avg} por ítem.",
                 f"Concentración principal: '{top_entity}' representa {formatted_top} ({pct_top}% del total acumulado).",
-                f"Métrica de referencia: {kpi_title} acumula {formatted_total} con riesgo de dependencia {risk}."
+                f"Métrica de referencia: {kpi_title} acumula {formatted_total}."
             ],
             recommendations=[
                 f"Paso 1 (Corto plazo, 1-15 días): Auditar las transacciones y condiciones comerciales asociadas a '{top_entity}'.",
-                f"Paso 2 (Mediano plazo, 30-60 días): Establecer un plan de diversificación para equilibrar la concentración de {pct_top}% en {kpi_title}.",
-                f"Paso 3 (Métrica de control): Monitorear que ningún ítem individual supere el 30% del volumen agregado en el próximo ciclo."
+                f"Paso 2 (Mediano plazo, 30-60 días): Revisar la concentración observada de {pct_top}% en {kpi_title} y evaluar alternativas de diversificación.",
+                f"Paso 3 (Métrica de control): Usar {kpi_title} como métrica de seguimiento ya presente en los datos."
             ],
-            risk_level=risk,
-            business_impact=f"Proyección What-If: Diversificar la dependencia de '{top_entity}' reduce la exposición a caídas abruptas en {kpi_title}."
+            risk_level=risk
         )
 
         return kpis, chart_type, chart_option, summary, exec_rep
@@ -479,20 +513,111 @@ class KPICalculator:
             return None
         findings = [str(f) for f in data.get("key_findings", []) if f]
         recs = [str(r) for r in data.get("recommendations", []) if r]
-        risk = str(data.get("risk_level", "BAJO")).upper()
-        if risk not in ("BAJO", "MEDIO", "ALTO", "CRITICO"):
-            risk = "BAJO"
-        impact = str(data.get("business_impact", "")).strip() or None
+        # El modelo puede devolver un JSON viejo con risk_level/business_impact.
+        # Se descartan a proposito: el riesgo se calcula con las filas y el
+        # impacto economico no se puede derivar de estos datos.
         return ExecutiveReport(
             overview=overview,
             key_findings=findings if findings else ["Análisis contextual de los datos devueltos."],
             recommendations=recs if recs else ["Monitorear periódicamente los indicadores observados."],
-            risk_level=risk,
-            business_impact=impact
+            risk_level=None,
+            business_impact=None
         )
 
+    @staticmethod
+    def select_synthesis_profile(response_type: str, pres_hints: PresentationHints) -> str:
+        """Elige el perfil de sintesis.
+
+        `full` solo se paga cuando el usuario pidio un informe o el motor va a
+        mostrar el informe ejecutivo. El resto de las consultas usa `minimal`:
+        narrativa corta + botones, que es el formato conversacional de la UI.
+        """
+        if response_type == "report" or getattr(pres_hints, "show_executive_report", False):
+            return "full"
+        return "minimal"
+
+    @staticmethod
+    def build_data_profile(
+        rows: List[Dict[str, Any]],
+        columns: List[str],
+        max_chars: int = 2400,
+    ) -> str:
+        """Perfil agregado de las filas devueltas, para que la narrativa no extrapole.
+
+        La sintesis tradicional recibia solo `rows[:10]`. Con un resultado de 69
+        grupos, el modelo hablaba de "las siguientes 12 categorias" sin haberlas
+        visto, y con un conteo inventaba KPIs. Este perfil calcula en Python
+        totales, promedios, nulos y valores top sobre TODAS las filas devueltas;
+        se manda como JSON y el modelo solo lo redacta.
+
+        No abre una via nueva de datos: se calcula sobre `rows`, que ya paso por
+        `mask_query_rows` y por la remediacion en memoria. El tope de caracteres
+        evita que el perfil crezca sin limite y desplace a la muestra.
+        """
+        if not rows or not columns:
+            return ""
+
+        profile: Dict[str, Any] = {
+            "filas_devueltas": len(rows),
+            "columnas": {},
+        }
+
+        for col in columns:
+            values = [r.get(col) for r in rows]
+            non_null = [v for v in values if v is not None]
+            nulls = len(values) - len(non_null)
+            numeric = [
+                v for v in non_null
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            ]
+            entry: Dict[str, Any] = {
+                "nulos": nulls,
+                "distintos": len({str(v) for v in non_null}),
+            }
+
+            if non_null and len(numeric) == len(non_null):
+                entry["tipo"] = "numerica"
+                entry["suma"] = round(sum(numeric), 2)
+                entry["promedio"] = round(sum(numeric) / len(numeric), 2)
+                entry["min"] = min(numeric)
+                entry["max"] = max(numeric)
+            elif not non_null:
+                entry["tipo"] = "vacia"
+            else:
+                entry["tipo"] = "texto"
+                # Solo para cardinalidad baja: en una columna de IDs el "top"
+                # no describe nada y ocupa prompt.
+                if entry["distintos"] <= 12:
+                    counts = Counter(str(v) for v in non_null)
+                    entry["top"] = [
+                        {"valor": str(value)[:40], "n": amount}
+                        for value, amount in counts.most_common(3)
+                    ]
+
+            profile["columnas"][col] = entry
+
+        def dump() -> str:
+            return json.dumps(profile, ensure_ascii=False, default=str)
+
+        text = dump()
+        if len(text) > max_chars:
+            for entry in profile["columnas"].values():
+                entry.pop("top", None)
+            text = dump()
+        while len(text) > max_chars and len(profile["columnas"]) > 1:
+            profile["columnas"].popitem()
+            profile["perfil_truncado"] = True
+            text = dump()
+        return text
+
     @classmethod
-    async def _generate(cls, user_prompt: str, system_prompt: str) -> str:
+    async def _generate(
+        cls,
+        user_prompt: str,
+        system_prompt: str,
+        max_tokens: int = SYNTHESIS_MAX_TOKENS,
+        temperature: float = SYNTHESIS_TEMPERATURE,
+    ) -> str:
         """La llamada NO-stream de la sintesis, en un solo lugar.
 
         Existia cuatro veces identica dentro de `_run_synthesis_llm` (el camino
@@ -503,8 +628,8 @@ class KPICalculator:
         return await LLMService.generate_completion(
             user_prompt,
             system_prompt=system_prompt,
-            max_tokens=SYNTHESIS_MAX_TOKENS,
-            temperature=SYNTHESIS_TEMPERATURE
+            max_tokens=max_tokens,
+            temperature=temperature
         )
 
     @classmethod
@@ -512,7 +637,9 @@ class KPICalculator:
         cls,
         user_prompt: str,
         system_prompt: str,
-        narrative_sink: Optional[Callable[[str], Any]] = None
+        narrative_sink: Optional[Callable[[str], Any]] = None,
+        max_tokens: int = SYNTHESIS_MAX_TOKENS,
+        temperature: float = SYNTHESIS_TEMPERATURE,
     ) -> str:
         """
         Corre la llamada al LLM de la sintesis, con o sin stream.
@@ -532,7 +659,7 @@ class KPICalculator:
         inventar la continuacion de algo que el modelo no escribio.
         """
         if narrative_sink is None:
-            return await cls._generate(user_prompt, system_prompt)
+            return await cls._generate(user_prompt, system_prompt, max_tokens, temperature)
 
         from app.modules.chat_engine.narrative_stream import NarrativeStreamExtractor
 
@@ -543,8 +670,8 @@ class KPICalculator:
             async for piece in LLMService.stream_completion(
                 user_prompt,
                 system_prompt=system_prompt,
-                max_tokens=SYNTHESIS_MAX_TOKENS,
-                temperature=SYNTHESIS_TEMPERATURE
+                max_tokens=max_tokens,
+                temperature=temperature
             ):
                 accumulated.append(piece)
                 if extractor.finished:
@@ -560,13 +687,13 @@ class KPICalculator:
                 return text
 
             # El stream sirvio una respuesta vacia: se trata como no-stream.
-            return await cls._generate(user_prompt, system_prompt)
+            return await cls._generate(user_prompt, system_prompt, max_tokens, temperature)
         except Exception as exc:
             # Un stream caido NO es un fallo de la consulta: el motor sigue
             # pudiendo responder por el camino que ya funcionaba. Se avisa y se
             # reintenta sin stream.
             logger.warning("Stream de sintesis interrumpido, se reintenta sin stream: %s", exc)
-            return await cls._generate(user_prompt, system_prompt)
+            return await cls._generate(user_prompt, system_prompt, max_tokens, temperature)
 
     @classmethod
     async def generate_unified_synthesis_with_llm(
@@ -578,13 +705,20 @@ class KPICalculator:
         secured_sql: str,
         conversation_context: str = "",
         is_llm_active: bool = False,
-        narrative_sink: Optional[Callable[[str], Any]] = None
+        narrative_sink: Optional[Callable[[str], Any]] = None,
+        profile: str = "full",
+        data_profile: str = "",
+        available_columns: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Unified single-pass LLM inference:
-        Produces conversational narrative, 3 domain-adapted KPIs, executive report,
-        and 3 suggested questions in a single JSON payload.
-        Implements a resilient 3-tier parser for maximum robustness.
+        Unified single-pass LLM inference.
+
+        Con `profile="full"` produce narrativa, 3 KPIs, informe ejecutivo y 3
+        preguntas en un solo JSON (el camino historico). Con
+        `profile="minimal"` produce SOLO narrativa + 4-6 preguntas: es el modo
+        texto-first de la UI, donde KPIs, grafico, tabla e informe quedan detras
+        de acciones locales o de una consulta nueva. En minimal el parser ignora
+        cualquier KPI o informe que el modelo agregue de mas.
 
         `narrative_sink` es opcional y, cuando viene, habilita el streaming de la
         narrativa. Es la MISMA llamada con el MISMO prompt y el MISMO parser: lo
@@ -606,32 +740,54 @@ class KPICalculator:
             if pareto_info:
                 if pareto_info["is_concentrated"]:
                     pareto_hint = (
-                        f"[ANÁLISIS PARETO / RIESGO CONCENTRACIÓN: El top 20% ({pareto_info['top_20_count']} de {pareto_info['count']} entidades) "
+                        f"[ANÁLISIS PARETO / RIESGO CONCENTRACIÓN: En las filas devueltas, el top 20% ({pareto_info['top_20_count']} de {pareto_info['count']} entidades) "
                         f"concentra el {pareto_info['top_20_share']}% de '{pareto_info['column']}'. "
                         f"La entidad principal representa el {pareto_info['top_entity_share']}%. "
-                        f"Destaca esta concentración en key_findings y orienta el plan táctico a mitigar este riesgo de dependencia.]"
+                        f"Destaca esta concentración observada en key_findings, sin atribuir causas ni prometer resultados.]"
                     )
                 else:
                     pareto_hint = (
-                        f"[DISTRIBUCIÓN EQUILIBRADA: El top 20% representa el {pareto_info['top_20_share']}% de '{pareto_info['column']}'. "
+                        f"[DISTRIBUCIÓN EQUILIBRADA: En las filas devueltas, el top 20% representa el {pareto_info['top_20_share']}% de '{pareto_info['column']}'. "
                         f"Baja concentración o dependencia en entidades individuales.]"
                     )
 
             effective_context = f"{conversation_context}\n\n{pareto_hint}".strip() if pareto_hint else conversation_context
-            system_prompt = PromptManager.get_unified_synthesis_system_prompt(user_role)
-            user_prompt = PromptManager.get_unified_synthesis_user_prompt(
-                question=question,
-                user_role=user_role,
-                rows=rows,
-                columns=columns,
-                secured_sql=secured_sql,
-                conversation_context=effective_context
-            )
+            if profile == "minimal":
+                system_prompt = PromptManager.get_unified_synthesis_system_prompt(
+                    user_role, profile="minimal"
+                )
+                user_prompt = PromptManager.get_unified_synthesis_user_prompt(
+                    question=question,
+                    user_role=user_role,
+                    rows=rows,
+                    columns=columns,
+                    secured_sql=secured_sql,
+                    conversation_context=effective_context,
+                    profile="minimal",
+                    data_profile=data_profile,
+                    available_columns=available_columns,
+                )
+                generation_tokens = MINIMAL_SYNTHESIS_MAX_TOKENS
+                generation_temperature = MINIMAL_SYNTHESIS_TEMPERATURE
+            else:
+                system_prompt = PromptManager.get_unified_synthesis_system_prompt(user_role)
+                user_prompt = PromptManager.get_unified_synthesis_user_prompt(
+                    question=question,
+                    user_role=user_role,
+                    rows=rows,
+                    columns=columns,
+                    secured_sql=secured_sql,
+                    conversation_context=effective_context
+                )
+                generation_tokens = SYNTHESIS_MAX_TOKENS
+                generation_temperature = SYNTHESIS_TEMPERATURE
 
             resp = await cls._run_synthesis_llm(
                 user_prompt,
                 system_prompt,
                 narrative_sink,
+                generation_tokens,
+                generation_temperature,
             )
 
             if not resp:
@@ -655,19 +811,34 @@ class KPICalculator:
 
             if data and isinstance(data, dict):
                 narrative = str(data.get("narrative", "")).strip() or None
-                parsed_kpis = cls._sanitize_kpis(data.get("kpis", []), rows, columns)
 
-                exec_data = data.get("executive_report")
-                if isinstance(exec_data, dict):
-                    exec_report = cls._parse_executive_report_dict(exec_data)
+                if profile == "minimal":
+                    # El contrato minimal es narrativa + preguntas. Si el modelo
+                    # se escapa y agrega kpis/executive_report, se descartan: los
+                    # KPIs deterministas ya los calculo el motor y el informe se
+                    # pide recien cuando el usuario hace clic en "Generar informe".
+                    parsed_kpis = None
+                    exec_report = None
                 else:
-                    exec_report = cls._parse_executive_report_dict(data)
+                    parsed_kpis = cls._sanitize_kpis(data.get("kpis", []), rows, columns)
+
+                    exec_data = data.get("executive_report")
+                    if isinstance(exec_data, dict):
+                        exec_report = cls._parse_executive_report_dict(exec_data)
+                    else:
+                        exec_report = cls._parse_executive_report_dict(data)
+                    if exec_report:
+                        # El riesgo es del backend, no del modelo: se calcula sobre
+                        # las filas devueltas y nunca se acepta el valor del JSON.
+                        exec_report.risk_level = cls.deterministic_risk(rows, columns)
+                        exec_report.business_impact = None
 
                 suggested_raw = data.get("suggested_questions", [])
                 suggested_questions = None
                 if isinstance(suggested_raw, list):
                     clean_suggs = [re.sub(r'^[-*0-9.)\s]+', '', str(q)).strip() for q in suggested_raw if str(q).strip()]
-                    suggested_questions = clean_suggs[:3] if clean_suggs else None
+                    max_questions = 6 if profile == "minimal" else 3
+                    suggested_questions = clean_suggs[:max_questions] if clean_suggs else None
 
                 return {
                     "narrative": narrative,

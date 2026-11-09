@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { CorporateConnection, ConnectionTestResult, connectorService } from '../services/connector_service';
 
 // Resultado del test + momento en que el servidor lo respondio. El timestamp es
@@ -10,9 +10,13 @@ export function useAdminConnectors(connectors: CorporateConnection[]) {
   const [filterStatus, setFilterStatus] = useState<'ALL' | 'active' | 'inactive'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [testingId, setTestingId] = useState<number | null>(null);
+  // Solo el test mas reciente controla el spinner; los resultados se guardan
+  // por conector aunque su prueba haya quedado atras.
+  const testingSeqRef = useRef(0);
   const [testResultsMap, setTestResultsMap] = useState<Record<number, ConnectionTestEntry>>({});
 
   const handleTestCardConnection = async (conn: CorporateConnection) => {
+    const seq = ++testingSeqRef.current;
     setTestingId(conn.id);
     const result = await connectorService.testConnection({
       name: conn.name,
@@ -24,8 +28,8 @@ export function useAdminConnectors(connectors: CorporateConnection[]) {
     });
 
     // Resultado real del servidor. No se maquilla un fallo como verificado.
-    setTestingId(null);
     setTestResultsMap((prev) => ({ ...prev, [conn.id]: { ...result, testedAt: Date.now() } }));
+    if (seq === testingSeqRef.current) setTestingId(null);
   };
 
   const query = searchQuery.trim().toLowerCase();

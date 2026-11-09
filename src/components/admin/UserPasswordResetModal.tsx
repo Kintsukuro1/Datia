@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { X, KeyRound, Copy, Check, AlertTriangle, RefreshCw } from 'lucide-react';
 import { UserItem } from './AdminUsersTab';
 import { authService } from '../../features/auth/services/auth_service';
@@ -22,22 +22,51 @@ export const UserPasswordResetModal: React.FC<UserPasswordResetModalProps> = ({
   const [result, setResult] = useState<PasswordResetResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { copied, copy, reset: resetCopy } = useCopyFeedback(2500);
+  const requestIdRef = useRef(0);
+
+  const resetSensitiveState = () => {
+    // Escape y el botón X tienen que limpiar igual que Cancelar: `result`
+    // contiene una contraseña temporal y no puede sobrevivir al cambio de
+    // usuario ni a un cierre por teclado.
+    requestIdRef.current += 1;
+    setResult(null);
+    setError(null);
+    setLoading(false);
+    resetCopy();
+  };
+
+  const handleModalClose = () => {
+    resetSensitiveState();
+    onClose();
+  };
+
+  useEffect(() => {
+    resetSensitiveState();
+    // Solo depende del usuario: cada apertura para OTRA cuenta empieza limpia.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   // Dialog semantics, Escape, focus containment and focus restore.
-  const modalRef = useModalA11y<HTMLDivElement>(isOpen, onClose);
+  // Importante: Escape usa `handleModalClose`, no `onClose` crudo.
+  const modalRef = useModalA11y<HTMLDivElement>(isOpen, handleModalClose);
 
   if (!isOpen || !user) return null;
 
   const handleReset = async () => {
+    const requestId = ++requestIdRef.current;
+    const targetUserId = user.id;
     setLoading(true);
     setError(null);
+    setResult(null);
     try {
-      const data = await authService.resetUserPassword(user.id);
+      const data = await authService.resetUserPassword(targetUserId);
+      if (requestIdRef.current !== requestId) return;
       setResult(data);
     } catch {
+      if (requestIdRef.current !== requestId) return;
       setError('No se pudo restablecer la contraseña. Verifica permisos de administrador.');
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === requestId) setLoading(false);
     }
   };
 
@@ -45,13 +74,6 @@ export const UserPasswordResetModal: React.FC<UserPasswordResetModalProps> = ({
     if (result?.temporary_password) {
       void copy(result.temporary_password);
     }
-  };
-
-  const handleModalClose = () => {
-    setResult(null);
-    setError(null);
-    resetCopy();
-    onClose();
   };
 
   return (

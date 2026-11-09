@@ -138,6 +138,8 @@ def export_audit_logs_csv(
         AuditLog.execution_time_ms,
         AuditLog.rows_returned,
         AuditLog.error_message,
+        AuditLog.feedback_rating,
+        AuditLog.feedback_comment,
     )).order_by(AuditLog.timestamp.desc()).limit(EXPORT_MAX_ROWS).all()
 
     permission_ids = [
@@ -169,7 +171,9 @@ def export_audit_logs_csv(
         "Tiempo Ejecución (ms)",
         "Filas Devueltas",
         "Mensaje de Error",
-        "Detalle del Evento"
+        "Detalle del Evento",
+        "Calificación Feedback",
+        "Comentario Feedback"
     ])
 
     for log in logs:
@@ -185,7 +189,9 @@ def export_audit_logs_csv(
             log.execution_time_ms or 0,
             log.rows_returned or 0,
             sanitize_spreadsheet_value(log.error_message or ""),
-            sanitize_spreadsheet_value(snapshots.get(log.id) or "")
+            sanitize_spreadsheet_value(snapshots.get(log.id) or ""),
+            sanitize_spreadsheet_value(log.feedback_rating or ""),
+            sanitize_spreadsheet_value(log.feedback_comment or "")
         ])
 
     # El tope es una proteccion de memoria, no una promesa de export completo.
@@ -193,7 +199,7 @@ def export_audit_logs_csv(
     # como total cuando no lo es vuelve inutil el rastro.
     if truncated:
         writer.writerow([
-            "AVISO", "", "", "", "", "", "", "", "", "", "",
+            "AVISO", "", "", "", "", "", "", "", "", "", "", "", "",
             (
                 f"Exportación truncada: se exportaron {EXPORT_MAX_ROWS} de {total} "
                 "eventos. Acote el rango de fechas o los filtros."

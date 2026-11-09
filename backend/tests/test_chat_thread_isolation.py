@@ -23,6 +23,7 @@ from app.core.database import SessionLocal
 from app.modules.auth.models import Role
 from app.modules.admin_catalog.models import CorporateConnection
 from app.modules.chat_engine.governance_guard import GovernanceGuard
+from app.modules.chat_engine.models import ChatConversation
 from app.modules.telemetry_audit.models import AuditLog
 from sqlalchemy import text
 
@@ -93,6 +94,23 @@ class TestChatThreadIsolation(unittest.TestCase):
                 r = self.client.get(path, headers={"Authorization": f"Bearer {other}"})
                 self.assertEqual(r.status_code, 404, f"{path} devolvio {r.status_code}")
                 self.assertNotIn("9999999", r.text, "se filtered el contenido de otro usuario")
+
+    def test_saving_messages_without_is_shared_does_not_unshare(self):
+        """Un save normal no debe descompartir: el frontend no manda is_shared."""
+        owner = self._token("economista", "economista123")
+        thread_id = "test-idor-keep-shared"
+
+        self.assertEqual(
+            self._save(owner, thread_id, is_shared=True).status_code, 200
+        )
+        # El guardado real de mensajes no incluye `is_shared`.
+        self.assertEqual(self._save(owner, thread_id).status_code, 200)
+
+        thread = self.db.query(ChatConversation).filter(
+            ChatConversation.id == thread_id
+        ).first()
+        self.assertIsNotNone(thread)
+        self.assertTrue(thread.is_shared)
 
     def test_shared_thread_without_traceability_is_denied(self):
         """Un hilo compartido con filas pero sin SQL no se puede revalidar.

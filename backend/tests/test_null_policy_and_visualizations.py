@@ -21,6 +21,7 @@ from conftest import (
 from app.modules.catalog.services.null_manager import NullManagerService
 from app.modules.chat_engine.kpi_calculator import KPICalculator
 from app.modules.chat_engine.engine import QueryEngine
+from app.modules.chat_engine.null_handler import NullHandler
 
 
 class TestNullPolicyAndVisualizations(unittest.TestCase):
@@ -169,6 +170,66 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
         )[0][0]
         self.assertEqual(null_count, 0)
 
+    # --- remediacion EN MEMORIA (la que usa el chat) ----------------------
+
+    def test_in_memory_delete_rows(self):
+        rows = [
+            {"c": "A", "v": 1},
+            {"c": None, "v": 2},
+            {"c": "A", "v": None},
+            {"c": "B", "v": 3},
+        ]
+        result = NullManagerService.apply_in_memory_remediation(
+            rows, ["c", "v"], "delete_rows"
+        )
+        self.assertEqual(len(result), 2)
+        self.assertEqual([r["c"] for r in result], ["A", "B"])
+        for row in result:
+            self.assertIsNotNone(row["c"])
+            self.assertIsNotNone(row["v"])
+
+    def test_in_memory_mode(self):
+        rows = [
+            {"c": "A", "v": 1},
+            {"c": None, "v": 2},
+            {"c": "A", "v": None},
+            {"c": "B", "v": 3},
+        ]
+        result = NullManagerService.apply_in_memory_remediation(
+            rows, ["c", "v"], "mode"
+        )
+        # c: moda A. v: 1, 2 y 3 empatan; el desempate determinista elige 1.
+        self.assertEqual(result[1]["c"], "A")
+        self.assertEqual(result[2]["v"], 1)
+        for row in result:
+            self.assertIsNotNone(row["c"])
+            self.assertIsNotNone(row["v"])
+
+    def test_in_memory_nearest(self):
+        rows = [
+            {"c": None, "v": 1},
+            {"c": "A", "v": 2},
+            {"c": None, "v": None},
+            {"c": "B", "v": 3},
+            {"c": None, "v": 4},
+        ]
+        result = NullManagerService.apply_in_memory_remediation(
+            rows, ["c", "v"], "nearest"
+        )
+        self.assertEqual([r["c"] for r in result], ["A", "A", "A", "B", "B"])
+        self.assertEqual([r["v"] for r in result], [1, 2, 2, 3, 4])
+
+    def test_null_alert_usa_el_total_ponderado_de_filas(self):
+        rows = [
+            {"campo_6": None, "cantidad_registros": 8095},
+            {"campo_6": "LAN CHILE", "cantidad_registros": 766},
+        ]
+        _payload, text = NullHandler.build_null_alert_payload(
+            rows, {"campo_6"}, 8095, "datos", "¿Cuáles son los navieros?"
+        )
+        # Antes decia "8095 de 2" (len(rows)); ahora usa la suma ponderada.
+        self.assertIn("8095 de 8861 registros analizados", text)
+
     # --- visualizaciones / motor -----------------------------------------
 
     def test_dynamic_chart_series_generation(self):
@@ -276,6 +337,68 @@ class TestNullPolicyAndVisualizations(unittest.TestCase):
             )[0][0],
             2,
             "los nulos fisicos desaparecieron: se ejecuto una remediacion persistente",
+        )
+
+    def test_prompt2_remediation_mode_answers_original_question(self):
+        """El boton 'adaptar a la moda' imputa en memoria y conserva la base intacta."""
+        conn = self._make_conn(null_policy="open")
+        remediation_prompt = (
+            "Tratar nulos en test_sales (adaptar a la moda) "
+            "para la consulta: SELECT * FROM test_sales"
+        )
+        response = self._run_query(
+            remediation_prompt,
+            conn,
+            conversation_history=[
+                {"question": "SELECT * FROM test_sales", "sql": "SELECT * FROM test_sales"}
+            ],
+        )
+
+        self.assertIsNone(response.nulls_detected)
+        self.assertEqual(len(response.data_rows), 5)
+        for row in response.data_rows:
+            self.assertIsNotNone(row.get("category"))
+            self.assertIsNotNone(row.get("amount"))
+        self.assertIn("Tratamiento de nulos", response.conversational_response)
+        self.assertIn("Adaptación a la moda", response.conversational_response)
+
+        self.assertEqual(self._query("SELECT COUNT(*) FROM test_sales")[0][0], 5)
+        self.assertEqual(
+            self._query(
+                "SELECT COUNT(*) FROM test_sales WHERE category IS NULL OR amount IS NULL"
+            )[0][0],
+            2,
+        )
+
+    def test_prompt2_remediation_nearest_answers_original_question(self):
+        """El boton 'adaptar al mas cercano' rellena en memoria y conserva la base intacta."""
+        conn = self._make_conn(null_policy="open")
+        remediation_prompt = (
+            "Tratar nulos en test_sales (adaptar al más cercano) "
+            "para la consulta: SELECT * FROM test_sales"
+        )
+        response = self._run_query(
+            remediation_prompt,
+            conn,
+            conversation_history=[
+                {"question": "SELECT * FROM test_sales", "sql": "SELECT * FROM test_sales"}
+            ],
+        )
+
+        self.assertIsNone(response.nulls_detected)
+        self.assertEqual(len(response.data_rows), 5)
+        for row in response.data_rows:
+            self.assertIsNotNone(row.get("category"))
+            self.assertIsNotNone(row.get("amount"))
+        self.assertIn("Tratamiento de nulos", response.conversational_response)
+        self.assertIn("Adaptación al valor más cercano", response.conversational_response)
+
+        self.assertEqual(self._query("SELECT COUNT(*) FROM test_sales")[0][0], 5)
+        self.assertEqual(
+            self._query(
+                "SELECT COUNT(*) FROM test_sales WHERE category IS NULL OR amount IS NULL"
+            )[0][0],
+            2,
         )
 
     def test_query_without_matching_rows_does_not_crash(self):

@@ -1,3 +1,4 @@
 # Herramientas de medicion, solo desarrollo. No las usa Docker.
 ruff>=0.9.0
 vulture>=2.14.0
+pip-audit>=2.10.0

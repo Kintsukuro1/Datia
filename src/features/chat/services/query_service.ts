@@ -4,7 +4,7 @@ import { QueryResult } from '../../../types';
 type ThreadSummary = {
   id: string;
   title: string;
-  connection_id: number;
+  connection_id?: number;
   message_count: number;
   updated_at: string;
 };
@@ -12,10 +12,39 @@ type ThreadSummary = {
 type ThreadDetail = {
   id: string;
   title: string;
-  connection_id: number;
+  connection_id?: number;
   results: QueryResult[];
   created_at: string;
   updated_at: string;
+};
+
+export type BuilderMetric = {
+  column: string | null;
+  label: string;
+  aggregate: 'sum' | 'count';
+};
+
+export type BuilderColumn = {
+  name: string;
+  label: string;
+  type?: string;
+};
+
+export type BuilderTable = {
+  name: string;
+  label: string;
+  metrics: BuilderMetric[];
+  dimensions: BuilderColumn[];
+  dates: BuilderColumn[];
+};
+
+export type BuilderOptions = {
+  tables: BuilderTable[];
+};
+
+export type SuggestionsPayload = {
+  suggestions: string[];
+  builder: BuilderOptions | null;
 };
 
 type AnomaliesResponse = {
@@ -61,7 +90,7 @@ export function isPredictionQuestion(text: string): boolean {
 }
 
 export const queryService = {
-  async getSuggestions(connectionId?: number): Promise<string[]> {
+  async getSuggestions(connectionId?: number): Promise<SuggestionsPayload> {
     const params: Record<string, any> = {};
     if (connectionId) {
       params.connection_id = connectionId;
@@ -72,11 +101,18 @@ export const queryService = {
     // sugerencias" y el consumidor no podia distinguir cargando / vacio /
     // error. Inventar preguntas aca anuncia capacidades que el servidor no
     // ofrece.
-    const res = await apiClient.get<{ suggestions: string[] }>('/chat/suggestions', { params });
+    const res = await apiClient.get<{ suggestions: string[]; builder?: BuilderOptions | null }>(
+      '/chat/suggestions',
+      { params }
+    );
     if (!Array.isArray(res.data?.suggestions)) {
       throw new Error('El servidor no devolvió la lista de sugerencias.');
     }
-    return res.data.suggestions;
+    const builder = res.data.builder;
+    return {
+      suggestions: res.data.suggestions,
+      builder: builder && Array.isArray(builder.tables) ? builder : null,
+    };
   },
 
   /**

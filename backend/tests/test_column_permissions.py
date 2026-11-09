@@ -31,7 +31,7 @@ from app.core.constants import ROLE_ADMINISTRADOR
 from app.db.init_db import init_db
 from app.modules.admin_catalog.models import (
     ColumnPermissionType, CorporateConnection, RoleColumnPermission,
-    RoleTablePermission,
+    RoleTablePermission, SemanticCatalog,
 )
 from app.modules.auth.models import Role
 from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
@@ -116,6 +116,9 @@ class TestColumnPermissions(unittest.TestCase):
         ).delete(synchronize_session=False)
         self.db.query(AuditLog).filter(
             AuditLog.question_prompt.like(f"%{self.role_name}%")
+        ).delete(synchronize_session=False)
+        self.db.query(SemanticCatalog).filter(
+            SemanticCatalog.connection_id == self.conn.id
         ).delete(synchronize_session=False)
         self.db.query(CorporateConnection).filter(
             CorporateConnection.id == self.conn.id
@@ -229,6 +232,36 @@ class TestColumnPermissions(unittest.TestCase):
 
         despues = self._prompt()
         self.assertNotIn(RUT, despues["schema_prompt"])
+        self.assertIn(RUT, despues["blocked_columns"])
+
+    def test_formula_de_columna_bloqueada_no_aparece_en_el_prompt(self):
+        """Una formula del catalogo no puede reintroducir una columna BLOCKED.
+
+        El DDL omite la columna, pero la seccion "Formulas de Negocio" se arma
+        en otro loop. Sin el filtro, el modelo recibia `COUNT(DISTINCT rut...)`
+        aunque el rol no pudiera leer el RUT.
+        """
+        self.db.add(SemanticCatalog(
+            connection_id=self.conn.id,
+            schema_name="public",
+            table_name=TABLE,
+            column_name=RUT,
+            friendly_name="RUT",
+            description="Documento del cliente",
+            business_formula=f"COUNT(DISTINCT {RUT})",
+        ))
+        self.db.commit()
+
+        antes = self._prompt()
+        self.assertIn(RUT, antes["schema_prompt"])
+        self.assertIn("COUNT(DISTINCT", antes["schema_prompt"])
+
+        resp = self._put("BLOCKED")
+        self.assertEqual(resp.status_code, 200, resp.text[:300])
+
+        despues = self._prompt()
+        self.assertNotIn(RUT, despues["schema_prompt"])
+        self.assertNotIn("COUNT(DISTINCT", despues["schema_prompt"])
         self.assertIn(RUT, despues["blocked_columns"])
 
     def test_enmascarada_sigue_consultable_pero_marcada(self):

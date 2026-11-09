@@ -71,6 +71,31 @@ class Domain(Base):
     role_links = relationship("RoleDomainLink", back_populates="domain", cascade="all, delete-orphan")
 
 
+class ApiClient(Base):
+    """Credencial de servicio para integraciones sistema-a-sistema.
+
+    Solo se guarda el SHA-256 de una clave de alta entropía: la clave en claro
+    se muestra una vez al crearla. Cada cliente apunta a una cuenta de servicio
+    (`users.is_admin=False`, `must_change_password=False`) para que la
+    auditoría, el RBAC y el CLS sigan atribuyendo cada consulta a un usuario
+    real del catálogo.
+    """
+
+    __tablename__ = "api_clients"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(80), unique=True, index=True, nullable=False)
+    key_hash = Column(String(64), unique=True, index=True, nullable=False)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    created_at = Column(DateTime, default=utcnow_naive, nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+
+
 class UserSession(Base):
     """
     Tracks active user sessions with JWT JTI claim for revocation,

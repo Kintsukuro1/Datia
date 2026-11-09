@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import echarts from '../shared/echarts';
 import { useNavigate } from 'react-router-dom';
@@ -52,6 +52,7 @@ export const ChatDashboardPage: React.FC = () => {
     activeConnectionId,
     connectors,
     promptSuggestions,
+    builderOptions,
     activeThread,
     sidebarThreads,
     threadsError,
@@ -110,6 +111,7 @@ export const ChatDashboardPage: React.FC = () => {
   const [widgetsLoaded, setWidgetsLoaded] = useState(false);
   const [widgetsError, setWidgetsError] = useState<string | null>(null);
   const [isWidgetsOpen, setIsWidgetsOpen] = useState(false);
+  const widgetsSeqRef = useRef(0);
 
   // Dialog semantics, Escape, focus containment and focus restore.
   const widgetsModalRef = useModalA11y<HTMLDivElement>(isWidgetsOpen, () =>
@@ -168,23 +170,35 @@ export const ChatDashboardPage: React.FC = () => {
   } | null>(null);
   const [anomaliesError, setAnomaliesError] = useState<string | null>(null);
   const [isAnomaliesOpen, setIsAnomaliesOpen] = useState(false);
+  // La ultima consulta gana: al cambiar de fuente, la respuesta de la anterior
+  // no puede pintarse como si fuera de la actual.
+  const anomaliesSeqRef = useRef(0);
+  const [unpinningId, setUnpinningId] = useState<number | null>(null);
 
   const fetchWidgets = async () => {
+    const seq = ++widgetsSeqRef.current;
     try {
-      setWidgets(await queryService.getWidgets());
+      const data = await queryService.getWidgets();
+      if (seq !== widgetsSeqRef.current) return;
+      setWidgets(data);
       setWidgetsError(null);
       setWidgetsLoaded(true);
     } catch (err: any) {
+      if (seq !== widgetsSeqRef.current) return;
       // Sin fallback a []: la UI dice "DESCONOCIDO" en vez de "Tablero (0)".
       setWidgetsError(err.message || 'No se pudieron consultar los tableros.');
     }
   };
 
   const fetchAnomalies = async (connId?: number | null) => {
+    const seq = ++anomaliesSeqRef.current;
     try {
-      setAnomaliesData(await queryService.getAnomalies(connId || undefined));
+      const data = await queryService.getAnomalies(connId || undefined);
+      if (seq !== anomaliesSeqRef.current) return;
+      setAnomaliesData(data);
       setAnomaliesError(null);
     } catch (err: any) {
+      if (seq !== anomaliesSeqRef.current) return;
       // "No pude preguntar" no es "no hay anomalías": se descarta el dato y se
       // muestra el error.
       setAnomaliesData(null);
@@ -197,17 +211,27 @@ export const ChatDashboardPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    // Al cambiar de fuente, lo de la anterior se descarta de inmediato: no hay
+    // que mostrar alertas de A mientras se consultan las de B.
+    setAnomaliesData(null);
+    setAnomaliesError(null);
     fetchAnomalies(activeConnectionId);
   }, [activeConnectionId]);
 
   const handleUnpin = async (id: number) => {
+    if (unpinningId !== null) return;
+    setUnpinningId(id);
     // Si el DELETE falla, el widget sigue fijado en el servidor y no puede
     // desaparecer de la pantalla.
-    const ok = await queryService.unpinWidget(id);
-    if (ok) {
-      setWidgets((prev) => prev.filter((w) => w.id !== id));
-    } else {
-      notify('error', 'No se pudo desfijar el widget en el servidor; sigue fijado.');
+    try {
+      const ok = await queryService.unpinWidget(id);
+      if (ok) {
+        setWidgets((prev) => prev.filter((w) => w.id !== id));
+      } else {
+        notify('error', 'No se pudo desfijar el widget en el servidor; sigue fijado.');
+      }
+    } finally {
+      setUnpinningId(null);
     }
   };
 
@@ -299,6 +323,8 @@ export const ChatDashboardPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsAnomaliesOpen((prev) => !prev)}
+                  aria-expanded={isAnomaliesOpen}
+                  aria-haspopup="dialog"
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition shadow-xs ${
                     anomaliesData.has_critical
                       ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30 hover:bg-rose-500/25'
@@ -317,7 +343,11 @@ export const ChatDashboardPage: React.FC = () => {
                       className="fixed inset-0 z-40"
                       onClick={() => setIsAnomaliesOpen(false)}
                     />
-                    <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 shadow-2xl p-3 z-50 space-y-2 animate-fadeIn">
+                    <div
+                      role="dialog"
+                      aria-label="Alertas y anomalías operativas"
+                      className="absolute right-0 top-full mt-2 w-80 sm:w-96 rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 shadow-2xl p-3 z-50 space-y-2 animate-fadeIn"
+                    >
                       <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-zinc-800">
                         <span className="text-xs font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
                           <AlertTriangle size={14} className="text-amber-500 dark:text-amber-400" />
@@ -326,6 +356,7 @@ export const ChatDashboardPage: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => setIsAnomaliesOpen(false)}
+                          aria-label="Cerrar alertas"
                           className="text-gray-400 hover:text-gray-600 dark:hover:text-white"
                         >
                           <X size={14} />
@@ -455,6 +486,7 @@ export const ChatDashboardPage: React.FC = () => {
                   user={user}
                   userRole={userRole}
                   activeThreadId={activeThreadId}
+                  connectionId={activeThread?.connection_id}
                   onOpenTraceability={openTraceability}
                   onEditPrompt={handleEditPrompt}
                   onFeedback={handleFeedback}
@@ -616,6 +648,7 @@ export const ChatDashboardPage: React.FC = () => {
                 setPromptInput={setPromptInput}
                 isGenerating={isGenerating}
                 activeDatabaseName={activeDatabaseName}
+                builderOptions={builderOptions}
                 textareaRef={promptTextareaRef}
                 onSubmit={(customPrompt) => handleSendPrompt(customPrompt || promptInput)}
               />
@@ -703,7 +736,9 @@ export const ChatDashboardPage: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => handleUnpin(w.id)}
-                              className="p-1.5 rounded-lg text-app-muted hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                              disabled={unpinningId !== null}
+                              aria-label={`Quitar del tablero: ${w.title}`}
+                              className="p-1.5 rounded-lg text-app-muted hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Quitar de tablero"
                             >
                               <Trash2 size={14} />

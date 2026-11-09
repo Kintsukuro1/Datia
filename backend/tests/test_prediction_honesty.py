@@ -22,7 +22,7 @@ alrededor de la gobernanza.
 import unittest
 from decimal import Decimal
 
-from app.modules.chat_engine.ast_validator import ASTValidator
+from app.modules.chat_engine.ast_validator import ASTValidator, ASTValidationError
 from app.modules.chat_engine.forecast_calculator import (
     MIN_EVIDENCE,
     MIN_PERIODS,
@@ -263,16 +263,36 @@ class TestGeneratedSqlIsReadOnly(unittest.TestCase):
     def test_identificadores_se_neutralizan(self):
         """Un nombre de tabla con comillas no puede cerrar la sentencia.
 
-        La propiedad que importa NO es que la palabra "DROP" desaparezca del
-        texto — tras filtrar a alfanumerico queda DENTRO del identificador
-        (`tablaDROPTABLEx`), que es un token inerte. Lo que importa es que siga
-        siendo UN identificador entre comillas dobles y que el guardarrail lo
-        acepte como el único SELECT.
+        El identificador se preserva completo y la comilla se escapa como `""`.
+        Sigue siendo UN identificador entre comillas dobles; el guardarrail lo
+        acepta como el único SELECT. Un `;` preservado lo rechaza el AST, que es
+        el caso del test siguiente.
         """
-        sql = build_series_sql('tabla"; DROP TABLE x; --', "fecha", "monto")
-        self.assertIn('FROM "tablaDROPTABLEx"', sql)
-        self.assertEqual(sql.count(";"), 0, "no debe quedar ningun separador de sentencia")
+        hostile = 'tabla" DROP TABLE x --'
+        sql = build_series_sql(hostile, "fecha", "monto")
+        # El nombre se preserva completo y la comilla se escapa como "". Sigue
+        # siendo UN identificador; el AST rechaza cualquier `;` (no se usa aca).
+        self.assertIn('FROM "tabla"" DROP TABLE x --"', sql)
         self._assert_select_only(sql)
+
+    def test_el_ast_rechaza_un_punto_y_coma_en_el_identificador(self):
+        """El citado preserva el `;`; el AST lo rechaza y no se ejecuta nada."""
+        sql = build_series_sql("tabla; DROP TABLE x", "fecha", "monto")
+        with self.assertRaises(ASTValidationError):
+            ASTValidator.validate_and_secure_sql(
+                sql,
+                dialect="postgres",
+                allowed_tables={"tabla; DROP TABLE x"},
+                blocked_columns=set(),
+                table_columns={"tabla; DROP TABLE x": ["fecha", "monto"]},
+                is_admin=False,
+            )
+
+    def test_nombre_con_espacios_y_parentesis_no_se_mutila(self):
+        """`"Monto ($)"` no puede convertirse en `"Monto"` y medir otra columna."""
+        sql = build_series_sql("movimientos", "fecha", "Monto ($)")
+        self.assertIn('SUM("Monto ($)")', sql)
+        self.assertNotIn('SUM("Monto")', sql)
 
     def test_solo_ingresos_y_asimetria_documentada(self):
         """El filtro `> 0` es una decision: la respuesta declara

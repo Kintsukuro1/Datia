@@ -11,7 +11,7 @@ class QueryLearningMemory(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     question_pattern = Column(String(500), index=True, nullable=False)
-    connection_id = Column(Integer, nullable=False, default=1)
+    connection_id = Column(Integer, nullable=False)
     user_role = Column(String(100), nullable=True)
     successful_sql = Column(Text, nullable=False)
     tables_used = Column(String(255), nullable=True)
@@ -31,7 +31,7 @@ class ChatConversation(Base):
     id = Column(String(64), primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     title = Column(String(255), nullable=False)
-    connection_id = Column(Integer, nullable=True, default=1)
+    connection_id = Column(Integer, nullable=True)
     messages_json = Column(Text, nullable=False, default="[]")
     # Un hilo solo es legible por otro usuario si el dueño lo marcó como compartido.
     # Antes `/threads/shared/{id}` no filtraba ni por user_id ni por nada, asi que
@@ -50,7 +50,7 @@ class DashboardWidget(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
-    connection_id = Column(Integer, nullable=True, default=1)
+    connection_id = Column(Integer, nullable=True)
     chart_type = Column(String(50), default="bar")
     chart_option_json = Column(Text, nullable=False)
     kpis_json = Column(Text, nullable=True)

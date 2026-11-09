@@ -2,7 +2,19 @@ import datetime
 from typing import Optional
 from pydantic import BaseModel, EmailStr, ConfigDict, Field
 
-MIN_PASSWORD_LENGTH = 6
+# Piso del cambio de contraseña. La cuenta creada por `scripts/create_admin`
+# tiene su propio piso (>=12) y las temporales las genera el servidor con 144
+# bits; este valor cubre el único camino donde la clave la elige la persona.
+MIN_PASSWORD_LENGTH = 12
+
+# Lista corta, sin dependencia nueva: las claves que más aparecen en intentos
+# reales contra paneles corporativos. No reemplaza a un verificador de brechas,
+# pero corta lo que un atacante prueba primero.
+COMMON_PASSWORDS = frozenset({
+    "123456789012", "password1234", "qwertyuiop12", "administrador",
+    "admin1234567", "bienvenido12", "contraseña12", "datia1234567",
+})
+
 
 def validate_password_strength(raw: str) -> str:
     """
@@ -17,6 +29,8 @@ def validate_password_strength(raw: str) -> str:
     cleaned = (raw or "").strip()
     if len(cleaned) < MIN_PASSWORD_LENGTH:
         raise ValueError(f"La contraseña debe tener al menos {MIN_PASSWORD_LENGTH} caracteres.")
+    if cleaned.lower() in COMMON_PASSWORDS:
+        raise ValueError("La contraseña es demasiado común. Elige una distinta.")
     return cleaned
 
 class Token(BaseModel):
@@ -84,6 +98,28 @@ class PasswordResetResponse(BaseModel):
     username: str
     temporary_password: str
     temp_password_expires_at: Optional[datetime.datetime] = None
+
+class ApiClientCreate(BaseModel):
+    """Alta de credencial de servicio (admin only). El rol define su alcance."""
+    name: str = Field(..., min_length=1, max_length=80)
+    role: str = Field(..., min_length=1, max_length=50)
+
+
+class ApiClientOut(BaseModel):
+    id: int
+    name: str
+    user_id: int
+    username: str
+    role_name: Optional[str] = None
+    is_active: bool
+    created_at: datetime.datetime
+    last_used_at: Optional[datetime.datetime] = None
+
+
+class ApiClientCreated(ApiClientOut):
+    """La clave en claro solo viaja en esta respuesta; no se puede recuperar."""
+    api_key: str
+
 
 class SessionOut(BaseModel):
     id: int

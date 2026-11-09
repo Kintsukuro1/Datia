@@ -16,6 +16,7 @@ export const AdminCatalogTab: React.FC = () => {
     selectedConnectionId,
     selectedConnector,
     isLoadingConnectors,
+    connectorsError,
     handleSelectConnection,
     items,
     isLoadingCatalog,
@@ -92,7 +93,9 @@ export const AdminCatalogTab: React.FC = () => {
             <button
               type="button"
               onClick={() => setIsAddModalOpen(true)}
-              className="flex items-center space-x-1.5 text-xs bg-slate-100 hover:bg-slate-200 dark:bg-dark-base dark:hover:bg-dark-border text-slate-800 dark:text-gray-200 border border-slate-300 dark:border-dark-border px-3 py-2 rounded-xl transition-colors font-medium cursor-pointer"
+              disabled={selectedConnectionId === null}
+              title={selectedConnectionId === null ? 'Seleccioná una fuente de datos primero' : undefined}
+              className="flex items-center space-x-1.5 text-xs bg-slate-100 hover:bg-slate-200 dark:bg-dark-base dark:hover:bg-dark-border text-slate-800 dark:text-gray-200 border border-slate-300 dark:border-dark-border px-3 py-2 rounded-xl transition-colors font-medium cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Añadir Regla</span>
@@ -143,6 +146,10 @@ export const AdminCatalogTab: React.FC = () => {
         </div>
       )}
 
+      {connectorsError && connectors.length === 0 && (
+        <ErrorBanner icon={AlertCircle} message={connectorsError} />
+      )}
+
       {enrichSuccessMsg && (
         <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 text-emerald-800 dark:text-emerald-400 text-xs flex items-center space-x-2 animate-fadeIn">
           <Check className="w-4 h-4 shrink-0" />
@@ -179,16 +186,17 @@ export const AdminCatalogTab: React.FC = () => {
       {/* Edit Rule Modal */}
       <CatalogEditModal
         isOpen={Boolean(editingItem)}
-        item={editingItem as any}
+        item={editingItem}
         onClose={() => setEditingItem(null)}
         onSave={handleSaveEdit}
+        errorMsg={catalogErrorMsg}
       />
 
       {/* Add New Rule Modal */}
       <CatalogAddModal
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
-        onAdd={handleAddItem as any}
+        onAdd={handleAddItem}
         errorMsg={catalogErrorMsg}
         connectionName={selectedConnector?.name}
         connectionId={selectedConnectionId ?? undefined}

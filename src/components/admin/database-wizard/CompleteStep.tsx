@@ -40,7 +40,7 @@ export const CompleteStep: React.FC<CompleteStepProps> = ({
         </div>
         <div className="flex justify-between">
           <span className="text-app-muted">Tablas Catalogadas:</span>
-          <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{dictionaryData?.total_tables || 1} Tablas</span>
+          <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{dictionaryData?.total_tables ?? 0} Tablas</span>
         </div>
         <div className="flex justify-between">
           <span className="text-app-muted">Gobernanza RBAC:</span>

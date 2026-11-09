@@ -11,6 +11,7 @@ from app.core.database import SessionLocal
 from app.db.init_db import init_db
 from app.modules.auth.models import Role
 from app.modules.admin_catalog.models import CorporateConnection, DatabaseType, SemanticCatalog
+from app.modules.telemetry_audit.models import AuditLog
 
 from conftest import make_auth_headers
 
@@ -71,6 +72,18 @@ class TestCatalogAndConnectors(unittest.TestCase):
         # Verify deletion
         res_get_after = self.client.get("/api/v1/catalog/", headers=self.headers)
         self.assertFalse(any(i["id"] == item_id for i in res_get_after.json()))
+
+        # Toda mutación administrativa del catálogo deja evidencia.
+        statuses = {
+            a.validation_status
+            for a in self.db.query(AuditLog).filter(
+                AuditLog.question_prompt.like("%test_fact_ventas%")
+            ).all()
+        }
+        self.assertTrue(
+            {"CATALOGO_CREADO", "CATALOGO_ACTUALIZADO", "CATALOGO_ELIMINADO"} <= statuses,
+            f"faltan eventos de auditoría del catálogo: {statuses}",
+        )
 
     def test_data_dictionary_introspection(self):
         res = self.client.get("/api/v1/catalog/data-dictionary", headers=self.headers)

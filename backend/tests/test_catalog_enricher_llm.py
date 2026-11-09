@@ -362,7 +362,8 @@ class TestLlmChunkedEnrichment(unittest.TestCase):
 
         resp = self._run_with_llm(AsyncMock(side_effect=_per_chunk))
 
-        # 13 columnas / lote 6 -> 3 llamadas (6 + 6 + 1).
+        # 13 columnas en lotes (el tamano efectivo depende de la velocidad
+        # medida): 3 llamadas, ninguna perdida.
         self.assertEqual(len(prompts), 3, "la tabla ancha debe ir por lotes")
         self.assertEqual(resp.llm_enriched_count, self.WIDE_COLUMNS)
         self.assertIn(f"La IA describió {self.WIDE_COLUMNS} campo(s)", resp.message)
@@ -379,9 +380,13 @@ class TestLlmChunkedEnrichment(unittest.TestCase):
 
         resp = self._run_with_llm(AsyncMock(side_effect=_first_chunk_garbage))
 
-        # El primer lote (6 columnas) se pierde; los otros dos se aplican.
-        self.assertEqual(resp.llm_enriched_count, self.WIDE_COLUMNS - 6)
-        self.assertIn(f"La IA describió {self.WIDE_COLUMNS - 6} campo(s)", resp.message)
+        # El primer lote se pierde; los demas se aplican. El tamano del lote
+        # depende de la velocidad medida y del presupuesto de salida por
+        # columna: se calcula con la misma funcion que usa el enricher.
+        chunk_size = CatalogEnricher._columns_per_call(10.0)
+        expected = self.WIDE_COLUMNS - chunk_size
+        self.assertEqual(resp.llm_enriched_count, expected)
+        self.assertIn(f"La IA describió {expected} campo(s)", resp.message)
 
     def test_budget_cut_is_reported_as_stopped_early(self):
         with patch("app.modules.catalog.services.catalog_enricher.LLM_TOTAL_BUDGET_S", 0.0):

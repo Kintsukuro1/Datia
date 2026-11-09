@@ -571,5 +571,48 @@ class TestLegitimateBusinessQueriesStillPass(unittest.TestCase):
         self.assertTrue(ok)
 
 
+class TestBenignSemicolonFormatting(unittest.TestCase):
+    """El modelo a veces escribe `...); LIMIT 1000;`: es una sola sentencia.
+
+    El ruido de formato no puede convertirse en un rechazo RBAC, pero un
+    segundo statement real (`; DROP`, `; SELECT`) sigue rechazandose.
+    """
+
+    def test_semicolon_before_limit_is_one_statement(self):
+        valid, secured, _meta = ASTValidator.validate_and_secure_sql(
+            "SELECT COUNT(*) AS total FROM datos WHERE campo_2 IS NOT NULL;\nLIMIT 1000;",
+            allowed_tables={"datos"},
+            table_columns={"datos": ["campo_2"]},
+            is_admin=True,
+        )
+        self.assertTrue(valid)
+        self.assertIn("LIMIT", secured.upper())
+        self.assertLessEqual(secured.count(";"), 1)
+
+    def test_trailing_semicolon_is_allowed(self):
+        valid, secured, _meta = ASTValidator.validate_and_secure_sql(
+            "SELECT COUNT(*) AS total FROM datos;",
+            allowed_tables={"datos"},
+            table_columns={"datos": ["campo_2"]},
+            is_admin=True,
+        )
+        self.assertTrue(valid)
+        self.assertLessEqual(secured.count(";"), 1)
+
+    def test_second_statement_still_rejected(self):
+        for sql in (
+            "SELECT COUNT(*) FROM datos; DROP TABLE datos",
+            "SELECT COUNT(*) FROM datos; SELECT 1",
+        ):
+            with self.subTest(sql=sql):
+                with self.assertRaises(ASTValidationError):
+                    ASTValidator.validate_and_secure_sql(
+                        sql,
+                        allowed_tables={"datos"},
+                        table_columns={"datos": ["campo_2"]},
+                        is_admin=True,
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()

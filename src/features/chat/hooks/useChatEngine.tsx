@@ -4,7 +4,7 @@ import { useNotifications } from '../../../context/NotificationContext';
 import { QueryResult } from '../../../types';
 import { createStreamBuffer } from '../../../shared/stream_buffer';
 import { ChatThread } from '../../../components/chat/SidebarChatHistory';
-import { queryService, isPredictionQuestion } from '../services/query_service';
+import { queryService, isPredictionQuestion, BuilderOptions } from '../services/query_service';
 import { connectorService, CorporateConnection, CONNECTORS_CHANGED_EVENT } from '../../admin/services/connector_service';
 import { resolveRoleLabel } from '../../../constants';
 
@@ -88,7 +88,7 @@ function useChatEngineInternal() {
   const [activeTraceability, setActiveTraceability] = useState<QueryResult['traceability'] | null>(null);
   const [isMobileHistoryOpen, setIsMobileHistoryOpen] = useState(false);
   const [activeConnectionId, setActiveConnectionId] = useState<number | null>(null);
-  const [activeDatabaseName, setActiveDatabaseName] = useState('BD Corporativa Local');
+  const [activeDatabaseName, setActiveDatabaseName] = useState('Sin fuente de datos');
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -112,6 +112,9 @@ function useChatEngineInternal() {
 
   const userRole = resolveRoleLabel(user);
   const [promptSuggestions, setPromptSuggestions] = useState<string[]>([]);
+  // Opciones reales del esquema activo para el Smart Builder. Se piden junto con
+  // las sugerencias para no duplicar la introspeccion del backend.
+  const [builderOptions, setBuilderOptions] = useState<BuilderOptions | null>(null);
   const [connectors, setConnectors] = useState<CorporateConnection[]>([]);
 
   // Local storage storage key
@@ -124,9 +127,10 @@ function useChatEngineInternal() {
 
   const loadSuggestions = useCallback((connectionId?: number) => {
     const seq = ++suggestionsSeqRef.current;
-    queryService.getSuggestions(connectionId).then((suggs) => {
+    queryService.getSuggestions(connectionId).then((payload) => {
       if (seq === suggestionsSeqRef.current) {
-        setPromptSuggestions(suggs);
+        setPromptSuggestions(payload.suggestions);
+        setBuilderOptions(payload.builder);
       }
     }).catch(() => {
       // La lista vacia es el estado por defecto (no hay chips), no una
@@ -134,6 +138,7 @@ function useChatEngineInternal() {
       // `length > 0`.
       if (seq === suggestionsSeqRef.current) {
         setPromptSuggestions([]);
+        setBuilderOptions(null);
       }
     });
   }, []);
@@ -152,7 +157,7 @@ function useChatEngineInternal() {
       const active = conns.find((c) => c.is_active) || conns[0] || null;
       setActiveConnectionId(active?.id ?? null);
       setActiveDatabaseName(
-        active ? `${active.name} (${active.db_type.toUpperCase()})` : 'BD Corporativa Local'
+        active ? `${active.name} (${active.db_type.toUpperCase()})` : 'Sin fuente de datos'
       );
       loadSuggestions(active?.id);
     };
@@ -311,7 +316,7 @@ function useChatEngineInternal() {
         if (remoteSummaries.length > 0) {
           setThreads((prev) => {
             const prevMap = new Map(prev.map((t) => [t.id, t]));
-            return remoteSummaries.map((s) => ({
+            const merged: FullThread[] = remoteSummaries.map((s) => ({
               id: s.id,
               title: s.title,
               timestamp: s.updated_at ? new Date(s.updated_at).toLocaleDateString() : 'Reciente',
@@ -319,6 +324,15 @@ function useChatEngineInternal() {
               connection_id: s.connection_id,
               results: prevMap.get(s.id)?.results || [],
             }));
+            // El hilo del intento EN VUELO nace local y todavía no está en el
+            // servidor. Reemplazar por la lista remota lo hacía desaparecer (y
+            // su respuesta ya no tenía dónde mergearse).
+            const attemptId = attemptThreadIdRef.current;
+            if (attemptId && !merged.some((t) => t.id === attemptId)) {
+              const local = prevMap.get(attemptId);
+              if (local) merged.unshift(local);
+            }
+            return merged;
           });
         }
       } catch (err: any) {
@@ -439,6 +453,11 @@ function useChatEngineInternal() {
           setThreads((prev) =>
             prev.map((t) => (t.id === id ? { ...t, results: detail.results } : t))
           );
+        } else if (!detail) {
+          // 404: el hilo solo existe como copia local (p. ej. su consulta nunca
+          // llegó a guardarse). Decirlo en vez de dejar una conversación vacía
+          // indistinguible de una que sí está en el servidor sin mensajes.
+          notify('warning', 'Esa conversación no está en el servidor y no tiene mensajes guardados en este navegador.');
         }
       } catch {
         // Los datos locales siguen en pantalla (son de este navegador), pero el
@@ -499,6 +518,16 @@ function useChatEngineInternal() {
 
   const handleDeleteThread = useCallback(async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    const target = threads.find((t) => t.id === id);
+    // Borrar del servidor no tiene deshacer: se confirma una vez, con el
+    // titulo de ESA conversacion (no un dialogo generico).
+    if (
+      target &&
+      typeof window !== 'undefined' &&
+      !window.confirm(`¿Eliminar la conversación "${target.title}"? Esta acción no se puede deshacer.`)
+    ) {
+      return;
+    }
     const previous = threads;
     setThreads((prev) => prev.filter((t) => t.id !== id));
     if (activeThreadId === id) {
@@ -610,7 +639,7 @@ function useChatEngineInternal() {
         title: threadTitle,
         timestamp: 'Ahora',
         dateGroup: 'Hoy',
-        connection_id: activeConnectionId || 1,
+        connection_id: activeConnectionId ?? undefined,
         results: [],
       };
       setThreads((prev) => [newTh, ...prev]);
@@ -751,7 +780,7 @@ function useChatEngineInternal() {
         queryService.saveThread({
           id: currentThreadId,
           title: mergeTarget.title,
-          connection_id: activeConnectionId || 1,
+          connection_id: mergeTarget.connection_id ?? activeConnectionId ?? undefined,
           results: newResults,
         }).then((saved) => {
           if (!saved) {
@@ -879,7 +908,7 @@ function useChatEngineInternal() {
       audit_log_id: result.traceability?.audit_log_id || result.audit_log_id,
       question: result.question,
       sql: result.traceability?.sql_executed,
-      connection_id: activeConnectionId || 1,
+      connection_id: result.connection_id ?? activeConnectionId ?? undefined,
       rating,
       comment,
     });
@@ -921,6 +950,7 @@ function useChatEngineInternal() {
     activeConnectionId,
     connectors,
     promptSuggestions,
+    builderOptions,
     threads,
     threadsLoaded,
     threadsError,
@@ -959,6 +989,7 @@ function useChatEngineInternal() {
     activeConnectionId,
     connectors,
     promptSuggestions,
+    builderOptions,
     threads,
     threadsLoaded,
     threadsError,

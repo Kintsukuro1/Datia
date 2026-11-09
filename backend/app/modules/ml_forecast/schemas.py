@@ -19,7 +19,7 @@ para que un cliente viejo que no manda el campo conserve el comportamiento.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -56,6 +56,9 @@ class ProjectionRequest(BaseModel):
     """
 
     connection_id: Optional[int] = None
+    # Tabla elegida manualmente. Se valida contra las autorizadas; si no está,
+    # la corrida falla cerrada en vez de caer a otra tabla.
+    table_name: Optional[str] = None
     question: str = Field(..., max_length=MAX_QUESTION_CHARS)
     horizon: Optional[int] = DEFAULT_HORIZON
     # Overrides del selector manual. Se validan contra las columnas REALES y
@@ -64,6 +67,14 @@ class ProjectionRequest(BaseModel):
     metric_column: Optional[str] = None
     date_column: Optional[str] = None
     dimension_column: Optional[str] = None
+    # Agregación pedida. `count` usa `metric_column="*"`; `count_distinct`
+    # requiere una columna de identificador; `formula` es una métrica
+    # pre-agregada del catálogo. Si se omite, se usa la de la opción resuelta.
+    metric_agg: Optional[
+        Literal["sum", "count", "count_distinct", "formula"]
+    ] = None
+    # Granularidad manual del eje. `None` conserva el contrato histórico: mes.
+    granularity: Optional[Literal["day", "week", "month"]] = None
     # Escape hatch para auditar un mes en curso: por defecto se excluye porque un
     # periodo incompleto hunde el ultimo punto y el backtest lo lee como caida.
     include_partial_period: bool = False
@@ -93,6 +104,9 @@ class ProjectionStep(BaseModel):
     n_backtests: int = 0
     reliable: bool = False
     extrapolated: bool = False
+    # La banda inferior se acotó a 0 (métrica de conteo: no hay cantidades
+    # negativas). El `band_pct` sigue siendo el residuo medido.
+    lower_clamped: bool = False
 
 
 class ProjectionTotal(BaseModel):
@@ -114,6 +128,7 @@ class ProjectionTotal(BaseModel):
     reliable: bool = False
     extrapolated: bool = False
     measured_steps: Optional[int] = None
+    lower_clamped: bool = False
 
 
 class ProjectionGroupSummary(BaseModel):
@@ -148,6 +163,21 @@ class ProjectionBreakdown(BaseModel):
     groups: List[ProjectionGroupSummary] = Field(default_factory=list)
 
 
+class ProjectionQuality(BaseModel):
+    """Estado agregado de calidad y las razones que lo dispararon.
+
+    No es un score: `status` sale de reglas explícitas sobre MAPE, cobertura,
+    naive, backtests y huecos. `reasons` es lo que la UI muestra para que el
+    lector sepa POR QUÉ, no solo el color.
+    """
+
+    status: str  # "confiable" | "exploratoria" | "no_confiable" | "sin_medicion"
+    mape: Optional[float] = None
+    unreliable_threshold: Optional[float] = None
+    exploratory_threshold: Optional[float] = None
+    reasons: List[str] = Field(default_factory=list)
+
+
 class ProjectionResponse(BaseModel):
     """Lo que ve el usuario: la proyeccion, su evidencia y el SQL que la produjo.
 
@@ -172,6 +202,7 @@ class ProjectionResponse(BaseModel):
     beats_naive: Optional[bool] = None
     mape: Optional[float] = None
     mape_by_method: Dict[str, Optional[float]] = {}
+    quality: Optional[ProjectionQuality] = None
     n_periods: int = 0
     has_gaps: bool = False
     # Periodo en curso excluido del calculo (o None si no se excluyo ninguno).
@@ -181,7 +212,10 @@ class ProjectionResponse(BaseModel):
     income_only: bool = True
     sql: Optional[str] = None
     table: Optional[str] = None
+    table_source: Optional[str] = None
     metric_column: Optional[str] = None
+    metric_agg: str = "sum"
+    granularity: str = "month"
     date_column: Optional[str] = None
     # Conexion sobre la que se calculo: la verificacion la necesita para volver
     # a leer los datos actuales con los MISMOS gates. Las corridas viejas no la
@@ -217,21 +251,65 @@ class ProjectionEstimateResponse(BaseModel):
     horizon_used: int = DEFAULT_HORIZON
 
 
+class ProjectionColumnOption(BaseModel):
+    """Una columna ofrecida al selector, con la evidencia que la sostiene.
+
+    `source` dice de dónde salió la clasificación (`catalogo`, `perfil`, `tipo`,
+    `sintetica`); `confidence` es alta/media/baja. La expresión SQL NO viaja:
+    el cliente manda el nombre y el backend la vuelve a resolver.
+    """
+
+    column: str
+    label: str
+    source: str
+    confidence: str
+    evidence: Optional[str] = None
+    min: Optional[str] = None
+    max: Optional[str] = None
+
+
+class ProjectionMetricOption(ProjectionColumnOption):
+    """Columna + agregación: `sum`, `count`, `count_distinct` o `formula`."""
+
+    agg: str
+
+
+class ProjectionTableOption(BaseModel):
+    """Tabla candidata del selector, con su conteo y nombre de negocio."""
+
+    name: str
+    row_count: int
+    friendly_name: Optional[str] = None
+
+
 class ProjectionContextResponse(BaseModel):
     """Columnas que el selector manual puede ofrecer, ya filtradas por el rol.
 
     Solo nombres que existen en los metadatos de la fact table autorizada y que
     el rol puede leer. `available=False` explica por que no hay contexto (sin
     rol, sin tablas, conexion caida) sin devolver una lista inventada.
+
+    Las listas `metric_columns`/`date_columns`/`dimension_columns` se conservan
+    para los clientes viejos; `date_options`/`metric_options`/
+    `identifier_options`/`count_option` llevan la evidencia del resolvedor.
     """
 
     available: bool = True
     reason: Optional[str] = None
     connection_id: int
     table: Optional[str] = None
+    table_source: Optional[str] = None
+    tables: List[ProjectionTableOption] = Field(default_factory=list)
     metric_columns: List[str] = Field(default_factory=list)
     date_columns: List[str] = Field(default_factory=list)
     dimension_columns: List[str] = Field(default_factory=list)
+    date_options: List[ProjectionColumnOption] = Field(default_factory=list)
+    metric_options: List[ProjectionMetricOption] = Field(default_factory=list)
+    identifier_options: List[ProjectionMetricOption] = Field(default_factory=list)
+    count_option: Optional[ProjectionMetricOption] = None
+    granularities: List[str] = Field(default_factory=lambda: ["day", "week", "month"])
+    default_granularity: str = "month"
+    min_periods: int = 6
 
 
 class ProjectionHistoryItem(BaseModel):
@@ -247,6 +325,10 @@ class ProjectionHistoryItem(BaseModel):
     connection_id: Optional[int] = None
     total_point: Optional[float] = None
     verifiable: bool = False
+    # El snapshot se puede reabrir como resultado publicado. Es distinto de
+    # `verifiable`: una corrida sin conexion guardada no se puede comparar con el
+    # dato actual, pero su detalle historico sigue siendo legible.
+    readable: bool = False
     reason: Optional[str] = None
 
 
@@ -285,6 +367,8 @@ class ProjectionVerificationResponse(BaseModel):
     question: str
     table: Optional[str] = None
     metric_column: Optional[str] = None
+    metric_agg: str = "sum"
+    granularity: str = "month"
     date_column: Optional[str] = None
     horizon: int
     method: Optional[str] = None

@@ -13,10 +13,15 @@ export const useSystemHealth = (pollingIntervalMs: number = DEFAULT_POLLING_INTE
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
   const prevStatusRef = useRef<'OPERATIVO' | 'DEGRADADO' | 'CRITICO' | null>(null);
+  // La ultima peticion gana: un poll lento no puede pisar el estado de uno mas
+  // reciente ni notificar una transicion que ya no existe.
+  const requestSeqRef = useRef(0);
   const { notify } = useNotifications();
   const { settings } = useAuth();
 
-  const fetchHealth = useCallback(async () => {
+  const fetchHealth = useCallback(async (showLoading = false) => {
+    const seq = ++requestSeqRef.current;
+    if (showLoading) setIsLoading(true);
     try {
       const res = await apiClient.get<SystemHealthResponse>('/system/health', {
         params: {
@@ -25,6 +30,7 @@ export const useSystemHealth = (pollingIntervalMs: number = DEFAULT_POLLING_INTE
           model_name: settings?.ollama_model,
         },
       });
+      if (seq !== requestSeqRef.current) return;
       const data = res.data;
       setHealthData(data);
       setLastChecked(new Date());
@@ -54,6 +60,7 @@ export const useSystemHealth = (pollingIntervalMs: number = DEFAULT_POLLING_INTE
 
       prevStatusRef.current = currentStatus;
     } catch {
+      if (seq !== requestSeqRef.current) return;
       // Backend offline: sin datos. Dejamos healthData en null para que el
       // header reporte DESCONOCIDO en vez de un OPERATIVO que nadie midió.
       setHealthData(null);
@@ -68,7 +75,7 @@ export const useSystemHealth = (pollingIntervalMs: number = DEFAULT_POLLING_INTE
       }
       prevStatusRef.current = fallbackStatus;
     } finally {
-      setIsLoading(false);
+      if (seq === requestSeqRef.current) setIsLoading(false);
     }
   }, [notify, settings?.ollama_url, settings?.llm_provider, settings?.ollama_model]);
 
@@ -100,6 +107,6 @@ export const useSystemHealth = (pollingIntervalMs: number = DEFAULT_POLLING_INTE
     details: healthData,
     lastChecked,
     isLoading,
-    refetch: fetchHealth,
+    refetch: () => { void fetchHealth(true); },
   };
 };

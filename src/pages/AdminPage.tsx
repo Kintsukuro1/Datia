@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { ShieldAlert, Users, Database, BookOpen, Server, Key, FileText, ShieldCheck, BrainCircuit, Layers } from 'lucide-react';
 import { CorporateConnection, connectorService, DEFAULT_CONNECTORS } from '../features/admin/services/connector_service';
 import { AdminAuditTab } from '../components/admin/AdminAuditTab';
@@ -16,13 +17,39 @@ import { User } from '../types';
 import { isPlatformAdmin, resolveRoleLabel } from '../constants';
 import { getApiErrorMessage } from '../shared/api/api_client';
 
+type AdminTab = 'connectors' | 'users' | 'roles' | 'catalog' | 'permissions' | 'learned' | 'audit';
+const ADMIN_TABS: AdminTab[] = ['connectors', 'users', 'roles', 'permissions', 'learned', 'catalog', 'audit'];
+
 export const AdminPage: React.FC = () => {
   const { notify } = useNotifications();
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'connectors' | 'users' | 'roles' | 'catalog' | 'permissions' | 'learned' | 'audit'>('connectors');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState<AdminTab>(
+    tabFromUrl && ADMIN_TABS.includes(tabFromUrl as AdminTab)
+      ? (tabFromUrl as AdminTab)
+      : 'connectors'
+  );
+
+  const changeTab = (tab: AdminTab) => {
+    setActiveTab(tab);
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', tab);
+    setSearchParams(next, { replace: true });
+  };
+
+  // Atrás/adelante y deep links: la URL es la fuente de la tab activa.
+  useEffect(() => {
+    const fromUrl = searchParams.get('tab') as AdminTab | null;
+    if (fromUrl && ADMIN_TABS.includes(fromUrl) && fromUrl !== activeTab) {
+      setActiveTab(fromUrl);
+    }
+  }, [searchParams, activeTab]);
 
   // Connectors State
   const [connectors, setConnectors] = useState<CorporateConnection[]>(DEFAULT_CONNECTORS);
+  const [connectorsLoaded, setConnectorsLoaded] = useState(false);
+  const [connectorsError, setConnectorsError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingConnector, setEditingConnector] = useState<CorporateConnection | null>(null);
 
@@ -38,6 +65,14 @@ export const AdminPage: React.FC = () => {
   // depende de endpoints admin-only (/auth/users), asi que el guard alcanza
   // para toda la ruta.
   const isAdmin = isPlatformAdmin(user);
+
+  useEffect(() => {
+    if (!isAdmin && ['roles', 'permissions', 'learned'].includes(activeTab)) {
+      changeTab('connectors');
+    }
+    // `changeTab` se recrea por render; la señal que importa es isAdmin/activeTab.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, activeTab]);
 
   const fetchUsers = async () => {
     try {
@@ -63,14 +98,19 @@ export const AdminPage: React.FC = () => {
   };
 
   const fetchConnectors = async () => {
+    setConnectorsError(null);
     try {
       const data = await connectorService.getConnectors();
       setConnectors(data ?? []);
+      setConnectorsLoaded(true);
     } catch (err: any) {
       // Surface the failure. Leaving the list empty renders "no sources
       // registered", which the admin reads as fact when the server is down.
       setConnectors([]);
-      notify('error', getApiErrorMessage(err, 'No se pudieron cargar las fuentes de datos del servidor.'));
+      setConnectorsError(
+        getApiErrorMessage(err, 'No se pudieron cargar las fuentes de datos del servidor.')
+      );
+      setConnectorsLoaded(true);
     }
   };
 
@@ -165,10 +205,12 @@ export const AdminPage: React.FC = () => {
         role="tablist"
         aria-label="Secciones de administración"
         onKeyDown={(e) => {
-          const order = ['connectors', 'users', 'roles', 'permissions', 'learned', 'catalog', 'audit'];
+          const order = ADMIN_TABS.filter((tab) =>
+            isAdmin || !['roles', 'permissions', 'learned'].includes(tab)
+          );
           const i = order.indexOf(activeTab);
           const go = (next: string) => {
-            setActiveTab(next as typeof activeTab);
+            changeTab(next as AdminTab);
             document.getElementById("admin-tab-" + next)?.focus();
           };
           if (e.key === "ArrowRight") {
@@ -187,7 +229,7 @@ export const AdminPage: React.FC = () => {
           aria-selected={activeTab === 'connectors'}
           tabIndex={activeTab === 'connectors' ? 0 : -1}
           type="button"
-          onClick={() => setActiveTab('connectors')}
+          onClick={() => changeTab('connectors')}
           className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-bold transition-all whitespace-nowrap rounded-t-xl ${
             activeTab === 'connectors'
               ? 'bg-brand-600 text-white shadow-sm'
@@ -204,7 +246,7 @@ export const AdminPage: React.FC = () => {
           aria-selected={activeTab === 'users'}
           tabIndex={activeTab === 'users' ? 0 : -1}
           type="button"
-          onClick={() => setActiveTab('users')}
+          onClick={() => changeTab('users')}
           className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-bold transition-all whitespace-nowrap rounded-t-xl ${
             activeTab === 'users'
               ? 'bg-brand-600 text-white shadow-sm'
@@ -222,7 +264,7 @@ export const AdminPage: React.FC = () => {
             aria-selected={activeTab === 'roles'}
             tabIndex={activeTab === 'roles' ? 0 : -1}
             type="button"
-            onClick={() => setActiveTab('roles')}
+            onClick={() => changeTab('roles')}
             className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-bold transition-all whitespace-nowrap rounded-t-xl ${
               activeTab === 'roles'
                 ? 'bg-brand-600 text-white shadow-sm'
@@ -241,7 +283,7 @@ export const AdminPage: React.FC = () => {
             aria-selected={activeTab === 'permissions'}
             tabIndex={activeTab === 'permissions' ? 0 : -1}
             type="button"
-            onClick={() => setActiveTab('permissions')}
+            onClick={() => changeTab('permissions')}
             className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-bold transition-all whitespace-nowrap rounded-t-xl ${
               activeTab === 'permissions'
                 ? 'bg-brand-600 text-white shadow-sm'
@@ -260,7 +302,7 @@ export const AdminPage: React.FC = () => {
             aria-selected={activeTab === 'learned'}
             tabIndex={activeTab === 'learned' ? 0 : -1}
             type="button"
-            onClick={() => setActiveTab('learned')}
+            onClick={() => changeTab('learned')}
             className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-bold transition-all whitespace-nowrap rounded-t-xl ${
               activeTab === 'learned'
                 ? 'bg-brand-600 text-white shadow-sm'
@@ -278,7 +320,7 @@ export const AdminPage: React.FC = () => {
           aria-selected={activeTab === 'catalog'}
           tabIndex={activeTab === 'catalog' ? 0 : -1}
           type="button"
-          onClick={() => setActiveTab('catalog')}
+          onClick={() => changeTab('catalog')}
           className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-bold transition-all whitespace-nowrap rounded-t-xl ${
             activeTab === 'catalog'
               ? 'bg-brand-600 text-white shadow-sm'
@@ -295,7 +337,7 @@ export const AdminPage: React.FC = () => {
           aria-selected={activeTab === 'audit'}
           tabIndex={activeTab === 'audit' ? 0 : -1}
           type="button"
-          onClick={() => setActiveTab('audit')}
+          onClick={() => changeTab('audit')}
           className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-bold transition-all whitespace-nowrap rounded-t-xl ${
             activeTab === 'audit'
               ? 'bg-brand-600 text-white shadow-sm'
@@ -311,6 +353,8 @@ export const AdminPage: React.FC = () => {
       {activeTab === 'connectors' && (
         <AdminConnectorsTab
           connectors={connectors}
+          connectorsLoaded={connectorsLoaded}
+          connectorsError={connectorsError}
           onOpenCreateModal={handleOpenCreateModal}
           onOpenEditModal={handleOpenEditModal}
           onDeleteConnector={handleDeleteConnector}

@@ -20,7 +20,14 @@ import { MemoryRouter } from 'react-router-dom';
 import type { ProjectionResult } from '../features/projections/services/projection_service';
 
 const { projectionService, reportService } = vi.hoisted(() => ({
-  projectionService: { estimate: vi.fn(), run: vi.fn() },
+  projectionService: {
+    estimate: vi.fn(),
+    run: vi.fn(),
+    context: vi.fn(),
+    history: vi.fn(),
+    getSaved: vi.fn(),
+    verify: vi.fn(),
+  },
   reportService: {
     captureChartAsBase64: vi.fn(),
     exportExecutiveReportPdf: vi.fn(),
@@ -185,6 +192,10 @@ describe('ProjectionsPage', () => {
   beforeEach(() => {
     projectionService.estimate.mockReset();
     projectionService.run.mockReset();
+    projectionService.context.mockReset();
+    projectionService.history.mockReset();
+    projectionService.getSaved.mockReset();
+    projectionService.verify.mockReset();
     reportService.captureChartAsBase64.mockReset();
     reportService.exportExecutiveReportPdf.mockReset();
     reportService.exportExecutiveReportExcel.mockReset();
@@ -221,7 +232,9 @@ describe('ProjectionsPage', () => {
     await pressEnter();
 
     expect(projectionService.estimate).toHaveBeenCalledWith(QUESTION, 6);
-    expect(projectionService.run).toHaveBeenCalledWith(QUESTION, 9, 6, undefined);
+    expect(projectionService.run).toHaveBeenCalledWith(
+      QUESTION, 9, 6, undefined, expect.any(AbortSignal)
+    );
 
     const text = container.textContent ?? '';
     // Metodo y honestidad del backtest.
@@ -248,6 +261,196 @@ describe('ProjectionsPage', () => {
     expect(text).not.toContain('80%');
   });
 
+  it('publica la lectura primero y deja el resto a un clic, no como muro de texto', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue({
+      ...availableFixture,
+      narration:
+        'La conclusión va primero: el total proyectado ronda los 1.824 millones.\n\nSEGUNDO_PARRAFO: salvedades sobre la serie y el horizonte.',
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('La conclusión va primero');
+    // La lectura se lee antes que el detalle técnico y el gráfico.
+    expect(text.indexOf('Lectura del resultado')).toBeLessThan(text.indexOf('Serie y proyección'));
+    // El segundo párrafo no se publica hasta pedirlo.
+    expect(text).not.toContain('SEGUNDO_PARRAFO:');
+
+    const expand = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Leer análisis completo')
+    );
+    expect(expand).toBeTruthy();
+    await act(async () => {
+      expand!.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    const expanded = container.textContent ?? '';
+    expect(expanded).toContain('SEGUNDO_PARRAFO:');
+    expect(expanded).toContain('Mostrar menos');
+  });
+
+  it('la granularidad manual viaja en los overrides', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue({ ...availableFixture, granularity: 'day' });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    const select = container.querySelector<HTMLSelectElement>(
+      '#projections-granularity-select'
+    )!;
+    act(() => {
+      select.value = 'day';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await pressEnter();
+
+    expect(projectionService.run).toHaveBeenCalledWith(
+      QUESTION, 9, 6,
+      {
+        tableName: null,
+        metricColumn: null,
+        metricAgg: null,
+        dateColumn: null,
+        dimensionColumn: null,
+        granularity: 'day',
+      },
+      expect.any(AbortSignal)
+    );
+    const text = container.textContent ?? '';
+    expect(text).toContain('Granularidad');
+    expect(text).toContain('Día');
+  });
+
+  it('el selector de tabla fija la tabla y manda table_name', async () => {
+    projectionService.context.mockResolvedValue({
+      available: true,
+      connection_id: 9,
+      table: 'fact_ventas',
+      table_source: 'mayor',
+      tables: [
+        { name: 'fact_ventas', row_count: 52 },
+        { name: 'fact_ingresos_costos', row_count: 8 },
+      ],
+      metric_columns: ['monto_total'],
+      date_columns: ['fecha_venta'],
+      dimension_columns: [],
+    });
+    projectionService.run.mockResolvedValue({
+      ...availableFixture,
+      table: 'fact_ingresos_costos',
+      table_source: 'manual',
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '#projections-advanced-toggle'
+    )!;
+    await act(async () => {
+      toggle.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(projectionService.context).toHaveBeenCalledWith(9, undefined);
+
+    const tableSelect = container.querySelector<HTMLSelectElement>(
+      '#projections-table-select'
+    )!;
+    expect(tableSelect).not.toBeNull();
+    await act(async () => {
+      tableSelect.value = 'fact_ingresos_costos';
+      tableSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(projectionService.context).toHaveBeenCalledWith(9, 'fact_ingresos_costos');
+
+    await pressEnter();
+    expect(projectionService.run).toHaveBeenCalledWith(
+      QUESTION, 9, 6,
+      {
+        tableName: 'fact_ingresos_costos',
+        metricColumn: null,
+        metricAgg: null,
+        dateColumn: null,
+        dimensionColumn: null,
+        granularity: 'month',
+      },
+      expect.any(AbortSignal)
+    );
+  });
+
+  it('permite elegir COUNT(*) y manda metric_agg=count', async () => {
+    projectionService.context.mockResolvedValue({
+      available: true,
+      connection_id: 9,
+      table: 'datos',
+      table_source: 'manual',
+      tables: [{ name: 'datos', row_count: 100 }],
+      metric_columns: ['campo_7'],
+      date_columns: ['campo_2'],
+      dimension_columns: [],
+      metric_options: [
+        { column: 'campo_7', label: 'Peso / Valor', agg: 'sum' },
+      ],
+      count_option: { column: '*', label: 'Cantidad de registros', agg: 'count' },
+      identifier_options: [],
+    });
+    projectionService.run.mockResolvedValue({
+      ...availableFixture,
+      table: 'datos',
+      table_source: 'manual',
+      metric_agg: 'count',
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '#projections-advanced-toggle'
+    )!;
+    await act(async () => {
+      toggle.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    const tableSelect = container.querySelector<HTMLSelectElement>(
+      '#projections-table-select'
+    )!;
+    await act(async () => {
+      tableSelect.value = 'datos';
+      tableSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    const metricSelect = container.querySelector<HTMLSelectElement>(
+      '#projections-metric-select'
+    )!;
+    expect(metricSelect.disabled).toBe(false);
+    act(() => {
+      metricSelect.value = '__count__';
+      metricSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    await pressEnter();
+    expect(projectionService.run).toHaveBeenCalledWith(
+      QUESTION, 9, 6,
+      {
+        tableName: 'datos',
+        metricColumn: '*',
+        metricAgg: 'count',
+        dateColumn: null,
+        dimensionColumn: null,
+        granularity: 'month',
+      },
+      expect.any(AbortSignal)
+    );
+  });
+
   it('Auto manda horizon null y publica el horizonte ajustado por la IA', async () => {
     projectionService.estimate.mockResolvedValue({
       estimated_seconds: 25, source: 'medido', horizon_used: 12,
@@ -268,7 +471,9 @@ describe('ProjectionsPage', () => {
 
     expect(select.value).toBe('auto');
     expect(projectionService.estimate).toHaveBeenCalledWith(QUESTION, null);
-    expect(projectionService.run).toHaveBeenCalledWith(QUESTION, 9, null, undefined);
+    expect(projectionService.run).toHaveBeenCalledWith(
+      QUESTION, 9, null, undefined, expect.any(AbortSignal)
+    );
     const text = container.textContent ?? '';
     expect(text).toContain('Horizonte publicado: 12 pasos');
     expect(text).toContain('ajustado por la IA (Auto)');
@@ -286,12 +491,131 @@ describe('ProjectionsPage', () => {
     const text = container.textContent ?? '';
     expect(text).toContain('Total del horizonte');
     expect(text).toContain('$360');
-    expect(text).toContain('$330 – $390');
+    // La banda es de un prefijo: no se pinta un rango numérico como si
+    // cubriera el horizonte completo.
+    expect(text).not.toContain('$330 – $390');
+    expect(text).toContain('Sin banda para el horizonte completo');
     expect(text).toContain('medición parcial');
     expect(text).toContain('Banda heredada del total de 1 paso');
     // El MAPE del total no se inventa cuando la banda es de un prefijo.
     expect(text).toContain('MAPE del total');
     expect(text).not.toContain('$0');
+  });
+
+  it('avisa cuando la banda de un conteo se acota a 0', async () => {
+    projectionService.run.mockResolvedValue({
+      ...totalFixture,
+      steps: totalFixture.steps.map((step, index) =>
+        index === 0 ? { ...step, lower: 0, lower_clamped: true } : step
+      ),
+      total: { ...totalFixture.total!, lower: 0, lower_clamped: true },
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('Banda inferior acotada a 0');
+    expect(text).toContain('no hay cantidades negativas');
+  });
+
+  it('muestra el estado de calidad y sus razones', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue({
+      ...totalFixture,
+      quality: {
+        status: 'no_confiable',
+        mape: 67.7,
+        unreliable_threshold: 50,
+        exploratory_threshold: 30,
+        reasons: [
+          'MAPE 67,7% supera el 50%',
+          'la banda del total cubre 1 de 3 pasos',
+        ],
+      },
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('No confiable');
+    expect(text).toContain('MAPE 67,7% supera el 50%');
+    expect(text).toContain('la banda del total cubre 1 de 3 pasos');
+    expect(text).toContain('Sin banda para el horizonte completo');
+
+    // El motivo también está en la nota que abre el badge (hover/foco).
+    const tooltipText = Array.from(container.querySelectorAll('[role="tooltip"]'))
+      .map((node) => node.textContent ?? '')
+      .join(' ');
+    expect(tooltipText).toContain('MAPE 67,7% supera el 50%');
+  });
+
+  it('explica en la nota por qué una proyección es confiable', async () => {
+    projectionService.run.mockResolvedValue({
+      ...totalFixture,
+      steps: totalFixture.steps.map((step) => ({
+        ...step,
+        point: step.point ?? 130,
+        n_backtests: 5,
+        reliable: true,
+        extrapolated: false,
+      })),
+      total: {
+        ...totalFixture.total!,
+        measured_steps: 3,
+        extrapolated: false,
+        reliable: true,
+      },
+      beats_naive: true,
+      quality: {
+        status: 'confiable',
+        mape: 2.6,
+        unreliable_threshold: 50,
+        exploratory_threshold: 30,
+        reasons: [],
+      },
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const tooltipText = Array.from(container.querySelectorAll('[role="tooltip"]'))
+      .map((node) => node.textContent ?? '')
+      .join(' ');
+    expect(tooltipText).toContain('Las reglas de calidad no encontraron alertas');
+    expect(tooltipText).toContain('MAPE global 2,6%, por debajo del umbral exploratorio 30%');
+    expect(tooltipText).toContain('El paso con menos evidencia tiene 5 backtests');
+    expect(tooltipText).toContain('La serie no tiene periodos faltantes');
+  });
+
+  it('muestra la calidad aunque no se pueda sumar el total', async () => {
+    projectionService.run.mockResolvedValue({
+      ...availableFixture,
+      total: null,
+      quality: {
+        status: 'no_confiable',
+        mape: 67.7,
+        unreliable_threshold: 50,
+        exploratory_threshold: 30,
+        reasons: ['no se pudo calcular el total del horizonte'],
+      },
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('No confiable');
+    expect(text).toContain('no se pudo calcular el total del horizonte');
   });
 
   it('el export manda el audit_log_id de la corrida y captura ESTE gráfico', async () => {
@@ -325,6 +649,73 @@ describe('ProjectionsPage', () => {
     });
 
     expect(reportService.exportExecutiveReportExcel).toHaveBeenCalledWith({ audit_log_id: 55 });
+  });
+
+  it('reabre una proyección guardada desde el historial y avisa que es histórica', async () => {
+    projectionService.history.mockResolvedValue({
+      items: [
+        {
+          audit_log_id: 77,
+          timestamp: '2026-01-05T12:00:00',
+          question: 'Proyección de enero',
+          horizon: 6,
+          table: 'movimientos',
+          metric_column: 'monto',
+          date_column: 'fecha',
+          total_point: 1000,
+          verifiable: true,
+          readable: true,
+        },
+      ],
+    });
+    projectionService.getSaved.mockResolvedValue({
+      ...availableFixture,
+      audit_log_id: 77,
+      question: 'Proyección de enero',
+      narration: 'Lectura guardada de una corrida anterior.',
+    });
+
+    act(() => {
+      renderPage();
+    });
+
+    const toggle = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Proyecciones recientes')
+    );
+    expect(toggle).toBeTruthy();
+    await act(async () => {
+      toggle!.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(projectionService.history).toHaveBeenCalledWith(10);
+    const detail = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.getAttribute('aria-label')?.includes('Ver detalle de la proyección 77')
+    );
+    expect(detail).toBeTruthy();
+    await act(async () => {
+      (detail as HTMLButtonElement).click();
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(projectionService.getSaved).toHaveBeenCalledWith(77);
+    const text = container.textContent ?? '';
+    expect(text).toContain('Viendo una proyección guardada');
+    expect(text).toContain('Proyección de enero');
+    expect(text).toContain('Lectura guardada de una corrida anterior');
+
+    const close = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Cerrar'
+    );
+    expect(close).toBeTruthy();
+    await act(async () => {
+      close!.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    const closed = container.textContent ?? '';
+    expect(closed).not.toContain('Viendo una proyección guardada');
+    expect(closed).not.toContain('Lectura guardada de una corrida anterior');
   });
 
   it('available=false muestra el motivo y la serie leída, sin pasos ni números inventados', async () => {

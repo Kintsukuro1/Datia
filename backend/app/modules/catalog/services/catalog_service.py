@@ -59,7 +59,7 @@ class CatalogDomainService:
             # reciente y, si ya habia curadoria para (tabla, columna) ahi, el
             # bloque de `existing` de abajo le pisaba friendly_name, description,
             # synonyms y business_formula.
-            explicit_id = "connection_id" in getattr(item_in, "model_fields_set", set())
+            explicit_id = item_in.connection_id is not None
             if explicit_id:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -68,6 +68,11 @@ class CatalogDomainService:
             conn_record = SchemaInspector.default_connection(db)
             if conn_record:
                 target_conn_id = conn_record.id
+        if conn_record is None or target_conn_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No hay ninguna conexión de datos registrada para asociar la regla.",
+            )
 
         if target_schema == "main":
             target_schema = "public"

@@ -25,7 +25,7 @@ class SQLGenerator:
         allowed_tables: Set[str],
         db: Optional[Session] = None,
         role_id: Optional[int] = None,
-        connection_id: int = 1,
+        connection_id: Optional[int] = None,
         is_admin: bool = False,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         dialect: str = "postgres",

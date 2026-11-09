@@ -27,3 +27,8 @@ class AuditLog(Base):
     rows_returned = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
     result_snapshot = Column(Text, nullable=True)
+    # Feedback append-only: la calificacion del usuario NO reescribe el estado
+    # de validacion ni el error. Antes el endpoint concatenaba etiquetas en
+    # `validation_status` y mutaba la evidencia de compliance.
+    feedback_rating = Column(String(20), nullable=True)  # positive | negative
+    feedback_comment = Column(Text, nullable=True)

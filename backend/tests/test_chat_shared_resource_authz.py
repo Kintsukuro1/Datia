@@ -23,11 +23,33 @@ from main import app
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
 from app.core.constants import ROLE_ADMINISTRADOR, ROLE_ANALISTA_FINANCIERO, ROLE_DIRECTOR_EJECUTIVO
+from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
 from app.modules.auth.models import User, UserSession
 from app.modules.chat_engine.models import QueryLearningMemory
 from app.core.security import create_access_token
 
 CONNECTION_ID = 987654
+
+
+def _ensure_connection(db):
+    """El endpoint ahora valida que la conexión exista; el test usa una propia."""
+    existing = db.query(CorporateConnection).filter(
+        CorporateConnection.id == CONNECTION_ID
+    ).first()
+    if existing:
+        return
+    db.add(CorporateConnection(
+        id=CONNECTION_ID,
+        name=f"test-mem-{uuid.uuid4().hex[:8]}",
+        db_type=DatabaseType.POSTGRESQL,
+        host="localhost",
+        port=5432,
+        database_name="test_mem",
+        username="test_mem",
+        encrypted_password="",
+        is_active=False,
+    ))
+    db.commit()
 
 
 def _headers_for(db, username: str):
@@ -49,6 +71,7 @@ class TestSharedLearningMemoryAuthorization(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.db = SessionLocal()
+        _ensure_connection(self.db)
         self.admin_jti, self.admin_headers = _headers_for(self.db, "admin")
         self.user_jti, self.user_headers = _headers_for(self.db, "juan_ti")
 
@@ -58,6 +81,9 @@ class TestSharedLearningMemoryAuthorization(unittest.TestCase):
         ).delete()
         self.db.query(UserSession).filter(
             UserSession.jti.in_([self.admin_jti, self.user_jti])
+        ).delete()
+        self.db.query(CorporateConnection).filter(
+            CorporateConnection.id == CONNECTION_ID
         ).delete()
         self.db.commit()
         self.db.close()

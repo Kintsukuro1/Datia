@@ -48,9 +48,16 @@ def list_catalog(
     connection_id: Optional[int] = Query(None, description="Filtrar por ID de conexión"),
     table_name: Optional[str] = Query(None, description="Filtrar por nombre de tabla"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_admin: User = Depends(get_current_admin)
 ) -> Any:
-    """Lists semantic catalog rules and data dictionary definitions."""
+    """Lists semantic catalog rules (Admin only).
+
+    El catálogo contiene nombres de tablas, columnas y descripciones de TODAS
+    las conexiones. Antes lo podía leer cualquier autenticado, incluso una
+    cuenta sin rol, y eso permitía enumerar esquemas que el RBAC le ocultaba
+    en el chat. La lectura operativa del motor es interna; esta ruta HTTP es de
+    administración.
+    """
     return CatalogDomainService.list_catalog(db, connection_id=connection_id, table_name=table_name)
 
 @router.post("/catalog", response_model=SemanticCatalogOut, status_code=status.HTTP_201_CREATED)
@@ -60,7 +67,25 @@ def create_catalog_item(
     current_admin: User = Depends(get_current_admin)
 ) -> Any:
     """Creates or updates a semantic catalog entry (Admin only)."""
-    return CatalogDomainService.create_catalog_item(db, item_in)
+    item = CatalogDomainService.create_catalog_item(db, item_in)
+    conn_name = db.query(CorporateConnection.name).filter(
+        CorporateConnection.id == item.connection_id
+    ).scalar()
+    _audit_admin_mutation(
+        db, current_admin,
+        validation_status="CATALOGO_CREADO",
+        action=f"Alta/actualización de regla semántica: {item.table_name}.{item.column_name or '*'}",
+        target_database=conn_name,
+        detail={
+            "accion": "catalogo_creado",
+            "connection_id": item.connection_id,
+            "connection": conn_name,
+            "table_name": item.table_name,
+            "column_name": item.column_name,
+            "friendly_name": item.friendly_name,
+        },
+    )
+    return item
 
 @router.put("/catalog/{item_id}", response_model=SemanticCatalogOut)
 def update_catalog_item(
@@ -70,7 +95,24 @@ def update_catalog_item(
     current_admin: User = Depends(get_current_admin)
 ) -> Any:
     """Updates an existing semantic catalog entry (Admin only)."""
-    return CatalogDomainService.update_catalog_item(db, item_id, item_in)
+    item = CatalogDomainService.update_catalog_item(db, item_id, item_in)
+    conn_name = db.query(CorporateConnection.name).filter(
+        CorporateConnection.id == item.connection_id
+    ).scalar()
+    _audit_admin_mutation(
+        db, current_admin,
+        validation_status="CATALOGO_ACTUALIZADO",
+        action=f"Actualización de regla semántica: {item.table_name}.{item.column_name or '*'}",
+        target_database=conn_name,
+        detail={
+            "accion": "catalogo_actualizado",
+            "connection_id": item.connection_id,
+            "connection": conn_name,
+            "table_name": item.table_name,
+            "column_name": item.column_name,
+        },
+    )
+    return item
 
 @router.delete("/catalog/{item_id}", status_code=status.HTTP_200_OK)
 def delete_catalog_item(
@@ -79,7 +121,39 @@ def delete_catalog_item(
     current_admin: User = Depends(get_current_admin)
 ) -> Any:
     """Deletes a semantic catalog entry (Admin only)."""
-    return CatalogDomainService.delete_catalog_item(db, item_id)
+    from app.modules.admin_catalog.models import SemanticCatalog
+    item = db.query(SemanticCatalog).filter(SemanticCatalog.id == item_id).first()
+    # Snapshot antes del DELETE: después del commit el ORM expira el objeto y
+    # leer `item.table_name` sobre una fila borrada lanza ObjectDeletedError.
+    snapshot = None
+    if item is not None:
+        snapshot = {
+            "connection_id": item.connection_id,
+            "table_name": item.table_name,
+            "column_name": item.column_name,
+        }
+    result = CatalogDomainService.delete_catalog_item(db, item_id)
+    if snapshot is not None:
+        conn_name = db.query(CorporateConnection.name).filter(
+            CorporateConnection.id == snapshot["connection_id"]
+        ).scalar()
+        _audit_admin_mutation(
+            db, current_admin,
+            validation_status="CATALOGO_ELIMINADO",
+            action=(
+                "Eliminación de regla semántica: "
+                f"{snapshot['table_name']}.{snapshot['column_name'] or '*'}"
+            ),
+            target_database=conn_name,
+            detail={
+                "accion": "catalogo_eliminado",
+                "connection_id": snapshot["connection_id"],
+                "connection": conn_name,
+                "table_name": snapshot["table_name"],
+                "column_name": snapshot["column_name"],
+            },
+        )
+    return result
 
 @router.get("/catalog/data-dictionary", response_model=DataDictionaryResponse)
 def get_data_dictionary(
@@ -262,7 +336,23 @@ def create_connector(
     current_admin: User = Depends(get_current_admin)
 ) -> Any:
     """Registers a new corporate database connection (Admin only)."""
-    return ConnectorDomainService.create_connector(db, conn_in)
+    result = ConnectorDomainService.create_connector(db, conn_in)
+    _audit_admin_mutation(
+        db, current_admin,
+        validation_status="CONECTOR_CREADO",
+        action=f"Alta de conexión corporativa '{result.name}'",
+        target_database=result.name,
+        detail={
+            "accion": "conector_creado",
+            "connection_id": result.id,
+            "name": result.name,
+            "db_type": result.db_type.value if hasattr(result.db_type, "value") else str(result.db_type),
+            "host": result.host,
+            "database_name": result.database_name,
+            "is_active": result.is_active,
+        },
+    )
+    return result
 
 @router.post("/connectors/upload", response_model=CorporateConnectionOut, status_code=status.HTTP_201_CREATED)
 async def upload_database_file(
@@ -272,7 +362,22 @@ async def upload_database_file(
     current_admin: User = Depends(get_current_admin)
 ) -> Any:
     """Uploads a SQLite, Excel or CSV file (Admin only)."""
-    return await ConnectorDomainService.upload_database_file(db, file, name)
+    result = await ConnectorDomainService.upload_database_file(db, file, name)
+    _audit_admin_mutation(
+        db, current_admin,
+        validation_status="CONECTOR_SUBIDO",
+        action=f"Alta de dataset subido '{result.name}'",
+        target_database=result.name,
+        detail={
+            "accion": "conector_subido",
+            "connection_id": result.id,
+            "name": result.name,
+            "database_name": result.database_name,
+            "is_uploaded": result.is_uploaded,
+            "detected_tables": result.detected_tables,
+        },
+    )
+    return result
 
 @router.put("/connectors/{conn_id}", response_model=CorporateConnectionOut)
 def update_connector(
@@ -282,7 +387,22 @@ def update_connector(
     current_admin: User = Depends(get_current_admin)
 ) -> Any:
     """Updates an existing corporate database connection (Admin only)."""
-    return ConnectorDomainService.update_connector(db, conn_id, conn_in)
+    result = ConnectorDomainService.update_connector(db, conn_id, conn_in)
+    _audit_admin_mutation(
+        db, current_admin,
+        validation_status="CONECTOR_ACTUALIZADO",
+        action=f"Actualización de conexión corporativa '{result.name}'",
+        target_database=result.name,
+        detail={
+            "accion": "conector_actualizado",
+            "connection_id": result.id,
+            "name": result.name,
+            "host": result.host,
+            "database_name": result.database_name,
+            "is_active": result.is_active,
+        },
+    )
+    return result
 
 @router.post("/connectors/{conn_id}/toggle-active", response_model=CorporateConnectionOut)
 def toggle_connector_active(
@@ -291,7 +411,25 @@ def toggle_connector_active(
     current_admin: User = Depends(get_current_admin)
 ) -> Any:
     """Toggles active status of a corporate database connection (Admin only)."""
-    return ConnectorDomainService.toggle_connector_active(db, conn_id)
+    result = ConnectorDomainService.toggle_connector_active(db, conn_id)
+    _audit_admin_mutation(
+        db, current_admin,
+        validation_status=(
+            "CONECTOR_ACTIVADO" if result.is_active else "CONECTOR_DESACTIVADO"
+        ),
+        action=(
+            f"{'Activación' if result.is_active else 'Desactivación'} de la conexión "
+            f"'{result.name}'"
+        ),
+        target_database=result.name,
+        detail={
+            "accion": "conector_activado" if result.is_active else "conector_desactivado",
+            "connection_id": result.id,
+            "name": result.name,
+            "is_active": result.is_active,
+        },
+    )
+    return result
 
 @router.delete("/connectors/{conn_id}", status_code=status.HTTP_200_OK)
 def delete_connector(
@@ -300,7 +438,30 @@ def delete_connector(
     current_admin: User = Depends(get_current_admin)
 ) -> Any:
     """Deletes a corporate database connection (Admin only)."""
-    return ConnectorDomainService.delete_connector(db, conn_id)
+    conn = db.query(CorporateConnection).filter(
+        CorporateConnection.id == conn_id
+    ).first()
+    snapshot = None if conn is None else {
+        "name": conn.name,
+        "database_name": conn.database_name,
+        "is_uploaded": conn.is_uploaded,
+    }
+    result = ConnectorDomainService.delete_connector(db, conn_id)
+    if snapshot is not None:
+        _audit_admin_mutation(
+            db, current_admin,
+            validation_status="CONECTOR_ELIMINADO",
+            action=f"Eliminación de la conexión '{snapshot['name']}'",
+            target_database=snapshot["name"],
+            detail={
+                "accion": "conector_eliminado",
+                "connection_id": conn_id,
+                "name": snapshot["name"],
+                "database_name": snapshot["database_name"],
+                "is_uploaded": snapshot["is_uploaded"],
+            },
+        )
+    return result
 
 # =========================================================================
 # PERMISOS DE TABLA POR ROL (default-deny)
@@ -309,6 +470,35 @@ def delete_connector(
 # `/catalog/{item_id}` (declarado mas arriba) y FastSQL devuelve 422 por un
 # item_id no numerico. Los permisos son la matriz RBAC de toda la plataforma, no
 # una entrada del catalogo semantico.
+
+def _audit_admin_mutation(
+    db: Session,
+    admin: User,
+    validation_status: str,
+    action: str,
+    target_database: Optional[str],
+    detail: Dict[str, Any],
+) -> None:
+    """Audita una mutación administrativa de conector/catálogo.
+
+    Estas rutas cambian qué fuente consulta toda la empresa o qué metadata ve
+    el motor. Sin fila en `audit_logs`, un cambio de conexión o de semántica no
+    tiene autor ni antes/después. Es best-effort como el resto de la metadata:
+    la mutación ya commiteó; si el audit falla, se registra el error, no se
+    revierte el cambio.
+    """
+    _persist_audit_log(
+        db,
+        user_id=admin.id,
+        username=(admin.username or "")[:50],
+        user_role=display_role_name(admin),
+        question_prompt=action,
+        sql_generated=None,
+        validation_status=validation_status,
+        target_database=(target_database or "")[:100],
+        result_snapshot=json.dumps(detail, ensure_ascii=False, default=str),
+    )
+
 
 def _audit_permission_change(
     db: Session,

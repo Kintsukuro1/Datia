@@ -22,6 +22,7 @@ que el cliente podria omitir para saltarse el gate.
 
 import asyncio
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from app.core.constants import ROLE_USUARIO
@@ -98,11 +99,19 @@ class TestPredictRbac(unittest.TestCase):
         forecast = MagicMock(return_value={"available": False, "reason": "stub", "series": []})
         retention = MagicMock(return_value={"total_clients": 0, "tiers": {}, "top": []})
         quality = MagicMock(return_value=[])
+        effective_payload = payload or _payload()
         with patch.object(GovernanceGuard, "get_allowed_tables_for_role", return_value=set(tablas)), \
+             patch(
+                 "app.modules.chat_engine.router._resolve_chat_connection",
+                 return_value=SimpleNamespace(
+                     id=effective_payload.connection_id or 1,
+                     name="test",
+                 ),
+             ), \
              patch.object(forecast_service, "run_forecast", forecast), \
              patch.object(forecast_service, "run_retention", retention), \
              patch.object(forecast_service, "audit_data_quality", quality):
-            return asyncio.run(run_prediction(payload or _payload(), user, _SesionFalsa()))
+            return asyncio.run(run_prediction(effective_payload, user, _SesionFalsa()))
 
     # --- 1. Separacion de dominios: la matriz manda, no el nombre -------------
 
@@ -200,7 +209,11 @@ class TestPredictRbac(unittest.TestCase):
     def test_un_solo_budget_compartido_entre_los_tres_bloques(self):
         """Los tres bloques reciben el MISMO dict: sin eso cada uno vuelve a
         pagar los N COUNT(*) y la memoizacion no arregla nada."""
-        with patch("app.modules.chat_engine.router.SessionLocal", return_value=_SesionFalsa()):
+        with patch("app.modules.chat_engine.router.SessionLocal", return_value=_SesionFalsa()), \
+             patch(
+                 "app.modules.chat_engine.router._resolve_chat_connection",
+                 return_value=SimpleNamespace(id=1, name="test"),
+             ):
             with patch("app.modules.chat_engine.governance_guard.GovernanceGuard."
                        "get_allowed_tables_for_role", return_value={"fact_ventas"}):
                 vistos = []

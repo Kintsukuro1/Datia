@@ -5,7 +5,9 @@ from app.modules.admin_catalog.models import ColumnPermissionType, DatabaseType
 
 # --- Semantic Catalog Schemas ---
 class SemanticCatalogBase(BaseModel):
-    connection_id: int = 1
+    # `None` = la conexión activa. No hay una conexión 1 universal: el cliente
+    # puede haber subido otro dataset y la activa es la única elección honesta.
+    connection_id: Optional[int] = None
     domain_id: Optional[int] = None
     schema_name: str = "main"
     table_name: str
@@ -106,7 +108,9 @@ class CorporateConnectionCreate(BaseModel):
     username: str = "admin"
     password: str = ""
     is_active: bool = True
-    is_uploaded: bool = False
+    # `is_uploaded` NO se acepta del cliente: es la marca que autoriza a
+    # `delete_connector` a hacer DROP DATABASE. La pone solo el endpoint de
+    # upload, que es el unico que creo esa base.
 
 class CorporateConnectionUpdate(BaseModel):
     name: Optional[str] = None

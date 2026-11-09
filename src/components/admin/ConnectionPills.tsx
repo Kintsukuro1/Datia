@@ -12,6 +12,8 @@ interface ConnectionPillsProps {
   showReviewWarning?: boolean;
   /** Marca los datasets importados — catalogo y permisos. */
   showUploaded?: boolean;
+  /** Bloquea el cambio mientras hay una escritura en vuelo. */
+  disabled?: boolean;
 }
 
 /**
@@ -30,6 +32,7 @@ export const ConnectionPills: React.FC<ConnectionPillsProps> = ({
   showDbType = false,
   showReviewWarning = false,
   showUploaded = false,
+  disabled = false,
 }) => (
   <>
     {connectors.map((c) => {
@@ -39,7 +42,8 @@ export const ConnectionPills: React.FC<ConnectionPillsProps> = ({
           key={c.id}
           type="button"
           onClick={() => onSelect(c.id)}
-          className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs transition-all ${
+          disabled={disabled}
+          className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs transition-all disabled:opacity-40 disabled:pointer-events-none ${
             isSelected
               ? 'bg-brand-50 text-brand-700 border border-brand-300 dark:bg-purple-600/20 dark:text-purple-300 dark:border-purple-500/50 shadow-xs font-bold'
               : 'bg-white dark:bg-dark-card/60 text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-card border border-slate-200 dark:border-dark-border font-medium'

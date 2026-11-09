@@ -1,15 +1,17 @@
 import datetime
 import logging
 from typing import Generator, Optional
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-import app.modules.auth.models
-import app.modules.admin_catalog.models
-import app.modules.telemetry_audit.models
-import app.modules.chat_engine.models
+import app.modules.auth.models  # noqa: F401 - registra el modelo en SQLAlchemy
+import app.modules.admin_catalog.models  # noqa: F401
+import app.modules.telemetry_audit.models  # noqa: F401
+import app.modules.chat_engine.models  # noqa: F401
+from app.core.config import settings
 from app.core.database import SessionLocal
-from app.core.security import decode_token_payload
+from app.core.security import decode_token_payload, hash_api_key
+from app.modules.auth.models import ApiClient
 from app.core.time import utcnow_naive
 from app.modules.auth.models import User, UserSession
 from app.modules.telemetry_audit.models import AuditLog
@@ -21,7 +23,20 @@ from app.core.constants import (
 
 logger = logging.getLogger(__name__)
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+# Topes de la evidencia que se guarda en `audit_logs`. Un prompt o un snapshot
+# sin tope puede hacer fallar el INSERT (o inflar la tabla) y, como la auditoria
+# era best-effort, la consulta igual devolvia filas sin registro. El prompt se
+# trunca con una marca visible; el snapshot se omite y el export responde 409
+# ("sin resultado exportable") en vez de guardar JSON corrupto.
+AUDIT_PROMPT_MAX_CHARS = 32_000
+AUDIT_SNAPSHOT_MAX_CHARS = 1_000_000
+
+
+class AuditWriteError(RuntimeError):
+    """La auditoria obligatoria no se pudo persistir."""
+
+
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
 def get_db() -> Generator:
     """Provides a database session for requests."""
@@ -64,20 +79,140 @@ def temporary_password_expired(user: User) -> bool:
     return now >= expires_at
 
 
+def _load_active_session(db: Session, user: User, payload: dict):
+    """Devuelve `(session, motivo)` para el JTI del token.
+
+    `motivo` es `None` si la sesion sirve, o uno de `missing`, `revoked`,
+    `idle`, `absolute`. La fila de sesion es obligatoria: antes, si el JTI no
+    tenia fila, el token seguia valiendo hasta expirar aunque la sesion se
+    hubiera borrado. Los topes de inactividad y absoluto se evaluan aca, no en
+    el JWT, porque el JWT no se puede revocar sin tocar la base.
+    """
+    jti = payload.get("jti")
+    if not jti:
+        return None, "missing"
+
+    session = db.query(UserSession).filter(
+        UserSession.jti == jti,
+        UserSession.user_id == user.id,
+    ).first()
+    if session is None:
+        return None, "missing"
+    if session.is_revoked:
+        return session, "revoked"
+
+    now = utcnow_naive()
+
+    def _naive(value):
+        if isinstance(value, str):
+            try:
+                value = datetime.datetime.fromisoformat(value)
+            except Exception:
+                return None
+        if value is not None and getattr(value, "tzinfo", None) is not None:
+            value = value.replace(tzinfo=None)
+        return value
+
+    created_at = _naive(session.created_at)
+    last_seen = _naive(session.last_seen_at)
+
+    if created_at and (
+        now - created_at
+    ).total_seconds() > settings.SESSION_ABSOLUTE_TIMEOUT_MINUTES * 60:
+        session.is_revoked = True
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        return session, "absolute"
+
+    if last_seen and (
+        now - last_seen
+    ).total_seconds() > settings.SESSION_IDLE_TIMEOUT_MINUTES * 60:
+        session.is_revoked = True
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        return session, "idle"
+
+    # Si el tope de inactividad es menor que el intervalo de refresco, hay que
+    # escribir `last_seen_at` en cada request; si no, una sesión activa se vería
+    # "inactiva" solo porque el refresh todavía no corrió.
+    refresh_interval = SESSION_LAST_SEEN_UPDATE_INTERVAL_MINUTES
+    must_refresh = (
+        last_seen is None
+        or settings.SESSION_IDLE_TIMEOUT_MINUTES <= refresh_interval
+        or (now - last_seen).total_seconds() > refresh_interval * 60
+    )
+    if must_refresh:
+        session.last_seen_at = now
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+    return session, None
+
+
+def _user_from_api_key(db: Session, api_key: str) -> Optional[User]:
+    """Resuelve una credencial de servicio activa a su cuenta de servicio.
+
+    La clave en claro nunca se guarda ni se loguea. La cuenta de servicio es un
+    `User` normal (no admin) para que RBAC/CLS y la auditoría sigan funcionando
+    sin abrir un camino paralelo.
+    """
+    # Los tests llaman la dependency directo y reciben el objeto `Header` por
+    # default; solo un string es una credencial real.
+    if not isinstance(api_key, str) or not api_key.startswith("datia_sk_"):
+        return None
+    client = db.query(ApiClient).filter(
+        ApiClient.key_hash == hash_api_key(api_key),
+        ApiClient.is_active == True,
+    ).first()
+    if client is None:
+        return None
+    user = db.query(User).filter(
+        User.id == client.user_id,
+        User.is_active == True,
+    ).first()
+    if user is None:
+        return None
+
+    now = utcnow_naive()
+    if client.last_used_at is None or (
+        now - client.last_used_at
+    ).total_seconds() > 300:
+        client.last_used_at = now
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+    return user
+
+
 def get_current_user(
     request: Request,
     db: Session = Depends(get_db),
-    token: str = Depends(oauth2_scheme)
+    token: Optional[str] = Depends(oauth2_scheme_optional),
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
 ) -> User:
     """
-    Decodes JWT access token, retrieves user, validates active session, and blocks
-    the API while a temporary password is pending.
+    Acepta Bearer (usuario) o X-API-Key (servicio) y valida la sesión.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="No se pudieron validar las credenciales de sesión.",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if isinstance(api_key, str) and api_key:
+        service_user = _user_from_api_key(db, api_key)
+        if service_user is None:
+            raise credentials_exception
+        return service_user
+
+    if not token:
+        raise credentials_exception
     payload = decode_token_payload(token)
     if not payload:
         raise credentials_exception
@@ -96,33 +231,20 @@ def get_current_user(
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Usuario inactivo.")
 
-    # Validate active session via JTI if claim is present
-    jti = payload.get("jti")
-    if jti:
-        session = db.query(UserSession).filter(UserSession.jti == jti).first()
-        if session:
-            if session.is_revoked:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="La sesión ha sido revocada o cerrada. Inicia sesión nuevamente.",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            now = utcnow_naive()
-            last_seen = session.last_seen_at
-            if isinstance(last_seen, str):
-                try:
-                    last_seen = datetime.datetime.fromisoformat(last_seen).replace(tzinfo=None)
-                except Exception:
-                    last_seen = now
-            elif hasattr(last_seen, 'tzinfo') and last_seen.tzinfo is not None:
-                last_seen = last_seen.replace(tzinfo=None)
-
-            if last_seen and (now - last_seen).total_seconds() > (SESSION_LAST_SEEN_UPDATE_INTERVAL_MINUTES * 60):
-                session.last_seen_at = now
-                try:
-                    db.commit()
-                except Exception:
-                    db.rollback()
+    # La sesion es obligatoria: un JWT sin fila de `user_sessions` ya no vale.
+    _, reason = _load_active_session(db, user, payload)
+    if reason:
+        messages = {
+            "missing": "La sesión no existe o expiró. Inicia sesión nuevamente.",
+            "revoked": "La sesión ha sido revocada o cerrada. Inicia sesión nuevamente.",
+            "idle": "La sesión expiró por inactividad. Inicia sesión nuevamente.",
+            "absolute": "La sesión expiró. Inicia sesión nuevamente.",
+        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=messages.get(reason, messages["missing"]),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     # Una credencial temporal que el usuario puede ignorar para siempre no es una
     # credencial: `admin_reset_user_password` ponía el flag en True y
@@ -155,16 +277,17 @@ def get_current_user(
 
     return user
 
-oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
-
 def get_current_user_optional(
     db: Session = Depends(get_db),
-    token: Optional[str] = Depends(oauth2_scheme_optional)
+    token: Optional[str] = Depends(oauth2_scheme_optional),
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
 ) -> Optional[User]:
     """
     Safely retrieves authenticated user if a valid JWT token is provided.
     Returns None if token is absent, invalid, expired or revoked, without raising HTTP 401.
     """
+    if isinstance(api_key, str) and api_key:
+        return _user_from_api_key(db, api_key)
     if not token:
         return None
 
@@ -184,24 +307,9 @@ def get_current_user_optional(
     if user is None or not user.is_active:
         return None
 
-    jti = payload.get("jti")
-    if jti:
-        session = db.query(UserSession).filter(UserSession.jti == jti).first()
-        if session:
-            if session.is_revoked:
-                return None
-            # `utcnow()` esta deprecado desde 3.12. Mismo patron que el de arriba:
-            # UTC naive. `last_seen_at` se compara y se escribe, no se usa para
-            # validar el token (eso es `decode_token_payload`, en core/security.py,
-            # que ya usa `datetime.now(timezone.utc)`), asi que el valor es
-            # bit-identico al de antes: ningun token emitido antes queda invalido.
-            now = utcnow_naive()
-            if (now - session.last_seen_at).total_seconds() > (SESSION_LAST_SEEN_UPDATE_INTERVAL_MINUTES * 60):
-                session.last_seen_at = now
-                try:
-                    db.commit()
-                except Exception:
-                    db.rollback()
+    _, reason = _load_active_session(db, user, payload)
+    if reason:
+        return None
 
     # Este dependency es el de los endpoints publicos que, si hay token, agregan
     # contexto del rol (hoy solo /chat/suggestions). Una clave temporal vencida
@@ -249,9 +357,29 @@ def _persist_audit_log(
     execution_time_ms: int = 0,
     rows_returned: int = 0,
     error_message: Optional[str] = None,
-    result_snapshot: Optional[str] = None
+    result_snapshot: Optional[str] = None,
+    required: bool = False,
 ) -> Optional[int]:
-    """Safely persists an AuditLog record in a best-effort transaction and returns its ID."""
+    """Persiste un `AuditLog` y devuelve su ID.
+
+    `required=True` es para los caminos que DEVUELVEN DATOS DEL CLIENTE: si la
+    evidencia no se puede guardar, la respuesta no sale. Los eventos de auth y
+    administracion siguen siendo best-effort para no convertir un fallo de
+    auditoria en un lockout; el llamador que necesite lo contrario pasa
+    `required=True`.
+    """
+    if question_prompt and len(question_prompt) > AUDIT_PROMPT_MAX_CHARS:
+        question_prompt = (
+            question_prompt[:AUDIT_PROMPT_MAX_CHARS] + "\n...[truncado por tamaño]"
+        )
+    if result_snapshot and len(result_snapshot) > AUDIT_SNAPSHOT_MAX_CHARS:
+        logger.warning(
+            "Snapshot de auditoria omitido: %s caracteres (tope %s).",
+            len(result_snapshot),
+            AUDIT_SNAPSHOT_MAX_CHARS,
+        )
+        result_snapshot = None
+
     try:
         audit_entry = AuditLog(
             user_id=user_id,
@@ -272,6 +400,11 @@ def _persist_audit_log(
         return audit_entry.id
     except Exception as e:
         db.rollback()
+        if required:
+            raise AuditWriteError(
+                "No se pudo registrar la auditoría de la consulta. "
+                "La respuesta se cancela para no devolver datos sin trazabilidad."
+            ) from e
         logger.warning(f"Error registrando auditoria: {e}")
         return None
 

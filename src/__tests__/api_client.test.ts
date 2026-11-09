@@ -104,6 +104,23 @@ describe('api_client: el signal de aborto llega al fetch', () => {
 
     expect(calls[0].init.signal).toBe(controller.signal);
   });
+
+  it('corta una request sin signal con el timeout por defecto', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        });
+      });
+    }));
+
+    const { apiClient } = await loadClient();
+    await expect(apiClient.get('/lento', { timeoutMs: 10 })).rejects.toThrow(
+      'La solicitud tardó demasiado'
+    );
+  });
 });
 
 describe('api_client: params que son listas se repiten, no se unen con comas', () => {
@@ -164,6 +181,34 @@ describe('api_client: el 403 de cambio de clave pendiente es una instruccion, no
 
     const { apiClient } = await loadClient();
     await expect(apiClient.get('/admin/permissions')).rejects.toThrow();
+
+    expect(dispatchEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('api_client: un 401 con sesión abierta avisa que la sesión se cayó', () => {
+  it('dispara el evento cuando la request llevaba token', async () => {
+    const { dispatchEvent } = stubEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => errResponse(401, { detail: 'Token revocado' })));
+
+    const { apiClient, setAuthToken, SESSION_EXPIRED_EVENT } = await loadClient();
+    setAuthToken('jwt-viejo');
+
+    await expect(apiClient.get('/chat/threads')).rejects.toThrow('Token revocado');
+
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+    expect(dispatchEvent.mock.calls[0][0].type).toBe(SESSION_EXPIRED_EVENT);
+  });
+
+  it('no dispara el evento en el login fallido (no había token)', async () => {
+    const { dispatchEvent } = stubEnv();
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      errResponse(401, { detail: 'Usuario o clave incorrectos' })
+    ));
+
+    const { apiClient } = await loadClient();
+    await expect(apiClient.post('/auth/login', { username: 'x', password: 'y' }))
+      .rejects.toThrow();
 
     expect(dispatchEvent).not.toHaveBeenCalled();
   });

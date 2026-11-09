@@ -4,10 +4,11 @@ import time
 import asyncio
 from typing import Any, List, Optional, Dict, Tuple
 from fastapi import HTTPException, status
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.modules.admin_catalog.models import SemanticCatalog, CorporateConnection
+from app.modules.admin_catalog.models import (
+    SemanticCatalog, CorporateConnection, ColumnPermissionType, RoleColumnPermission,
+)
 from app.modules.admin_catalog.schemas import AutoEnrichRequest, AutoEnrichResponse
 from app.modules.chat_engine.llm_service import LLMService, resolve_user_llm_config
 from app.modules.system.health_service import HealthService
@@ -36,14 +37,24 @@ LLM_TABLE_TIMEOUT_S = settings.LLM_ENRICH_TABLE_TIMEOUT_S
 LLM_TOTAL_BUDGET_S = settings.LLM_ENRICH_TOTAL_BUDGET_S
 LLM_COLUMNS_PER_CALL = settings.LLM_ENRICH_COLUMNS_PER_CALL
 LLM_MAX_CONSECUTIVE_FAILURES = 2
-LLM_TOKENS_PER_COLUMN = 90
+LLM_TOKENS_PER_COLUMN = 120
 LLM_MAX_TOKENS_CAP = 2048
+# Costo aproximado de entrada por columna cuando se manda el perfil (nulos,
+# distintos, min/max, top values, muestras y patron). Lo usa el estimador.
+LLM_PROMPT_TOKENS_PER_COLUMN = 140
 
 LLM_SYSTEM_PROMPT = (
     "Eres un especialista en gobernanza de datos, catalogos semanticos y ERPs "
     "corporativos (SAP, Oracle, AS/400). Reconoce y traduce con precision "
     "acronimos tecnicos y codigos alemanes de SAP (ej. BKPF, BSEG, BUKRS, WRBTR, "
-    "MATNR, KUNNR, VBELN). Responde UNICAMENTE con un JSON valido, sin texto adicional."
+    "MATNR, KUNNR, VBELN). Usa el perfil de datos provisto para inferir el "
+    "significado real de cada columna, incluso si el nombre es criptico. "
+    "No copies valores literales (nombres, fechas, montos, codigos) en las "
+    "descripciones ni en las formulas. La 'business_formula' debe ser una "
+    "expresion SQL de PostgreSQL valida o 'N/A', nunca pseudocodigo en espanol. "
+    "Si el perfil no alcanza para decidir, "
+    "responde con confidence 'baja' en vez de inventar. "
+    "Responde UNICAMENTE con un JSON valido, sin texto adicional."
 )
 
 class CatalogEnricher:
@@ -321,7 +332,7 @@ class CatalogEnricher:
                         friendly_name=meta["friendly_name"],
                         description=meta["description"],
                         business_formula=meta["business_formula"],
-                        is_ai_generated=True
+                        is_ai_generated=False
                     )
                     db.add(new_cat)
                     cls._register_new(existing_index, new_cat)
@@ -333,58 +344,151 @@ class CatalogEnricher:
         return seeded_count
 
     @staticmethod
-    def _build_table_prompt(table_name: str, columns: List[Dict[str, Any]]) -> str:
-        """Prompt batch de UNA tabla: todas sus columnas en un solo JSON array.
+    def _format_profile(column: Dict[str, Any]) -> str:
+        parts = [f"- {column.get('name')} | {column.get('data_type', '')}"]
+        if column.get("is_pk"):
+            parts.append("PK")
+        profile = column.get("profile") or {}
+        if not profile:
+            parts.append("sin perfil de datos")
+            return " | ".join(parts)
+        if profile.get("error"):
+            parts.append(str(profile["error"]))
+            return " | ".join(parts)
 
-        Los `sample_values` NO se incluyen a proposito: este texto persiste en
-        `SemanticCatalog.description` y sale por dos rutas que el enmascarado no
-        cubre (el diccionario de datos y el schema prompt del chat). Mandarlos al
-        modelo era la via por la que valores de columnas MASKED se filtraban en
-        claro. El admin sigue viendo las muestras en la mesa de revision.
+        parts.append(f"nulos: {profile.get('nulos', 0)} ({profile.get('nulos_pct', 0)}%)")
+        parts.append(f"distintos: {profile.get('distintos', 0)}")
+        for key in ("min", "max", "promedio", "largo_min", "largo_max", "patron"):
+            value = profile.get(key)
+            if value is not None:
+                parts.append(f"{key}: {value}")
+        if profile.get("top"):
+            top = ", ".join(
+                f"{item.get('valor')} ({item.get('n')})"
+                for item in profile["top"][:10]
+            )
+            parts.append(f"top: {top}")
+        if profile.get("muestras"):
+            parts.append("muestras: " + ", ".join(str(v) for v in profile["muestras"][:5]))
+        if profile.get("valores_omitidos"):
+            parts.append("valores omitidos: columna con política MASKED/BLOCKED")
+        return " | ".join(parts)
+
+    @staticmethod
+    def _build_table_prompt(
+        table_name: str,
+        columns: List[Dict[str, Any]],
+        table_info: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Prompt batch de UNA tabla con el perfil de datos de sus columnas.
+
+        La primera linea conserva el formato historico (`Columnas (nombre |
+        tipo)`) porque hay consumidores que lo parsean. Debajo va la evidencia:
+        filas, claves foraneas, otras columnas y el perfil de cada columna del
+        lote. Para columnas con politica MASKED/BLOCKED el perfil NO trae
+        valores crudos: solo conteos y largos.
         """
         cols_desc = "; ".join(f"{c['name']} | {c.get('data_type', '')}" for c in columns)
+        context_parts: List[str] = []
+        if table_info:
+            row_count = table_info.get("row_count")
+            if row_count is not None:
+                context_parts.append(f"Filas: {row_count}")
+            fks = table_info.get("foreign_keys") or []
+            if fks:
+                relations = []
+                for fk in fks[:10]:
+                    constrained = ",".join(fk.get("columns") or [])
+                    referred = ",".join(fk.get("referred_columns") or [])
+                    relations.append(
+                        f"{constrained} -> {fk.get('referred_table')}({referred})"
+                    )
+                context_parts.append("FK: " + "; ".join(relations))
+
+        profile_lines = [
+            CatalogEnricher._format_profile(column) for column in columns
+        ]
+        context_block = (
+            "Contexto de la tabla: " + " | ".join(context_parts) + "\n"
+            if context_parts
+            else ""
+        )
         return (
             f"Tabla: '{table_name}'. Columnas (nombre | tipo): {cols_desc}.\n"
+            f"{context_block}"
+            "Perfil calculado sobre todos los datos disponibles (no solo las primeras filas):\n"
+            + "\n".join(profile_lines)
+            + "\n\n"
+            "Describe UNICAMENTE las columnas de la lista de arriba. No agregues "
+            "entradas para otras columnas de la tabla, aunque las conozcas.\n"
             "Genera para CADA una de las columnas listadas una entrada con "
             "'friendly_name' (nombre de negocio en espanol), 'description' "
-            "(descripcion funcional clara) y 'business_formula' (formula o regla "
-            "de calculo sugerida).\n"
+            "(descripcion funcional clara), 'business_formula' (expresion SQL "
+            "de PostgreSQL valida como SUM(col), AVG(col), TO_DATE(...) o "
+            "'N/A'; nunca pseudocodigo en espanol), 'semantic_type' "
+            "(identificador|fecha|metrica|categoria|texto) y 'confidence' "
+            "(alta|media|baja).\n"
+            "Usa el perfil para decidir el significado real, incluso si el nombre "
+            "de la columna es criptico. No copies valores literales de las "
+            "muestras en la descripcion ni en la formula. Si el perfil dice "
+            "'posible DDMMYYYY', la formula de fecha debe ser "
+            "TO_DATE(LPAD(<columna>::text, 8, '0'), 'DDMMYYYY'); no uses TO_CHAR "
+            "para parsear una fecha. Si el perfil no alcanza, "
+            "responde confidence 'baja' en vez de inventar.\n"
             "Responde UNICAMENTE con un JSON array, sin texto adicional, con la forma: "
             '[{"column": "<nombre exacto>", "friendly_name": "...", '
-            '"description": "...", "business_formula": "..."}]'
+            '"description": "...", "business_formula": "...", '
+            '"semantic_type": "texto", "confidence": "media"}]'
         )
 
     @staticmethod
     def _parse_table_entries(raw: Optional[str]) -> Dict[str, Dict[str, str]]:
         """Extrae el JSON array de la respuesta del modelo, indexado por columna.
 
-        El modelo suele envolver el JSON en texto; se busca el primer array. Una
-        respuesta que no parsea devuelve {} y la tabla entera cae a heuristica:
-        no hay field-by-field para una respuesta rota.
+        El modelo suele envolver el JSON en texto; se busca el primer array. Si
+        el array llego truncado (max_tokens o un cierre que no se emitio), se
+        rescatan los objetos completos que si llegaron. Una respuesta que no
+        parsea devuelve {} y la tabla entera cae a heuristica.
         """
         if not raw:
             return {}
-        match = re.search(r"\[[\s\S]*\]", raw)
-        if not match:
-            return {}
-        try:
-            data = json.loads(match.group(0))
-        except Exception:
-            return {}
-        if not isinstance(data, list):
-            return {}
+
         entries: Dict[str, Dict[str, str]] = {}
-        for item in data:
+
+        def add_item(item: Any) -> None:
             if not isinstance(item, dict):
-                continue
+                return
             col = str(item.get("column", "") or "").strip().lower()
             if not col:
-                continue
+                return
             entries[col] = {
                 "friendly_name": str(item.get("friendly_name", "") or "").strip(),
                 "description": str(item.get("description", "") or "").strip(),
                 "business_formula": str(item.get("business_formula", "") or "").strip(),
+                "semantic_type": str(item.get("semantic_type", "") or "").strip().lower(),
+                "confidence": str(item.get("confidence", "") or "").strip().lower(),
             }
+
+        match = re.search(r"\[[\s\S]*\]", raw)
+        if match:
+            try:
+                data = json.loads(match.group(0))
+            except Exception:
+                data = None
+            if isinstance(data, list):
+                for item in data:
+                    add_item(item)
+                if entries:
+                    return entries
+
+        # Fallback para arrays truncados: cada objeto plano completo se puede
+        # rescatar por separado. Las entradas cortadas a la mitad se ignoran.
+        for obj_match in re.finditer(r"\{[^{}]*\}", raw):
+            try:
+                item = json.loads(obj_match.group(0))
+            except Exception:
+                continue
+            add_item(item)
         return entries
 
     @classmethod
@@ -406,6 +510,102 @@ class CatalogEnricher:
         if not current_text:
             return True
         return current_text == (heuristic_value or "").strip()
+
+    @staticmethod
+    def _is_sql_formula(value: Optional[str]) -> bool:
+        """True si la formula parece SQL de PostgreSQL y no pseudocodigo.
+
+        El modelo a veces devuelve "CONCATENAR(DIA(f1), MES(f1))" o
+        "Sumatoria de los valores...". Eso se guarda en el catalogo y despues
+        entra al schema prompt como si fuera una formula ejecutable. Se acepta
+        solo una allowlist de funciones/palabras SQL; el resto se conserva como
+        heuristica (o vacio) para que el administrador lo escriba a mano.
+        """
+        text = (value or "").strip()
+        if not text:
+            return False
+        lowered = text.lower()
+        if lowered in ("n/a", "na", "no aplica", "ninguna", "-", "ninguno"):
+            return False
+        sql_words = (
+            "sum", "avg", "count", "min", "max", "round", "coalesce",
+            "case", "when", "then", "else", "end", "cast", "extract",
+            "date_trunc", "to_date", "to_char", "lpad", "nullif", "concat",
+            "substring", "trim", "upper", "lower", "abs", "distinct",
+            "date", "interval",
+        )
+        return any(
+            re.search(rf"\b{re.escape(word)}\b", lowered)
+            for word in sql_words
+        )
+
+    @staticmethod
+    def _formula_is_valid_for_profile(
+        value: Optional[str], profile: Optional[Dict[str, Any]]
+    ) -> bool:
+        """Valida la formula contra el patron del perfil.
+
+        Ademas de exigir SQL, evita el error tipico del modelo en fechas
+        numericas: `TO_CHAR(f1,'DDMMYYYY')` formatea, no parsea. Si el perfil
+        detecto DDMMYYYY, la formula tiene que usar TO_DATE.
+        """
+        if not CatalogEnricher._is_sql_formula(value):
+            return False
+        pattern = str((profile or {}).get("patron") or "").upper()
+        if "DDMMYYYY" in pattern and "TO_DATE" not in (value or "").upper():
+            return False
+        return True
+
+    @staticmethod
+    def _contains_sample_value(text: Optional[str], values: List[str]) -> bool:
+        """True si el texto copia un valor literal del perfil.
+
+        Es la red de seguridad de la politica A: el LLM puede usar los valores
+        para inferir el significado, pero la descripcion se guarda y la ven
+        todos los roles. Un valor de 4+ caracteres copiado se considera fuga.
+        """
+        if not text or not values:
+            return False
+        low = str(text).lower()
+        return any(
+            value and len(value) >= 4 and value.lower() in low
+            for value in values
+        )
+
+    @staticmethod
+    def _redact_sample_values(text: Optional[str], values: List[str]) -> str:
+        """Reemplaza valores literales del perfil por `[valor]`.
+
+        La descripcion puede usar un valor para explicar el significado, pero no
+        puede publicarlo: el catalogo lo ven todos los roles. Redactar conserva
+        la descripcion semantica; el administrador la revisa en el paso 3.
+        """
+        result = str(text or "")
+        for value in sorted((v for v in values if v and len(v) >= 4), key=len, reverse=True):
+            result = re.sub(re.escape(value), "[valor]", result, flags=re.IGNORECASE)
+        return result
+
+    @staticmethod
+    def _profile_values(column: Dict[str, Any]) -> List[str]:
+        """Valores crudos que el prompt mostro para esta columna.
+
+        Solo existen en columnas sin politica MASKED/BLOCKED; el perfil de las
+        sensibles no trae top/muestras/min/max.
+        """
+        profile = column.get("profile") or {}
+        values: List[str] = []
+        for item in profile.get("top") or []:
+            value = item.get("valor") if isinstance(item, dict) else item
+            if value is not None:
+                values.append(str(value))
+        for value in profile.get("muestras") or []:
+            if value is not None:
+                values.append(str(value))
+        for key in ("min", "max"):
+            value = profile.get(key)
+            if value is not None:
+                values.append(str(value))
+        return values
 
     @staticmethod
     def _chunk_columns(columns: List[Dict[str, Any]], chunk_size: int) -> List[List[Dict[str, Any]]]:
@@ -476,7 +676,7 @@ class CatalogEnricher:
         if not eligible:
             return None, 0
 
-        prompt = cls._build_table_prompt(tbl, columns)
+        prompt = cls._build_table_prompt(tbl, columns, tbl_info)
         max_tokens = min(LLM_MAX_TOKENS_CAP, LLM_TOKENS_PER_COLUMN * len(columns) + 128)
         try:
             raw = await asyncio.wait_for(
@@ -502,6 +702,36 @@ class CatalogEnricher:
             entry = entries.get(col["name"].strip().lower())
             if not entry:
                 continue
+            # Un "baja" es el pedido explicito del prompt de no inventar. Se
+            # respeta y se conserva la heuristica para revision manual.
+            if entry.get("confidence") in ("baja", "low"):
+                continue
+            raw_values = cls._profile_values(col)
+            # Un nombre de negocio que sea literalmente un valor de la columna no
+            # sirve como nombre: se descarta la entrada. En la descripcion se
+            # redacta el valor; la formula con literal se anula mas abajo.
+            if cls._contains_sample_value(entry.get("friendly_name"), raw_values):
+                logger.warning(
+                    "Enriquecimiento IA: se descarto el nombre de %s.%s por copiar un valor literal.",
+                    tbl, col["name"],
+                )
+                continue
+            if cls._contains_sample_value(entry.get("description"), raw_values):
+                entry["description"] = cls._redact_sample_values(
+                    entry.get("description"), raw_values
+                )
+                logger.warning(
+                    "Enriquecimiento IA: se redacto un valor literal en la descripcion de %s.%s.",
+                    tbl, col["name"],
+                )
+            # La formula tambien se revisa, pero un literal ahi solo invalida
+            # la formula: el nombre/descripcion siguen siendo utiles.
+            if cls._contains_sample_value(entry.get("business_formula"), raw_values):
+                logger.warning(
+                    "Enriquecimiento IA: se descarto la formula de %s.%s por copiar un valor literal.",
+                    tbl, col["name"],
+                )
+                entry["business_formula"] = ""
             row = cls._lookup_existing(existing_index, tbl, col["name"], schema_name)
             if row is None:
                 continue
@@ -511,7 +741,15 @@ class CatalogEnricher:
             touched = False
             for field in ("friendly_name", "description", "business_formula"):
                 value = entry.get(field) or ""
-                if value and cls._llm_replacement_allowed(getattr(row, field, None), heur[field]):
+                if not value:
+                    continue
+                if field == "business_formula" and not cls._formula_is_valid_for_profile(
+                    value, col.get("profile")
+                ):
+                    # Pseudocodigo o TO_CHAR sobre una fecha DDMMYYYY no entra
+                    # al schema prompt como si fuera una formula ejecutable.
+                    continue
+                if cls._llm_replacement_allowed(getattr(row, field, None), heur[field]):
                     setattr(row, field, value)
                     touched = True
             if touched:
@@ -594,8 +832,22 @@ class CatalogEnricher:
             conn_id = conn_obj.id
             last_conn_id = conn_id
             existing_index = cls._load_existing_index(db, conn_id)
+            sensitive = {
+                (str(row.table_name).lower(), str(row.column_name).lower())
+                for row in db.query(RoleColumnPermission).filter(
+                    RoleColumnPermission.connection_id == conn_id,
+                    RoleColumnPermission.permission_type.in_([
+                        ColumnPermissionType.MASKED,
+                        ColumnPermissionType.BLOCKED,
+                    ]),
+                ).all()
+            }
             try:
-                tables_meta = SchemaInspector.introspect_connection_metadata(conn_obj)
+                tables_meta = SchemaInspector.introspect_connection_metadata(
+                    conn_obj,
+                    include_profile=llm_enabled,
+                    sensitive_columns=sensitive,
+                )
             except Exception as ex:
                 # No se puede leer la conexión no es lo mismo que "no hay nada que
                 # enriquecer". Antes se tragaba el fallo y respondía 0 campos.
@@ -617,7 +869,12 @@ class CatalogEnricher:
                 for col_info in tbl_info["columns"]:
                     col_name = col_info["name"]
                     col_type = col_info["data_type"]
-                    sample_vals = col_info["sample_values"]
+                    is_sensitive = (
+                        str(tbl).lower(), str(col_name).lower()
+                    ) in sensitive
+                    # Politica A: en una columna MASKED/BLOCKED el heuristico
+                    # tampoco mira valores. El LLM recibe solo conteos/largos.
+                    sample_vals = [] if is_sensitive else col_info["sample_values"]
 
                     existing = cls._lookup_existing(existing_index, tbl, col_name, schema_name)
 
@@ -626,17 +883,15 @@ class CatalogEnricher:
                     meta = cls.heuristic_enrich(tbl, col_name, col_type, sample_vals)
 
                     if existing:
-                        # Solo se rellena lo que está vacío. `is_ai_generated` está en
-                        # True para TODO lo que siembra el heurístico, así que usarlo
-                        # como permiso para sobreescribir Borrava el trabajo de un
-                        # administrador que editó description/friendly_name a mano.
+                        # Solo se rellena lo que está vacío. El flag
+                        # `is_ai_generated` NO se toca: un relleno heurístico no
+                        # es una descripción del modelo.
                         touched = False
                         for field in ("friendly_name", "description", "business_formula"):
                             if not (getattr(existing, field) or "").strip():
                                 setattr(existing, field, meta[field])
                                 touched = True
                         if touched:
-                            existing.is_ai_generated = True
                             total_enriched_count += 1
                     else:
                         new_cat = SemanticCatalog(
@@ -647,7 +902,7 @@ class CatalogEnricher:
                             friendly_name=meta["friendly_name"],
                             description=meta["description"],
                             business_formula=meta["business_formula"],
-                            is_ai_generated=True
+                            is_ai_generated=False
                         )
                         db.add(new_cat)
                         cls._register_new(existing_index, new_cat)

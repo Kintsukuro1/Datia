@@ -171,6 +171,14 @@ def ensure_schema_migrations(eng):
                 if pending:
                     with eng.begin() as conn:
                         _safe_alter(conn, pending)
+                # Limpieza de una version anterior que agregaba un indice unico
+                # parcial: impedia representar el estado legacy que la migracion
+                # de `init_db` necesita normalizar. La exclusividad se mantiene
+                # por transaccion en `ConnectorDomainService`.
+                with eng.begin() as conn:
+                    conn.execute(text(
+                        "DROP INDEX IF EXISTS uq_corporate_connections_one_active"
+                    ))
             except Exception as e:
                 logger.warning(f"Migración: corporate_connections quedó sin migrar ({'; '.join(pending)}): {e}")
 
@@ -219,8 +227,14 @@ def ensure_schema_migrations(eng):
                 if "result_snapshot" not in audit_cols:
                     with eng.begin() as conn:
                         _safe_alter(conn, ["ALTER TABLE audit_logs ADD COLUMN result_snapshot TEXT NULL"])
+                if "feedback_rating" not in audit_cols:
+                    with eng.begin() as conn:
+                        _safe_alter(conn, ["ALTER TABLE audit_logs ADD COLUMN feedback_rating VARCHAR(20) NULL"])
+                if "feedback_comment" not in audit_cols:
+                    with eng.begin() as conn:
+                        _safe_alter(conn, ["ALTER TABLE audit_logs ADD COLUMN feedback_comment TEXT NULL"])
             except Exception as e:
-                logger.warning(f"Migración: audit_logs.result_snapshot no se añadió: {e}")
+                logger.warning(f"Migración: audit_logs.result_snapshot/feedback no se añadieron: {e}")
 
             # `validation_status` era NOT NULL. Eso no era una garantia de dato, era
             # la causa de que el router inventara "APROBADO" cuando la respuesta no
@@ -321,16 +335,20 @@ def update_database_engine(server: str, port: int, user: str, password: str, db_
     global engine, SessionLocal
     new_url = get_database_url(server, port, user, password, db_name)
     new_engine = create_engine(new_url, pool_pre_ping=True, pool_size=10, max_overflow=20)
-    with new_engine.connect() as conn:
+    with new_engine.connect():
         pass
     engine = new_engine
     ensure_schema_migrations(engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return engine
 
-def build_engine_for_connector(conn):
+def build_engine_for_connector(conn, read_only: bool = True):
     """
     Dynamically creates an isolated SQLAlchemy engine for a registered CorporateConnection.
+
+    `read_only=True` es el default y el unico modo que usa el chat. La unica
+    excepcion es la remediacion fisica de nulos del endpoint administrativo
+    (`null_manager.apply_null_policy`), que pasa `read_only=False` a proposito.
     """
     from app.core.security import decrypt_credential
     from app.modules.admin_catalog.models import DatabaseType
@@ -346,6 +364,7 @@ def build_engine_for_connector(conn):
             port=port,
             database=conn.database_name,
         )
+        read_only_option = "on" if read_only else "off"
         return create_engine(
             url,
             pool_pre_ping=True,
@@ -355,7 +374,18 @@ def build_engine_for_connector(conn):
             # colgada ~130 s (timeout TCP por defecto de psycopg en Windows).
             # El alta de un conector introspecciona en el mismo request, asi que
             # el usuario veia "Ingresando Fuente..." durante mas de dos minutos.
-            connect_args={"connect_timeout": 10},
+            #
+            # Defensa en profundidad: el engine del chat nace en solo lectura
+            # (`default_transaction_read_only=on`) y `sql_executor` vuelve a
+            # fijarlo por transaccion, fallando cerrado. `statement_timeout`
+            # evita que una consulta lenta retenga la conexion para siempre.
+            connect_args={
+                "connect_timeout": 10,
+                "options": (
+                    f"-c default_transaction_read_only={read_only_option} "
+                    f"-c statement_timeout={settings.QUERY_TIMEOUT_SECONDS * 1000}"
+                ),
+            },
         )
 
     raise ValueError(
@@ -365,7 +395,7 @@ def build_engine_for_connector(conn):
 
 
 @contextmanager
-def connector_engine(conn):
+def connector_engine(conn, read_only: bool = True):
     """Engine del conector, liberado siempre al salir del bloque.
 
     `with eng.connect()` cierra la CONEXION pero no el ENGINE: el pool de sockets
@@ -376,7 +406,7 @@ def connector_engine(conn):
     No se cachean engines a proposito: reconectar cuesta ~100 ms contra un LLM que
     tarda 8-25 s, asi que un registro de engines seria complejidad sin beneficio.
     """
-    eng = build_engine_for_connector(conn)
+    eng = build_engine_for_connector(conn, read_only=read_only)
     try:
         yield eng
     finally:

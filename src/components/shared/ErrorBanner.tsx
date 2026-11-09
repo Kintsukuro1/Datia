@@ -10,7 +10,7 @@ import { AlertTriangle, type LucideIcon } from 'lucide-react';
  */
 export function ErrorBanner({ message, icon: Icon = AlertTriangle }: { message: string | null; icon?: LucideIcon }) {
   return (
-    <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-400 text-xs flex items-start gap-2 animate-fadeIn">
+    <div role="alert" className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-400 text-xs flex items-start gap-2 animate-fadeIn">
       <Icon className="w-4 h-4 shrink-0 mt-0.5" />
       <span>{message}</span>
     </div>

@@ -1,0 +1,30 @@
+{
+  "connection_id": 1,
+  "cases": [
+    {
+      "id": "ventas-por-categoria",
+      "question": "¿Cuáles fueron las ventas totales por categoría de producto?",
+      "expected_columns": ["categoria"]
+    },
+    {
+      "id": "clientes-por-ciudad",
+      "question": "¿Cuántos clientes hay por ciudad?",
+      "expected_columns": ["ciudad"]
+    },
+    {
+      "id": "top-productos",
+      "question": "¿Cuáles son los 10 productos más vendidos?",
+      "expected_columns": ["producto"]
+    },
+    {
+      "id": "margen-por-mes",
+      "question": "¿Cómo evolucionó el margen mensual en el último año?",
+      "expected_columns": []
+    },
+    {
+      "id": "incidentes-ti",
+      "question": "¿Cuántos incidentes de TI hubo por severidad?",
+      "expected_columns": ["severidad"]
+    }
+  ]
+}

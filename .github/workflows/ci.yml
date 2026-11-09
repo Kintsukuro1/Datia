@@ -73,6 +73,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
+          pip install -r backend/requirements-dev.txt
+
+      # Gate de errores reales, no de estilo: F = imports/names, E9 = sintaxis.
+      # E501/B008/C901 siguen como deuda declarada en plans/.
+      - name: Ruff (undefined names, imports, syntax)
+        working-directory: backend
+        run: ruff check app --select F,E9
+
+      - name: Dependency audit (Python)
+        working-directory: backend
+        run: pip-audit -r requirements.txt
 
       # Siembra la demo antes de pytest. Lo que la suite necesita de verdad de
       # este paso es `democratizacion_empresa`: `init_db`, que corre el fixture de
@@ -121,7 +132,10 @@ jobs:
       # antes typecheck y tests repetian la instalacion en jobs gemelos.
       - name: Install frontend dependencies
         run: |
-          npm ci --no-audit --prefer-offline
+          npm ci --prefer-offline
+
+      - name: Dependency audit (frontend, production only)
+        run: npm audit --omit=dev --audit-level=high
 
       # Tests de logica pura (entorno node, sin renderizado). Existen desde
       # hace tiempo, pero ningun job los corria: una regresion de logica pasaba
@@ -137,3 +151,63 @@ jobs:
       - name: Build frontend (tsc + vite build)
         run: |
           npm run build
+
+  e2e:
+    name: E2E (Playwright smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      POSTGRES_SERVER: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: democratizacion_metadatos
+      ENVIRONMENT: development
+      DEMO_MODE: "true"
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: democratizacion_metadatos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d democratizacion_metadatos"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'backend/requirements.txt'
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        run: npm ci --prefer-offline
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E smoke
+        run: npm run test:e2e

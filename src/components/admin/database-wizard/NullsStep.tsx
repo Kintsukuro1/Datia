@@ -64,13 +64,14 @@ export const NullsStep: React.FC<NullsStepProps> = ({
       </div>
 
       {/* 4 Interactive Choice Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+      <div role="radiogroup" aria-label="Política de valores nulos" className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
         {/* Option 1: Delete Rows */}
         <div
-          role="button"
+          role="radio"
+          aria-checked={selectedNullPolicy === 'delete_rows'}
           tabIndex={0}
           onClick={() => onPolicyChange('delete_rows')}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onPolicyChange('delete_rows'); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPolicyChange('delete_rows'); } }}
           className={`p-3.5 rounded-2xl border transition-all cursor-pointer text-left space-y-2 relative ${
             selectedNullPolicy === 'delete_rows'
               ? 'border-rose-500 bg-rose-500/10 shadow-lg shadow-rose-500/10 ring-1 ring-rose-500'
@@ -93,10 +94,11 @@ export const NullsStep: React.FC<NullsStepProps> = ({
 
         {/* Option 2: Mode */}
         <div
-          role="button"
+          role="radio"
+          aria-checked={selectedNullPolicy === 'mode'}
           tabIndex={0}
           onClick={() => onPolicyChange('mode')}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onPolicyChange('mode'); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPolicyChange('mode'); } }}
           className={`p-3.5 rounded-2xl border transition-all cursor-pointer text-left space-y-2 relative ${
             selectedNullPolicy === 'mode'
               ? 'border-brand-500 bg-brand-500/10 shadow-lg shadow-brand-500/10 ring-1 ring-brand-500'
@@ -119,10 +121,11 @@ export const NullsStep: React.FC<NullsStepProps> = ({
 
         {/* Option 3: Nearest */}
         <div
-          role="button"
+          role="radio"
+          aria-checked={selectedNullPolicy === 'nearest'}
           tabIndex={0}
           onClick={() => onPolicyChange('nearest')}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onPolicyChange('nearest'); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPolicyChange('nearest'); } }}
           className={`p-3.5 rounded-2xl border transition-all cursor-pointer text-left space-y-2 relative ${
             selectedNullPolicy === 'nearest'
               ? 'border-cyan-500 bg-cyan-500/10 shadow-lg shadow-cyan-500/10 ring-1 ring-cyan-500'
@@ -145,10 +148,11 @@ export const NullsStep: React.FC<NullsStepProps> = ({
 
         {/* Option 4: Open to User */}
         <div
-          role="button"
+          role="radio"
+          aria-checked={selectedNullPolicy === 'open'}
           tabIndex={0}
           onClick={() => onPolicyChange('open')}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onPolicyChange('open'); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPolicyChange('open'); } }}
           className={`p-3.5 rounded-2xl border transition-all cursor-pointer text-left space-y-2 relative ${
             selectedNullPolicy === 'open'
               ? 'border-emerald-500 bg-emerald-500/10 shadow-lg shadow-emerald-500/10 ring-1 ring-emerald-500'

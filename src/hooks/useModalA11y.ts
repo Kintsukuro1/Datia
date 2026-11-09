@@ -9,6 +9,49 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
+type ModalEntry = {
+  node: HTMLElement;
+  close: () => void;
+};
+
+// Un solo stack para todos los modales montados. Antes cada hook guardaba su
+// propio `previousOverflow` y su propio listener de Escape: con dos modales
+// abiertos, cerrar el de abajo restauraba el scroll con el de arriba vivo, y
+// cerrar ambos con Escape dejaba `body.overflow = hidden` para siempre.
+const modalStack: ModalEntry[] = [];
+let savedBodyOverflow: string | null = null;
+let globalKeyDown: ((event: KeyboardEvent) => void) | null = null;
+
+function installGlobalModalHandling(): void {
+  if (globalKeyDown) return;
+  savedBodyOverflow = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+  globalKeyDown = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape') return;
+    const top = modalStack[modalStack.length - 1];
+    if (!top) return;
+    // `stopImmediatePropagation` y no `stopPropagation`: otros listeners del
+    // mismo nodo (por ejemplo, el handler de presentación del dashboard) no
+    // deben ejecutarse detrás del modal.
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    top.close();
+  };
+  document.addEventListener('keydown', globalKeyDown, true);
+}
+
+function uninstallGlobalModalHandling(): void {
+  if (modalStack.length > 0) return;
+  if (globalKeyDown) {
+    document.removeEventListener('keydown', globalKeyDown, true);
+    globalKeyDown = null;
+  }
+  if (savedBodyOverflow !== null) {
+    document.body.style.overflow = savedBodyOverflow;
+    savedBodyOverflow = null;
+  }
+}
+
 /**
  * Dialog semantics + keyboard behaviour for an overlay that already exists.
  *
@@ -45,6 +88,12 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(
     if (!node) return;
 
     const previouslyFocused = document.activeElement as HTMLElement | null;
+    const entry: ModalEntry = {
+      node,
+      close: () => closeRef.current?.(),
+    };
+    modalStack.push(entry);
+    installGlobalModalHandling();
 
     const focusables = () =>
       Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
@@ -57,15 +106,10 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(
     (initial ?? node).focus();
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        // Capture phase, so page-level Escape handlers (e.g. the presentation
-        // mode toggle in ChatDashboardPage) do not also fire behind the modal.
-        e.preventDefault();
-        e.stopPropagation();
-        closeRef.current?.();
-        return;
-      }
       if (e.key !== 'Tab') return;
+      // Solo el modal del tope atrapa el foco. Si dos están abiertos, el de
+      // abajo no debe competir por el Tab.
+      if (modalStack[modalStack.length - 1] !== entry) return;
 
       const list = focusables();
       if (list.length === 0) {
@@ -87,13 +131,19 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(
     };
 
     document.addEventListener('keydown', onKeyDown, true);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
 
     return () => {
       document.removeEventListener('keydown', onKeyDown, true);
-      document.body.style.overflow = previousOverflow;
-      previouslyFocused?.focus?.();
+      const index = modalStack.indexOf(entry);
+      if (index !== -1) modalStack.splice(index, 1);
+      uninstallGlobalModalHandling();
+
+      const nextTop = modalStack[modalStack.length - 1];
+      if (nextTop) {
+        nextTop.node.focus?.();
+      } else {
+        previouslyFocused?.focus?.();
+      }
     };
   }, [isOpen]);
 

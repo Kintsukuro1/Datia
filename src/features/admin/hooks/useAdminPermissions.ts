@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   CorporateConnection,
   connectorService,
@@ -33,17 +33,26 @@ export function useGovernanceCoverage(connectionId: number | null) {
   const [coverage, setCoverage] = useState<GovernanceCoverage | null>(null);
   const [isLoadingCoverage, setIsLoadingCoverage] = useState(false);
   const [coverageError, setCoverageError] = useState<string | null>(null);
+  // La cobertura tambien es por fuente: una respuesta vieja no puede pintar la
+  // cobertura de la conexion anterior sobre la actual.
+  const coverageSeqRef = useRef(0);
 
   const fetchCoverage = useCallback(async () => {
     if (connectionId === null) {
+      coverageSeqRef.current += 1;
       setCoverage(null);
       return;
     }
+    const seq = ++coverageSeqRef.current;
     setIsLoadingCoverage(true);
     setCoverageError(null);
+    setCoverage(null);
     try {
-      setCoverage(await permissionService.getCoverage(connectionId));
+      const data = await permissionService.getCoverage(connectionId);
+      if (seq !== coverageSeqRef.current) return;
+      setCoverage(data);
     } catch (err: any) {
+      if (seq !== coverageSeqRef.current) return;
       // No se degrada a un resumen vacio: "no se pudo calcular" y "no ve nadie
       // ninguna tabla" se verian igual en pantalla, y es exactamente el dato que
       // el admin viene a leer.
@@ -52,7 +61,7 @@ export function useGovernanceCoverage(connectionId: number | null) {
         getApiErrorMessage(err, 'No se pudo calcular la cobertura de permisos de esta fuente.')
       );
     } finally {
-      setIsLoadingCoverage(false);
+      if (seq === coverageSeqRef.current) setIsLoadingCoverage(false);
     }
   }, [connectionId]);
 
@@ -77,6 +86,9 @@ export function useAdminPermissions() {
   const [permissionsLoaded, setPermissionsLoaded] = useState(false);
   const [permissionsError, setPermissionsError] = useState<string | null>(null);
   const [isLoadingPermissions, setIsLoadingPermissions] = useState(false);
+  // Ver `useAdminCatalog`: cambiar de fuente rapido no puede dejar la matriz de
+  // la anterior publicada como si fuera la actual.
+  const permissionsSeqRef = useRef(0);
 
   // Borrador: lo que el admin todavia no guardo. Las casillas muestran el
   // borrador si hay, y si no lo que el servidor confirmo.
@@ -122,12 +134,18 @@ export function useAdminPermissions() {
   }, []);
 
   const fetchPermissions = useCallback(async (connectionId: number) => {
+    const seq = ++permissionsSeqRef.current;
     setIsLoadingPermissions(true);
     setPermissionsError(null);
+    // La matriz anterior no se muestra mientras carga la de esta fuente.
+    setPermissions([]);
+    setPermissionsLoaded(false);
     try {
       const rows = await permissionService.getPermissions(connectionId);
+      if (seq !== permissionsSeqRef.current) return;
       setPermissions(rows);
     } catch (err: any) {
+      if (seq !== permissionsSeqRef.current) return;
       // No se pisa la matriz con un []: "no se pudo leer" y "no hay permisos"
       // son estados distintos y en default-deny se ven igual en pantalla.
       setPermissions([]);
@@ -135,8 +153,10 @@ export function useAdminPermissions() {
         getApiErrorMessage(err, 'No se pudo leer la matriz de permisos del servidor. No se puede afirmar qué acceso existe.')
       );
     } finally {
-      setIsLoadingPermissions(false);
-      setPermissionsLoaded(true);
+      if (seq === permissionsSeqRef.current) {
+        setIsLoadingPermissions(false);
+        setPermissionsLoaded(true);
+      }
     }
   }, []);
 
@@ -306,11 +326,15 @@ export function useAdminPermissions() {
       );
     } catch (err: any) {
       // REVERSION: el borrador se descarta entero y las casillas vuelven a lo que
-      // el servidor tiene. Dejar el borrador puesto seria mostrar el acceso como
-      // concedido cuando el PUT no lo confirmo.
+      // el servidor tiene. Los grupos que YA respondieron quedaron aplicados en
+      // `permissions`, asi que el mensaje NO puede decir "ninguno se aplicó":
+      // seria falso. Se muestra solo lo confirmado y se pide reintentar.
       setDraft({});
       setSaveError(
-        getApiErrorMessage(err, 'El servidor no confirmó la concesión. Ningún permiso fue aplicado y la matriz volvió a su estado anterior.')
+        getApiErrorMessage(
+          err,
+          'El servidor no confirmó todos los cambios. La matriz muestra solo los permisos que el servidor confirmó; revisá las casillas antes de reintentar.'
+        )
       );
     } finally {
       setIsSaving(false);

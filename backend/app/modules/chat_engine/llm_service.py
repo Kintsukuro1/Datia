@@ -1,4 +1,6 @@
+import asyncio
 import contextvars
+import functools
 import httpx
 import json
 import re
@@ -8,6 +10,7 @@ from urllib.parse import urlsplit
 from typing import AsyncIterator, List, Optional, Tuple
 from app.core.config import settings, managed_llm_base_url
 from app.core.logging import logger
+from app.core.metrics import inc_llm_error, inc_llm_request
 from app.core.prompts import PromptManager
 
 # --- SSRF: la validación vive en el SINK, no en el router --------------------
@@ -204,6 +207,70 @@ class StreamingThinkFilter:
         return "".join(out)
 
 
+class LLMQueueTimeoutError(RuntimeError):
+    """No se consiguió un slot de inferencia dentro del timeout de cola."""
+
+
+def _limit_llm_concurrency(func):
+    """Serializa/limita las inferencias y expone métricas.
+
+    El límite es por proceso y por event loop. En producción hay un solo worker
+    Uvicorn, así que el semáforo protege el Ollama compartido; si mañana se
+    escalan workers, el límite efectivo es workers × LLM_MAX_CONCURRENCY y hay
+    que ajustarlo en el orquestador.
+    """
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        semaphore = LLMService._get_llm_semaphore()
+        try:
+            await asyncio.wait_for(
+                semaphore.acquire(),
+                timeout=max(0.1, settings.LLM_QUEUE_TIMEOUT_SECONDS),
+            )
+        except asyncio.TimeoutError as exc:
+            raise LLMQueueTimeoutError(
+                "El motor LLM está ocupado. Reintente en unos segundos."
+            ) from exc
+
+        inc_llm_request()
+        try:
+            return await func(*args, **kwargs)
+        except Exception:
+            inc_llm_error()
+            raise
+        finally:
+            semaphore.release()
+
+    return wrapper
+
+
+def _limit_llm_stream(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        semaphore = LLMService._get_llm_semaphore()
+        try:
+            await asyncio.wait_for(
+                semaphore.acquire(),
+                timeout=max(0.1, settings.LLM_QUEUE_TIMEOUT_SECONDS),
+            )
+        except asyncio.TimeoutError as exc:
+            raise LLMQueueTimeoutError(
+                "El motor LLM está ocupado. Reintente en unos segundos."
+            ) from exc
+
+        inc_llm_request()
+        try:
+            async for item in func(*args, **kwargs):
+                yield item
+        except Exception:
+            inc_llm_error()
+            raise
+        finally:
+            semaphore.release()
+
+    return wrapper
+
+
 class LLMService:
     """
     Agnostic HTTP client for Local LLM communication.
@@ -244,6 +311,22 @@ class LLMService:
     # cambia durante la vida del proceso, y descubrirlo otra vez en cada llamada
     # seria un GET extra al servidor por cada pregunta del chat.
     _resolved_models: dict = {}
+    _semaphore = None
+    _semaphore_loop = None
+
+    @classmethod
+    def _get_llm_semaphore(cls):
+        """Semáforo por event loop.
+
+        `asyncio.Semaphore` se ata al loop que lo usa. La suite y algunos
+        scripts crean loops distintos; reusar el de un loop cerrado dejaría
+        todas las inferencias colgadas.
+        """
+        loop = asyncio.get_running_loop()
+        if cls._semaphore is None or cls._semaphore_loop is not loop:
+            cls._semaphore = asyncio.Semaphore(max(1, settings.LLM_MAX_CONCURRENCY))
+            cls._semaphore_loop = loop
+        return cls._semaphore
 
     @classmethod
     @contextmanager
@@ -442,6 +525,7 @@ class LLMService:
         return payload
 
     @classmethod
+    @_limit_llm_concurrency
     async def generate_completion(
         cls,
         prompt: str,
@@ -616,6 +700,7 @@ class LLMService:
         )
 
     @classmethod
+    @_limit_llm_stream
     async def stream_completion(
         cls,
         prompt: str,

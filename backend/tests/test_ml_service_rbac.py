@@ -492,6 +492,55 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
         self.assertEqual(body["date_columns"], ["fecha"])
         self.assertEqual(body["dimension_columns"], ["complemento"])
         self.assertEqual(body["connection_id"], conn)
+        # La tabla se elige por pregunta; sin coincidencia, la mayor.
+        self.assertEqual(body["table_source"], "mayor")
+        self.assertIn("movimientos", {item["name"] for item in body["tables"]})
+
+    def test_contexto_acepta_tabla_manual(self):
+        conn = self._tabla(SERIE)
+        role = self._rol(conn)
+        _, headers = self._cuenta(role)
+
+        resp = self.client.get(
+            f"/api/v1/ml/projections/context?connection_id={conn}&table_name=movimientos",
+            headers=headers,
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertTrue(body["available"], body["reason"])
+        self.assertEqual(body["table"], "movimientos")
+        self.assertEqual(body["table_source"], "manual")
+        self.assertEqual(body["metric_columns"], ["valor"])
+
+    def test_tabla_manual_autorizada_se_usa(self):
+        conn = self._tabla(SERIE)
+        role = self._rol(conn)
+        _, headers = self._cuenta(role)
+
+        resp = self._correr(headers, conn, table_name="movimientos")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertTrue(body["available"], body["reason"])
+        self.assertEqual(body["table"], "movimientos")
+        self.assertEqual(body["table_source"], "manual")
+        self.assertTrue(body["audit_log_id"])
+
+    def test_tabla_manual_no_autorizada_falla_cerrada(self):
+        conn = self._tabla(SERIE)
+        role = self._rol(conn)
+        _, headers = self._cuenta(role)
+
+        resp = self._correr(headers, conn, table_name="no_autorizada")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertFalse(body["available"])
+        self.assertIn("no esta autorizada", body["reason"])
+        self.assertEqual(body["steps"], [])
+        self.assertEqual(body["series"], [])
+        self.assertIsNone(body["sql"])
 
     def test_override_manual_no_llama_al_llm_con_horizonte_explicito(self):
         conn = self._tabla(SERIE, extra_numeric="monto")
@@ -556,7 +605,37 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
 
     # --- 7. Verificacion contra el dato actual --------------------------------
 
-    def _snapshot(self, conn, periods, points, total_point=300):
+    def _permitir_tabla(self, role, conn_id, table):
+        from app.modules.admin_catalog.models import RoleTablePermission
+
+        self.db.add(RoleTablePermission(
+            role_id=role.id, connection_id=conn_id, schema_name="public",
+            table_name=table, is_allowed=True, granted_by_admin=True,
+        ))
+        self.db.commit()
+
+    def _tabla_extra(self, table, filas):
+        from sqlalchemy import text
+
+        from conftest import pg_source_engine
+
+        eng = pg_source_engine(self.pg_db)
+        try:
+            with eng.begin() as c:
+                c.execute(text(f"DROP TABLE IF EXISTS {table}"))
+                c.execute(text(f"CREATE TABLE {table} (fecha DATE, valor NUMERIC)"))
+                for periodo, valor in filas:
+                    c.execute(
+                        text(
+                            f"INSERT INTO {table} (fecha, valor) "
+                            f"VALUES (:f, :v)"
+                        ),
+                        {"f": periodo + "-15", "v": valor},
+                    )
+        finally:
+            eng.dispose()
+
+    def _snapshot(self, conn, periods, points, total_point=300, table="movimientos"):
         from app.modules.ml_forecast.schemas import ProjectionResponse
 
         steps = []
@@ -591,7 +670,7 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
             n_periods=len(steps),
             has_gaps=False,
             income_only=True,
-            table="movimientos",
+            table=table,
             metric_column="valor",
             date_column="fecha",
             connection_id=conn,
@@ -640,6 +719,31 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
         )
         self.assertIsNotNone(verificacion, "la verificacion tambien deja rastro")
 
+    def test_verificacion_usa_la_tabla_del_snapshot_no_la_mayor(self):
+        conn = self._tabla(SERIE)  # movimientos: 9 filas, la mayor
+        role = self._rol(conn)
+        self._permitir_tabla(role, conn, "ventas_extra")
+        self._tabla_extra("ventas_extra", [
+            ("2026-01", 100), ("2026-02", 120), ("2026-03", 130),
+        ])
+        user_id, headers = self._cuenta(role)
+        snapshot = self._snapshot(
+            conn, ["2026-01", "2026-02", "2026-03"], [100, 100, 100],
+            table="ventas_extra",
+        )
+        audit_id = self._auditar(user_id, conn, snapshot)
+
+        resp = self.client.get(
+            f"/api/v1/ml/projections/{audit_id}/verification", headers=headers,
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertTrue(body["available"], body["reason"])
+        self.assertEqual(body["table"], "ventas_extra")
+        self.assertEqual(body["measured_steps"], 3)
+        self.assertEqual(body["total"]["actual"], 350.0)
+
     def test_verificacion_pendiente_no_inventa_actuales(self):
         conn = self._tabla(SERIE)
         role = self._rol(conn)
@@ -661,6 +765,65 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
         self.assertIsNone(body["steps"][0]["actual"])
         self.assertEqual(body["total"]["status"], "incompleto")
         self.assertIsNone(body["total"]["actual"])
+
+    def test_detalle_de_una_proyeccion_propia_devuelve_el_snapshot_publicado(self):
+        conn = self._tabla(SERIE)
+        role = self._rol(conn)
+        user_id, headers = self._cuenta(role)
+        snapshot = self._snapshot(
+            conn, ["2026-01", "2026-02", "2026-03"], [100, 120, 130]
+        )
+        audit_id = self._auditar(user_id, conn, snapshot)
+
+        resp = self.client.get(
+            f"/api/v1/ml/projections/{audit_id}", headers=headers,
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["question"], "proyeccion auditada")
+        self.assertEqual(body["table"], "movimientos")
+        self.assertEqual(len(body["steps"]), 3)
+        self.assertEqual(body["total"]["point"], 300)
+        self.assertTrue(body["available"])
+
+    def test_snapshot_ilegible_no_se_abre_ni_se_marca_legible(self):
+        from app.modules.telemetry_audit.models import AuditLog
+
+        conn = self._tabla(SERIE)
+        role = self._rol(conn)
+        user_id, headers = self._cuenta(role)
+        audit = AuditLog(
+            user_id=user_id,
+            username="snapshot_roto",
+            user_role="rol",
+            question_prompt="proyeccion vieja",
+            validation_status="PROYECCION_ML",
+            target_database="movimientos",
+            result_snapshot="{}",
+        )
+        self.db.add(audit)
+        self.db.commit()
+        try:
+            historial = self.client.get(
+                "/api/v1/ml/projections/history", headers=headers,
+            )
+            item = next(
+                i for i in historial.json()["items"] if i["audit_log_id"] == audit.id
+            )
+            self.assertFalse(item["readable"])
+            self.assertFalse(item["verifiable"])
+            self.assertIn("snapshot", item["reason"].lower())
+
+            detail = self.client.get(
+                f"/api/v1/ml/projections/{audit.id}", headers=headers,
+            )
+            self.assertEqual(detail.status_code, 404, detail.text)
+        finally:
+            self.db.query(AuditLog).filter(AuditLog.id == audit.id).delete(
+                synchronize_session=False
+            )
+            self.db.commit()
 
     def test_historial_y_verificacion_son_solo_del_usuario(self):
         from app.modules.telemetry_audit.models import AuditLog
@@ -688,14 +851,22 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
                 "/api/v1/ml/projections/history", headers=headers,
             )
             self.assertEqual(historial.status_code, 200, historial.text)
-            ids = [item["audit_log_id"] for item in historial.json()["items"]]
+            items = historial.json()["items"]
+            ids = [item["audit_log_id"] for item in items]
             self.assertIn(own_id, ids)
             self.assertNotIn(ajeno.id, ids)
+            own_item = next(item for item in items if item["audit_log_id"] == own_id)
+            self.assertTrue(own_item["readable"], own_item)
 
             ajeno_resp = self.client.get(
                 f"/api/v1/ml/projections/{ajeno.id}/verification", headers=headers,
             )
             self.assertEqual(ajeno_resp.status_code, 404, ajeno_resp.text)
+
+            ajeno_detail = self.client.get(
+                f"/api/v1/ml/projections/{ajeno.id}", headers=headers,
+            )
+            self.assertEqual(ajeno_detail.status_code, 404, ajeno_detail.text)
         finally:
             self.db.query(AuditLog).filter(AuditLog.id == ajeno.id).delete(
                 synchronize_session=False

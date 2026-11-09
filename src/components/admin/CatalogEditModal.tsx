@@ -1,21 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save } from 'lucide-react';
 import { useModalA11y } from '../../hooks/useModalA11y';
-
-export interface CatalogItem {
-  id?: number;
-  table: string;
-  column: string;
-  desc: string;
-  formula: string;
-  is_ai: boolean;
-}
+import type { CatalogItem } from '../../features/admin/services/catalog_service';
 
 interface CatalogEditModalProps {
   isOpen: boolean;
   item: CatalogItem | null;
   onClose: () => void;
-  onSave: (desc: string, formula: string) => void;
+  onSave: (desc: string, formula: string) => Promise<void> | void;
+  errorMsg?: string | null;
 }
 
 export const CatalogEditModal: React.FC<CatalogEditModalProps> = ({
@@ -23,14 +16,16 @@ export const CatalogEditModal: React.FC<CatalogEditModalProps> = ({
   item,
   onClose,
   onSave,
+  errorMsg,
 }) => {
   const [formDesc, setFormDesc] = useState('');
   const [formFormula, setFormFormula] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     if (item) {
-      setFormDesc(item.desc);
-      setFormFormula(item.formula);
+      setFormDesc(item.description || '');
+      setFormFormula(item.business_formula || '');
     }
   }, [item]);
 
@@ -39,9 +34,15 @@ export const CatalogEditModal: React.FC<CatalogEditModalProps> = ({
 
   if (!isOpen || !item) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onSave(formDesc, formFormula);
+    if (isSaving) return;
+    setIsSaving(true);
+    try {
+      await onSave(formDesc, formFormula);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -50,7 +51,7 @@ export const CatalogEditModal: React.FC<CatalogEditModalProps> = ({
         {/* Header */}
         <div className="shrink-0 px-5 sm:px-6 py-4 border-b border-app-border flex items-center justify-between bg-app-surface/95 backdrop-blur">
           <h4 className="text-sm font-bold text-app-text truncate">
-            Editar Regla Semántica: {item.table}.{item.column}
+            Editar Regla Semántica: {item.table_name}.{item.column_name || 'tabla'}
           </h4>
           <button
             type="button"
@@ -61,6 +62,12 @@ export const CatalogEditModal: React.FC<CatalogEditModalProps> = ({
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {errorMsg && (
+          <p role="alert" className="mx-5 mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+            {errorMsg}
+          </p>
+        )}
 
         {/* Scrollable Form Body */}
         <form id="catalog-edit-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto min-h-0 p-5 sm:p-6 space-y-3.5 text-xs">
@@ -99,17 +106,19 @@ export const CatalogEditModal: React.FC<CatalogEditModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 rounded-xl bg-app-card text-gray-300 text-xs hover:bg-app-border transition-colors"
+            disabled={isSaving}
+            className="px-4 py-2 rounded-xl bg-app-card text-gray-300 text-xs hover:bg-app-border transition-colors disabled:opacity-40 disabled:pointer-events-none"
           >
             Cancelar
           </button>
           <button
             form="catalog-edit-form"
             type="submit"
-            className="flex items-center space-x-1 bg-purple-600 hover:bg-purple-500 text-white font-semibold px-4 py-2 rounded-xl text-xs transition-colors"
+            disabled={isSaving}
+            className="flex items-center space-x-1 bg-purple-600 hover:bg-purple-500 text-white font-semibold px-4 py-2 rounded-xl text-xs transition-colors disabled:opacity-40 disabled:pointer-events-none"
           >
             <Save className="w-3.5 h-3.5" />
-            <span>Guardar Cambios</span>
+            <span>{isSaving ? 'Guardando...' : 'Guardar Cambios'}</span>
           </button>
         </div>
       </div>

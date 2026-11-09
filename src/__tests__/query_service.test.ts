@@ -237,9 +237,18 @@ describe('getSuggestions: un fallo no es una lista vacia', () => {
     await expect(queryService.getSuggestions()).rejects.toThrow(/sugerencias/i);
   });
 
-  it('devuelve lo que el servidor respondio', async () => {
-    apiClient.get.mockResolvedValue({ data: { suggestions: ['A', 'B'] } });
-    await expect(queryService.getSuggestions()).resolves.toEqual(['A', 'B']);
+  it('devuelve lo que el servidor respondio y el builder cuando viene', async () => {
+    const builder = { tables: [{ name: 'ventas', label: 'Ventas', metrics: [], dimensions: [], dates: [] }] };
+    apiClient.get.mockResolvedValue({ data: { suggestions: ['A', 'B'], builder } });
+    await expect(queryService.getSuggestions()).resolves.toEqual({
+      suggestions: ['A', 'B'],
+      builder,
+    });
+  });
+
+  it('degrada el builder a null si el payload no trae tablas', async () => {
+    apiClient.get.mockResolvedValue({ data: { suggestions: ['A'], builder: { tables: 'no soy un array' } } });
+    await expect(queryService.getSuggestions()).resolves.toEqual({ suggestions: ['A'], builder: null });
   });
 });
 

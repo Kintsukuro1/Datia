@@ -217,6 +217,67 @@ def test_el_sql_de_grupos_pasa_el_ast_y_escapa_comillas():
     assert _is_dimension_col({"name": "valor", "type": "numeric"}) is False
 
 
+def _assert_sql_pasa_el_ast(sql, table="movimientos", columns=None):
+    ok, secured, meta = ASTValidator.validate_and_secure_sql(
+        sql,
+        dialect="postgres",
+        allowed_tables={table},
+        blocked_columns=set(),
+        table_columns={table: columns or ["fecha", "valor", "complemento"]},
+        max_limit=1000,
+        is_admin=True,
+    )
+    assert ok is True, meta
+    return secured
+
+
+def test_el_sql_de_conteo_no_filtra_por_valor():
+    """COUNT(*) no necesita una métrica numérica ni el filtro de ingresos."""
+    sql = build_series_sql("movimientos", "fecha", "valor", agg="count")
+    assert "COUNT(*)" in sql
+    assert "> 0" not in sql
+    assert '"valor"' not in sql
+    _assert_sql_pasa_el_ast(sql)
+
+
+def test_el_sql_de_conteo_distinto_usa_la_columna_resuelta():
+    sql = build_series_sql(
+        "movimientos", "fecha", "cliente", agg="count_distinct"
+    )
+    assert "COUNT(DISTINCT" in sql
+    assert '"cliente"' in sql
+    assert "> 0" not in sql
+    _assert_sql_pasa_el_ast(sql, columns=["fecha", "cliente"])
+
+
+def test_el_sql_usa_las_expresiones_del_resolvedor():
+    """La fórmula del catálogo reemplaza a la columna física en fecha y valor."""
+    sql = build_series_sql(
+        "movimientos", "fecha", "valor",
+        date_expr="TO_DATE(LPAD(fecha::text, 8, '0'), 'DDMMYYYY')",
+        value_expr="CASE WHEN valor ~ '^[0-9]+$' THEN valor::numeric END",
+        diagnostic_periods=True,
+    )
+    assert "TO_DATE" in sql
+    assert "CASE WHEN" in sql
+    assert 'TO_CHAR("fecha"' not in sql
+    _assert_sql_pasa_el_ast(sql)
+
+
+def test_los_grupos_usan_la_expresion_resuelta():
+    totals = build_group_totals_sql(
+        "movimientos", "fecha", "valor", "complemento",
+        value_expr="CASE WHEN valor ~ '^[0-9]+$' THEN valor::numeric END",
+    )
+    series = build_group_series_sql(
+        "movimientos", "fecha", "valor", "complemento", "A",
+        value_expr="CASE WHEN valor ~ '^[0-9]+$' THEN valor::numeric END",
+    )
+    for sql in (totals, series):
+        assert "CASE WHEN" in sql
+        _assert_sql_pasa_el_ast(sql)
+
+
 # --- 3: las columnas las elige el backend, no el texto del LLM ----------------
 
 def _analizar(respuesta_o_excepcion, horizonte=6, cols=COLS):
@@ -255,6 +316,20 @@ def test_el_analisis_solo_acepta_nombres_reales():
     )["horizon"] is None
     # El fallback heuristico tambien resuelve un nombre real (el unico numerico).
     assert resolve_columns(COLS)["value_col"] == "valor"
+
+
+def test_el_llm_no_puede_elegir_un_id_como_metrica():
+    """Un correlativo numerico no es una metrica, aunque sea numerico."""
+    cols = [
+        {"name": "fecha", "type": "timestamp", "is_pk": False},
+        {"name": "id_cliente", "type": "bigint", "is_pk": False},
+        {"name": "monto", "type": "numeric", "is_pk": False},
+    ]
+    choice = ml_service._validate_llm_choice(
+        {"metric_column": "id_cliente", "date_column": "fecha"}, cols
+    )
+    assert choice["metric_column"] is None
+    assert choice["date_column"] == "fecha"
 
 
 # La forma real de la tabla demo: la columna se llama "periodo" pero es TEXT, y

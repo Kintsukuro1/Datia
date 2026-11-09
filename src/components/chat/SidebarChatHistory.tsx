@@ -26,7 +26,7 @@ const DATE_GROUP_ORDER = ['Hoy', 'Ayer', 'Anteriores'] as const;
 export const SidebarChatHistory: React.FC<SidebarChatHistoryProps> = ({
   threads,
   activeId,
-  activeDatabaseName = 'BD Corporativa Local',
+  activeDatabaseName = 'Sin fuente de datos',
   isOpenMobile = false,
   searchInputRef,
   onCloseMobile,

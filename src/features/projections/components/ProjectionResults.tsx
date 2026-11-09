@@ -1,5 +1,5 @@
-import React, { useRef, useState } from 'react';
-import { AlertTriangle, FileSpreadsheet, FileText, Info, Loader2, Sparkles, TrendingUp } from 'lucide-react';
+import React, { useId, useRef, useState } from 'react';
+import { AlertTriangle, ChevronDown, FileSpreadsheet, FileText, Info, Loader2, Sparkles, TrendingUp } from 'lucide-react';
 import { ProjectionChart } from './ProjectionChart';
 import type { ProjectionGroupSummary, ProjectionResult } from '../services/projection_service';
 import { sumLastPeriods, variationPct } from '../services/projection_metrics';
@@ -32,6 +32,167 @@ const METHOD_LABELS: Record<string, string> = {
 };
 
 const methodLabel = (m?: string | null): string => (m ? METHOD_LABELS[m] ?? m : '—');
+
+const GRANULARITY_LABELS: Record<string, string> = {
+  day: 'Día',
+  week: 'Semana',
+  month: 'Mes',
+};
+
+const granularityLabel = (value?: string | null): string =>
+  GRANULARITY_LABELS[value ?? 'month'] ?? 'Mes';
+
+const tableSourceLabel = (source?: string | null): string => {
+  if (source === 'manual') return 'elegida manualmente';
+  if (source === 'catalogo') return 'elegida por pregunta/catálogo';
+  if (source === 'mayor') return 'la de más filas';
+  return '—';
+};
+
+const QUALITY_LABELS: Record<string, string> = {
+  confiable: 'Confiable',
+  exploratoria: 'Exploratoria',
+  no_confiable: 'No confiable',
+  sin_medicion: 'Sin medición de error',
+};
+
+const QUALITY_STYLES: Record<string, string> = {
+  confiable:
+    'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300',
+  exploratoria:
+    'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300',
+  no_confiable:
+    'border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-950/60 dark:text-rose-300',
+  sin_medicion:
+    'border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300',
+};
+
+const qualityLabel = (status?: string | null): string =>
+  QUALITY_LABELS[status ?? ''] ?? 'Sin medición de error';
+
+const qualityClass = (status?: string | null): string =>
+  QUALITY_STYLES[status ?? ''] ?? QUALITY_STYLES.sin_medicion;
+
+/**
+ * Que significa cada estado, en una frase. Los `reasons` del backend dicen que
+ * regla se disparo; esto explica el criterio cuando no hay ninguna (confiable).
+ */
+const QUALITY_EXPLANATIONS: Record<string, string> = {
+  confiable:
+    'Las reglas de calidad no encontraron alertas con la evidencia publicada.',
+  exploratoria:
+    'La proyección se puede leer, pero hay señales que reducen la confianza: error medio, poca evidencia en algún paso o huecos en la serie.',
+  no_confiable:
+    'El error medido o la cobertura de la banda no permiten tratar estas cifras como una estimación confiable.',
+  sin_medicion:
+    'No se pudo medir el error: no hay backtests suficientes para afirmar qué tan precisa es la proyección.',
+};
+
+/**
+ * Badge de calidad con su justificación al pasar el mouse (o al enfocar con el
+ * teclado). Antes el motivo viajaba en un `title` nativo: al instante, sin
+ * formato y sin funcionar con teclado. La nota abre en hover/focus y muestra
+ * las mismas reglas que aplicó el servidor, no una explicación inventada por la
+ * UI.
+ */
+const QualityBadge: React.FC<{ result: ProjectionResult; compact?: boolean }> = ({
+  result,
+  compact = false,
+}) => {
+  const quality = result.quality;
+  const tooltipId = useId();
+  if (!quality) return null;
+
+  const status = quality.status ?? '';
+  const summary =
+    QUALITY_EXPLANATIONS[status] ?? 'El servidor no publicó una explicación para este estado.';
+
+  // Para "confiable" el backend devuelve `reasons: []`: la nota explica las
+  // reglas que se cumplieron con los números que ya están en la respuesta.
+  const checks: string[] = [];
+  if (status === 'confiable') {
+    if (quality.mape !== null && quality.mape !== undefined) {
+      checks.push(
+        quality.exploratory_threshold !== null && quality.exploratory_threshold !== undefined
+          ? `MAPE global ${pct(quality.mape)}, por debajo del umbral exploratorio ${pct(quality.exploratory_threshold)}.`
+          : `MAPE global ${pct(quality.mape)}.`
+      );
+    }
+    if (result.beats_naive === true) {
+      checks.push('Le ganó al naive en el walk-forward.');
+    }
+    const measured = result.total?.measured_steps;
+    if (measured !== null && measured !== undefined && measured >= result.horizon) {
+      checks.push(`La banda del total está medida sobre los ${result.horizon} pasos.`);
+    }
+    const minBacktests = Math.min(
+      ...result.steps.filter((step) => step.point !== null).map((step) => step.n_backtests)
+    );
+    if (Number.isFinite(minBacktests) && minBacktests >= 4) {
+      checks.push(`El paso con menos evidencia tiene ${minBacktests} backtests.`);
+    }
+    if (!result.has_gaps) {
+      checks.push('La serie no tiene periodos faltantes.');
+    }
+  }
+
+  const reasons = status === 'confiable' ? [] : quality.reasons ?? [];
+  const hasThresholds =
+    quality.exploratory_threshold !== null &&
+    quality.exploratory_threshold !== undefined &&
+    quality.unreliable_threshold !== null &&
+    quality.unreliable_threshold !== undefined;
+
+  return (
+    <span className="group relative inline-flex">
+      <span
+        tabIndex={0}
+        aria-describedby={tooltipId}
+        className={`inline-flex cursor-help items-center rounded-md border font-semibold underline decoration-dotted underline-offset-2 ${compact ? 'px-2 py-0.5 text-[10px]' : 'px-2 py-0.5 text-[11px]'} ${qualityClass(status)}`}
+      >
+        {qualityLabel(status)}
+      </span>
+      <span
+        id={tooltipId}
+        role="tooltip"
+        className="pointer-events-none invisible absolute right-0 top-full z-40 mt-1.5 w-[19rem] max-w-[80vw] rounded-xl border border-app-border bg-app-surface p-3 text-left text-[11px] font-normal leading-relaxed text-app-text opacity-0 shadow-2xl transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+      >
+        <span className="block text-xs font-bold text-app-text">{qualityLabel(status)}</span>
+        <span className="mt-1 block text-app-muted">{summary}</span>
+
+        {checks.length > 0 && (
+          <span className="mt-2 block space-y-1">
+            {checks.map((check) => (
+              <span key={check} className="flex items-start gap-1.5">
+                <span aria-hidden className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
+                <span>{check}</span>
+              </span>
+            ))}
+          </span>
+        )}
+
+        {reasons.length > 0 && (
+          <span className="mt-2 block space-y-1">
+            {reasons.map((reason) => (
+              <span key={reason} className="flex items-start gap-1.5">
+                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-amber-500" aria-hidden />
+                <span>{reason}</span>
+              </span>
+            ))}
+          </span>
+        )}
+
+        {hasThresholds && status !== 'confiable' && (
+          <span className="mt-2 block border-t border-app-border/70 pt-1.5 text-[10px] text-app-muted">
+            Umbrales del servidor: exploratoria si el MAPE supera{' '}
+            {pct(quality.exploratory_threshold)}; no confiable si supera{' '}
+            {pct(quality.unreliable_threshold)}.
+          </span>
+        )}
+      </span>
+    </span>
+  );
+};
 
 const horizonSourceLabel = (source?: string | null): string | null => {
   if (source === 'pedido') return 'elegido en el pedido';
@@ -234,17 +395,34 @@ const TotalCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
   if (!total || total.point === null) {
     return (
       <section className="rounded-2xl border border-app-border bg-app-card p-4 shadow-xs">
-        <h3 className="text-sm font-bold text-app-text">Total del horizonte</h3>
+        <header className="flex flex-wrap items-start justify-between gap-2">
+          <h3 className="text-sm font-bold text-app-text">Total del horizonte</h3>
+          <QualityBadge result={result} />
+        </header>
         <p className="mt-2 text-xs leading-relaxed text-app-muted">
           No se pudo sumar el total porque falta el punto de algún paso. Los pasos publicados
           siguen en la tabla, cada uno con su evidencia.
         </p>
+        {result.quality?.reasons?.length ? (
+          <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-app-muted">
+            {result.quality.reasons.map((reason) => (
+              <li key={reason} className="flex items-start gap-1.5">
+                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-amber-500" aria-hidden />
+                {reason}
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </section>
     );
   }
 
-  const rango =
-    total.lower !== null && total.upper !== null
+  const totalBandIncomplete =
+    total.extrapolated ||
+    (total.measured_steps !== null && total.measured_steps < result.horizon);
+  const rango = totalBandIncomplete
+    ? 'Sin banda para el horizonte completo'
+    : total.lower !== null && total.upper !== null
       ? `${money(total.lower)} – ${money(total.upper)}`
       : 'Sin banda medida';
   const evidencia =
@@ -294,6 +472,9 @@ const TotalCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
         >
           {total.extrapolated ? 'medición parcial' : total.reliable ? 'medida' : 'poca evidencia'}
         </span>
+        {result.quality && (
+          <QualityBadge result={result} />
+        )}
       </header>
 
       <dl className="mt-3 grid grid-cols-2 gap-3 text-xs lg:grid-cols-4">
@@ -308,7 +489,11 @@ const TotalCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
         <div>
           <dt className="text-app-muted">Banda</dt>
           <dd className="mt-0.5 font-semibold tabular-nums text-app-text">
-            {total.band_pct === null ? '—' : `±${pct(total.band_pct)}`}
+            {totalBandIncomplete
+              ? 'Sin banda completa'
+              : total.band_pct === null
+                ? '—'
+                : `±${pct(total.band_pct)}`}
           </dd>
         </div>
         <div>
@@ -321,6 +506,22 @@ const TotalCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
         <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
         {evidencia}
       </p>
+      {total.lower_clamped && (
+        <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-app-muted">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+          Banda inferior acotada a 0: una cantidad no puede ser negativa.
+        </p>
+      )}
+      {result.quality?.reasons?.length ? (
+        <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-app-muted">
+          {result.quality.reasons.map((reason) => (
+            <li key={reason} className="flex items-start gap-1.5">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-amber-500" aria-hidden />
+              {reason}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {historyText && (
         <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-app-muted">
           <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
@@ -525,6 +726,8 @@ const StepsTable: React.FC<{ result: ProjectionResult }> = ({ result }) => (
       medido (el más cercano, no el más ancho). «Poca evidencia»: menos de 4 backtests. El
       MAPE se calcula por replay real sobre esa serie; «—» significa que ese paso no dejó
       ningún residuo que medir.
+      {result.steps.some((step) => step.lower_clamped) &&
+        ' En los conteos, la banda inferior se acota a 0: no hay cantidades negativas.'}
     </p>
   </section>
 );
@@ -563,6 +766,22 @@ const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
         <div>
           <dt className="text-app-muted">Periodos históricos</dt>
           <dd className="mt-0.5 text-sm font-semibold tabular-nums text-app-text">{result.n_periods}</dd>
+        </div>
+        <div>
+          <dt className="text-app-muted">Tabla</dt>
+          <dd className="mt-0.5 text-sm font-semibold text-app-text">{result.table ?? '—'}</dd>
+        </div>
+        <div>
+          <dt className="text-app-muted">Origen de tabla</dt>
+          <dd className="mt-0.5 text-sm font-semibold text-app-text">
+            {tableSourceLabel(result.table_source)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-app-muted">Granularidad</dt>
+          <dd className="mt-0.5 text-sm font-semibold text-app-text">
+            {granularityLabel(result.granularity)}
+          </dd>
         </div>
         <div>
           <dt className="text-app-muted">MAPE global</dt>
@@ -610,6 +829,108 @@ const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
   );
 };
 
+/**
+ * Lectura del resultado en primer plano.
+ *
+ * El modelo local devuelve dos o tres parrafos largos; publicarlos enteros al
+ * final de la pagina los volvia un muro de texto que nadie lee. Se muestra el
+ * primer parrafo (la conclusion) y el resto queda a un clic, con la calidad y
+ * el origen de la redaccion a la vista.
+ */
+const NarrationCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
+  const [expanded, setExpanded] = useState(false);
+  const panelId = useId();
+  const narration = result.narration?.trim();
+  if (!narration) return null;
+
+  const paragraphs = narration
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  const hasMore = paragraphs.length > 1;
+  const visible = expanded ? paragraphs : paragraphs.slice(0, 1);
+
+  return (
+    <section className="rounded-2xl border border-violet-500/30 bg-gradient-to-br from-violet-500/10 via-app-card to-app-card p-4 sm:p-5 shadow-xs">
+      <header className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex items-center gap-2 text-sm font-bold text-app-text">
+          <Sparkles className="h-4 w-4 shrink-0 text-violet-600 dark:text-violet-400" aria-hidden />
+          Lectura del resultado
+        </h3>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <QualityBadge result={result} compact />
+          <span className="inline-flex items-center rounded-md border border-app-border bg-app-card px-2 py-0.5 text-[10px] font-medium text-app-muted">
+            {result.narration_source === 'llm' ? 'IA local' : 'plantilla'}
+          </span>
+        </div>
+      </header>
+
+      <div id={panelId} className="mt-2.5 max-w-3xl space-y-3">
+        {visible.map((paragraph, index) => (
+          <p
+            key={index}
+            className={
+              index === 0
+                ? 'whitespace-pre-line text-[15px] leading-relaxed text-app-text'
+                : 'whitespace-pre-line text-sm leading-relaxed text-app-text/90'
+            }
+          >
+            {paragraph}
+          </p>
+        ))}
+      </div>
+
+      {hasMore && (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          className="mt-2.5 inline-flex items-center gap-1 rounded-lg border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] font-semibold text-violet-700 transition-colors hover:bg-violet-500/20 dark:text-violet-300"
+        >
+          <span>
+            {expanded
+              ? 'Mostrar menos'
+              : `Leer análisis completo (${paragraphs.length - 1} párrafo${paragraphs.length - 1 === 1 ? '' : 's'} más)`}
+          </span>
+          <ChevronDown
+            className={`h-3.5 w-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`}
+            aria-hidden
+          />
+        </button>
+      )}
+
+      <p className="mt-2.5 flex items-start gap-1.5 text-[11px] text-app-muted">
+        <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+        {result.narration_source === 'llm'
+          ? 'Redactada por el modelo local a partir de los números ya calculados; no calcula nada por su cuenta.'
+          : 'Plantilla determinista del servidor: el modelo local no respondió, y la lectura se publica igual.'}
+      </p>
+    </section>
+  );
+};
+
+/** Leyenda compacta: tres muestras visuales en vez de un parrafo explicativo. */
+const ChartLegend: React.FC = () => (
+  <ul className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-app-muted">
+    <li className="flex items-center gap-1.5">
+      <span aria-hidden className="inline-block h-0.5 w-5 rounded bg-[#94A3B8]" />
+      Histórico real
+    </li>
+    <li className="flex items-center gap-1.5">
+      <span aria-hidden className="inline-block w-5 border-t-2 border-dashed border-[#7C3AED]" />
+      Proyección
+    </li>
+    <li className="flex items-center gap-1.5">
+      <span
+        aria-hidden
+        className="inline-block h-2.5 w-5 rounded-sm border border-[#7C3AED]/40 bg-[rgba(124,58,237,0.16)]"
+      />
+      banda de error (backtest)
+    </li>
+  </ul>
+);
+
 export const ProjectionResults: React.FC<{ result: ProjectionResult }> = ({ result }) => {
   // El scope de la captura del grafico: el contenedor de ESTE chart, para que
   // el PDF no incruste una figura ajena si la pagina llegara a tener mas de una.
@@ -639,38 +960,29 @@ export const ProjectionResults: React.FC<{ result: ProjectionResult }> = ({ resu
           </div>
           <ExportToolbar result={result} chartScopeRef={chartScopeRef} />
         </header>
+      </section>
+
+      {/* La lectura va primero: es la conclusion, no un anexo al final. */}
+      <NarrationCard result={result} />
+
+      <TotalCard result={result} />
+
+      <section className="rounded-2xl border border-app-border bg-app-card p-4 shadow-xs">
+        <header className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-bold text-app-text">Serie y proyección</h3>
+          <span className="text-[11px] text-app-muted">
+            {result.horizon} {result.horizon === 1 ? 'paso publicado' : 'pasos publicados'}
+          </span>
+        </header>
         <div className="mt-2" ref={chartScopeRef}>
           <ProjectionChart result={result} />
         </div>
-        <p className="text-[11px] leading-relaxed text-app-muted">
-          Línea gris: la serie histórica real. Línea violeta discontinua: los pasos
-          proyectados. Zona violeta: la banda de error medida por backtest para cada paso —
-          se ensancha con el horizonte porque el error crece.
-        </p>
+        <ChartLegend />
       </section>
 
-      <TotalCard result={result} />
       <BreakdownCard result={result} />
       <StepsTable result={result} />
       <MethodCard result={result} />
-
-      {result.narration && (
-        <section className="rounded-2xl border border-violet-500/30 bg-violet-500/5 p-4">
-          <h3 className="flex items-center gap-2 text-sm font-bold text-app-text">
-            <Sparkles className="h-4 w-4 shrink-0 text-violet-600 dark:text-violet-400" aria-hidden />
-            Lectura del resultado
-          </h3>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-app-text">
-            {result.narration}
-          </p>
-          <p className="mt-2 flex items-start gap-1.5 text-[11px] text-app-muted">
-            <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
-            {result.narration_source === 'llm'
-              ? 'Redactada por el modelo local a partir de los números ya calculados; no calcula nada por su cuenta.'
-              : 'Plantilla determinista del servidor: el modelo local no respondió, y la lectura se publica igual.'}
-          </p>
-        </section>
-      )}
     </div>
   );
 };

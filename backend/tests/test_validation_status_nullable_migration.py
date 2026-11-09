@@ -80,7 +80,15 @@ class TestValidationStatusMigration(unittest.TestCase):
 
         after = {c["name"]: c for c in inspect(engine).get_columns("audit_logs")}
         self.assertTrue(after["validation_status"]["nullable"], "la migracion no abrio la columna")
-        self.assertEqual(set(after), set(before), "la migracion no debe agregar ni quitar columnas")
+        # La misma migracion agrega las columnas append-only del feedback. No
+        # puede agregar ni quitar NADA mas: el resto del esquema es el del
+        # despliegue que ya existia.
+        self.assertEqual(
+            set(after) - set(before),
+            {"feedback_rating", "feedback_comment"},
+            "columnas inesperadas en la migracion",
+        )
+        self.assertEqual(set(before) - set(after), set(), "la migracion quito columnas")
 
         with engine.begin() as conn:
             rows = conn.execute(text(

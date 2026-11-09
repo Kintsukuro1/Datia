@@ -53,6 +53,12 @@ from ..chat_engine.forecast_calculator import MIN_PERIODS, _as_number
 # mide el ruido de la serie y no su error. Se publica igual, con `reliable: False`.
 MIN_BACKTESTS_RELIABLE = 4
 
+# Umbrales del estado agregado de calidad. `> UNRELIABLE_MAPE` es no confiable;
+# entre `EXPLORATORY_MAPE` y `UNRELIABLE_MAPE` es exploratoria. Son decisiones de
+# producto, no hallazgos: una sola constante para cada corte.
+UNRELIABLE_MAPE = 50.0
+EXPLORATORY_MAPE = 30.0
+
 # Orden = desempate por simplicidad. Con dos MAPE iguales gana el primero, y el
 # primero es el naive: entre un modelo simple y uno complejo que miden lo mismo,
 # el simple tiene menos formas de romperse en produccion.
@@ -492,6 +498,106 @@ def build_projection(
         "n_periods": n,
         "steps": steps,
         "total": _build_total(points, cumulative[method], horizon, has_gaps),
+    }
+
+
+# ----------------------------------------------------------------------------
+# Estado agregado de calidad
+# ----------------------------------------------------------------------------
+
+def _quality_pct(value: float) -> str:
+    text = f"{value:.1f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",") + "%"
+
+
+def evaluate_quality(
+    projection: Dict[str, Any], *, horizon: int, has_gaps: bool
+) -> Dict[str, Any]:
+    """Semáforo de calidad sobre la evidencia que ya publicó el motor.
+
+    No es un score: no hay pesos ni un número compuesto. Se aplican reglas
+    explícitas sobre MAPE, comparación con naive, cobertura del total, backtests
+    y huecos. Cada estado devuelve las razones que lo dispararon, para que la UI
+    pueda decir por qué y no solo pintar un color.
+    """
+    mape = _finite(projection.get("mape"))
+    thresholds = {
+        "unreliable_threshold": UNRELIABLE_MAPE,
+        "exploratory_threshold": EXPLORATORY_MAPE,
+    }
+    if mape is None:
+        return {
+            "status": "sin_medicion",
+            "mape": None,
+            **thresholds,
+            "reasons": ["no hay MAPE medible"],
+        }
+
+    no_confiable: List[str] = []
+    if mape > UNRELIABLE_MAPE:
+        no_confiable.append(
+            f"MAPE {_quality_pct(mape)} supera el {_quality_pct(UNRELIABLE_MAPE)}"
+        )
+    if projection.get("beats_naive") is False:
+        no_confiable.append("no le gana al naive")
+
+    total = projection.get("total")
+    if total is None:
+        no_confiable.append("no se pudo calcular el total del horizonte")
+    else:
+        measured = total.get("measured_steps")
+        if measured is None:
+            no_confiable.append("no hay pasos medidos en el total")
+        elif int(measured) < horizon:
+            no_confiable.append(
+                f"la banda del total cubre {measured} de {horizon} pasos"
+            )
+
+    if no_confiable:
+        return {
+            "status": "no_confiable",
+            "mape": mape,
+            **thresholds,
+            "reasons": no_confiable,
+        }
+
+    steps = projection.get("steps") or []
+    min_backtests = min(
+        (
+            int(step.get("n_backtests") or 0)
+            for step in steps
+            if step.get("point") is not None
+        ),
+        default=0,
+    )
+    exploratory: List[str] = []
+    if mape > EXPLORATORY_MAPE:
+        exploratory.append(
+            f"MAPE {_quality_pct(mape)} supera el {_quality_pct(EXPLORATORY_MAPE)}"
+        )
+    if min_backtests < MIN_BACKTESTS_RELIABLE:
+        exploratory.append(
+            f"el paso con menos evidencia tiene {min_backtests} backtests "
+            f"(mínimo {MIN_BACKTESTS_RELIABLE})"
+        )
+    if projection.get("beats_naive") is None:
+        exploratory.append("sin comparación contra naive")
+    if has_gaps:
+        exploratory.append("la serie tiene periodos faltantes")
+
+    if exploratory:
+        return {
+            "status": "exploratoria",
+            "mape": mape,
+            **thresholds,
+            "reasons": exploratory,
+        }
+
+    return {
+        "status": "confiable",
+        "mape": mape,
+        **thresholds,
+        "reasons": [],
     }
 
 

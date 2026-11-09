@@ -15,6 +15,16 @@ export interface CatalogItem {
   updated_at?: string;
 }
 
+/** Borrador del alta manual. Separado de `CatalogItem` (que es la fila leída). */
+export interface CatalogRuleDraft {
+  table: string;
+  column: string;
+  desc: string;
+  formula: string;
+  is_ai: boolean;
+  connection_id?: number;
+}
+
 export interface DataDictionaryColumn {
   name: string;
   data_type: string;
@@ -119,8 +129,13 @@ export const catalogService = {
     business_formula?: string;
     is_ai_generated?: boolean;
   }): Promise<CatalogItem> {
+    if (!item.connection_id) {
+      // El backend no tiene un default honesto: `|| 1` escribía la regla en
+      // la conexión demo cuando el admin no había elegido fuente.
+      throw new Error('Seleccioná una fuente de datos antes de crear la regla.');
+    }
     const res = await apiClient.post<CatalogItem>('/catalog', {
-      connection_id: item.connection_id || 1,
+      connection_id: item.connection_id,
       schema_name: item.schema_name || 'main',
       table_name: item.table_name,
       column_name: item.column_name || null,

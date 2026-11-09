@@ -134,6 +134,7 @@ export const AdminPermissionsTab: React.FC = () => {
               onSelect={handleSelectConnection}
               showReviewWarning
               showUploaded
+              disabled={isSaving}
             />
           </div>
         </div>

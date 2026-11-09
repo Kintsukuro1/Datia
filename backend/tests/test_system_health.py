@@ -1,4 +1,5 @@
 import unittest
+import uuid
 from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 
@@ -6,7 +7,7 @@ from main import app
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.db.init_db import init_db
-from app.modules.admin_catalog.models import CorporateConnection
+from app.modules.admin_catalog.models import CorporateConnection, DatabaseType
 from app.core.constants import (
     SYSTEM_STATUS_OPERATIONAL,
     SYSTEM_STATUS_CRITICAL,
@@ -28,13 +29,48 @@ class TestSystemHealth(unittest.TestCase):
 
         # Admin con sesion viva: el preambulo comun vive en conftest.
         self.headers = make_auth_headers(self.db, "admin")
+        # El estado de las fuentes es compartido por la suite. Cada test anota
+        # lo que crea o cambia y lo restaura, para no depender del orden.
+        self._created_conn_ids = []
+        self._active_snapshot = [
+            (c.id, bool(c.is_active))
+            for c in self.db.query(CorporateConnection).all()
+        ]
 
     def tearDown(self):
+        self.db.rollback()
+        if self._created_conn_ids:
+            self.db.query(CorporateConnection).filter(
+                CorporateConnection.id.in_(self._created_conn_ids)
+            ).delete(synchronize_session=False)
+        for conn_id, was_active in self._active_snapshot:
+            self.db.query(CorporateConnection).filter(
+                CorporateConnection.id == conn_id
+            ).update({CorporateConnection.is_active: was_active}, synchronize_session=False)
+        self.db.commit()
         self.db.close()
+
+    def _add_active_connector(self) -> CorporateConnection:
+        conn = CorporateConnection(
+            name=f"health-{uuid.uuid4().hex[:10]}",
+            db_type=DatabaseType.POSTGRESQL,
+            host="127.0.0.1",
+            port=5432,
+            database_name="salud_test",
+            username="tester",
+            encrypted_password="",
+            is_active=True,
+        )
+        self.db.add(conn)
+        self.db.commit()
+        self.db.refresh(conn)
+        self._created_conn_ids.append(conn.id)
+        return conn
 
     @patch("app.modules.system.health_service.HealthService.check_db_connectivity")
     @patch("app.modules.system.health_service.HealthService.check_llm_connectivity", new_callable=AsyncMock)
     def test_system_health_operational(self, mock_check_llm, mock_check_db):
+        self._add_active_connector()
         mock_check_llm.return_value = {
             "success": True,
             "latency_ms": 15,
@@ -60,6 +96,7 @@ class TestSystemHealth(unittest.TestCase):
     @patch("app.modules.system.health_service.HealthService.check_db_connectivity")
     @patch("app.modules.system.health_service.HealthService.check_llm_connectivity", new_callable=AsyncMock)
     def test_system_health_with_custom_query_params(self, mock_check_llm, mock_check_db):
+        self._add_active_connector()
         mock_check_llm.return_value = {
             "success": True,
             "latency_ms": 12,
@@ -82,6 +119,26 @@ class TestSystemHealth(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["status"], SYSTEM_STATUS_OPERATIONAL)
         self.assertIn("llama.cpp", data["llm_engine"]["name"])
+
+    @patch("app.modules.system.health_service.HealthService.check_llm_connectivity", new_callable=AsyncMock)
+    def test_system_health_degraded_without_active_source(self, mock_check_llm):
+        """Cero fuentes activas no es "operativo": no hay nada que consultar."""
+        self.db.query(CorporateConnection).update(
+            {CorporateConnection.is_active: False}, synchronize_session=False
+        )
+        self.db.commit()
+        mock_check_llm.return_value = {
+            "success": True,
+            "latency_ms": 10,
+            "message": "Conectado.",
+            "available_models": ["llama3.2:3b"],
+        }
+
+        response = self.client.get("/api/v1/system/health", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], SYSTEM_STATUS_DEGRADED)
+        self.assertEqual(data["total_active_connectors"], 0)
 
     @patch("app.modules.system.health_service.HealthService.check_llm_connectivity", new_callable=AsyncMock)
     def test_system_health_critical_when_llm_down(self, mock_check_llm):

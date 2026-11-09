@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { User, AppSettings } from '../../../types';
 import { authService } from '../services/auth_service';
-import { getApiErrorMessage, getAuthToken, PASSWORD_CHANGE_PENDING_EVENT } from '../../../shared/api/api_client';
+import { getApiErrorMessage, getAuthToken, PASSWORD_CHANGE_PENDING_EVENT, SESSION_EXPIRED_EVENT } from '../../../shared/api/api_client';
 import { useSettings } from '../../settings/context/SettingsContext';
 
 interface AuthContextType {
@@ -154,6 +154,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
     window.addEventListener(PASSWORD_CHANGE_PENDING_EVENT, onPending);
     return () => window.removeEventListener(PASSWORD_CHANGE_PENDING_EVENT, onPending);
+  }, []);
+
+  // Token expirado o revocado: la sesión local se cierra y el guard de rutas
+  // manda a /login con el motivo. Antes el usuario quedaba "dentro" con cada
+  // pantalla fallando por 401.
+  useEffect(() => {
+    const onExpired = () => {
+      setUser((prev) => {
+        if (!prev) return prev;
+        return null;
+      });
+      authService.logout();
+      setError('Tu sesión expiró o fue revocada. Iniciá sesión de nuevo.');
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
   }, []);
 
   const contextValue = useMemo(

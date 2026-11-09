@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.core.constants import IGNORED_METADATA_TABLES
 from app.core.database import discard_failed_transaction
-from app.modules.admin_catalog.models import RoleTablePermission, RoleColumnPermission, ColumnPermissionType, SemanticCatalog, CorporateConnection
+from app.modules.admin_catalog.models import RoleTablePermission, RoleColumnPermission, ColumnPermissionType, SemanticCatalog
 from app.modules.auth.models import Role
 from app.modules.catalog.services.schema_inspector import SchemaInspector
 
@@ -114,6 +114,20 @@ class DynamicSchemaPruningService:
         return set(cls.get_physical_cache(
             f"tables|{cls._physical_key(target)}", lambda: cls._introspect_tables(target)
         ))
+
+    @staticmethod
+    def _sanitize_prompt_text(text: str, limit: int) -> str:
+        """Neutraliza metadatos que se insertan en el prompt.
+
+        Las descripciones y sinónimos los edita un admin o los genera la IA; un
+        salto de línea o un `--` podía romper el comentario DDL y sacar texto
+        fuera del bloque. No se elimina contenido normal: solo separadores y
+        etiquetas de fence.
+        """
+        cleaned = str(text or "").replace("\r", " ").replace("\n", " ")
+        cleaned = cleaned.replace("--", "-")
+        cleaned = re.sub(r"</?[A-Za-z_][^>]*>", "", cleaned)
+        return DynamicSchemaPruningService._truncate(cleaned.strip(), limit)
 
     @staticmethod
     def _truncate(text: str, limit: int) -> str:
@@ -459,7 +473,9 @@ class DynamicSchemaPruningService:
                 # abajo de esta misma funcion mueren con `InFailedSqlTransaction`.
                 discard_failed_transaction(db)
 
-        effective_conn_id = conn_record.id if conn_record else (connection_id or 1)
+        # Sin conexión resuelta no se inventa la 1: el id 0 no existe y las
+        # consultas de permisos/catálogo devuelven vacío (fail-closed).
+        effective_conn_id = conn_record.id if conn_record else (connection_id or 0)
 
         physical_tables = cls.get_physical_db_tables(conn_record)
 
@@ -526,9 +542,11 @@ class DynamicSchemaPruningService:
 
         catalog_desc_map: Dict[str, str] = {}
         catalog_synonyms_map: Dict[str, str] = {}
+        catalog_label_map: Dict[str, str] = {}
         for entry in catalog_entries:
             key = f"{entry.table_name.lower()}.{entry.column_name.lower() if entry.column_name else '*'}"
             catalog_desc_map[key] = entry.description or ""
+            catalog_label_map[key] = (entry.friendly_name or "").strip()
             if entry.synonyms and entry.synonyms.strip():
                 catalog_synonyms_map[key] = entry.synonyms.strip()
 
@@ -538,10 +556,17 @@ class DynamicSchemaPruningService:
         # Build schema definition lines from physical database inspection
         schema_text_lines = []
         table_columns_map: Dict[str, List[str]] = {}
+        # Metadatos para el constructor guiado del frontend. Se arman en la MISMA
+        # pasada que el DDL para que el builder vea exactamente las columnas que
+        # el rol puede leer (BLOCKED ya se omite unas lineas abajo).
+        table_columns_meta: Dict[str, List[Dict[str, Any]]] = {}
+        table_labels: Dict[str, str] = {}
 
         for tbl in sorted(list(active_tables)):
             phys_cols = cls.get_physical_table_columns(tbl, conn_record)
             table_columns_map[tbl] = []
+            table_columns_meta[tbl] = []
+            table_labels[tbl] = catalog_label_map.get(f"{tbl.lower()}.*", "") or tbl
 
             col_lines = []
             if phys_cols:
@@ -552,12 +577,26 @@ class DynamicSchemaPruningService:
                         continue
 
                     table_columns_map[tbl].append(c_name)
-                    desc = catalog_desc_map.get(f"{tbl}.{c_lower}", "").strip()
-                    syns = catalog_synonyms_map.get(f"{tbl}.{c_lower}", "")
+                    desc = cls._sanitize_prompt_text(
+                        catalog_desc_map.get(f"{tbl}.{c_lower}", ""), 60
+                    )
+                    syns = cls._sanitize_prompt_text(
+                        catalog_synonyms_map.get(f"{tbl}.{c_lower}", ""), 120
+                    )
                     is_masked = (
                         c_lower in masked_columns
                         or column_perm_map.get(f"{tbl}.{c_lower}") == "MASKED"
                     )
+                    # `is_masked` viaja al builder para no ofrecer como metrica
+                    # una columna cuyo valor la mascara tapa: sumar RUT enmascarado
+                    # no es una pregunta de negocio.
+                    table_columns_meta[tbl].append({
+                        "name": c_name,
+                        "type": pc.get("type", ""),
+                        "is_pk": bool(pc.get("is_pk")),
+                        "label": catalog_label_map.get(f"{tbl}.{c_lower}", "") or c_name,
+                        "is_masked": is_masked,
+                    })
 
                     # Una muestra real de una columna MASKED es exactamente el
                     # valor que la mascara existe para tapar, y antes viajaba al
@@ -582,7 +621,7 @@ class DynamicSchemaPruningService:
                     if desc:
                         desc_lower = desc.lower()
                         if not (desc_lower.startswith("registro de datos tipo") or desc_lower in cls.NON_FORMULAS):
-                            details += f" - {cls._truncate(desc, 60)}"
+                            details += f" - {desc}"
 
                     if syns:
                         details += f" (Sinónimos: {syns})"
@@ -595,16 +634,28 @@ class DynamicSchemaPruningService:
                         c_name = entry.column_name
                         c_lower = c_name.lower()
                         if c_lower not in blocked_columns and column_perm_map.get(f"{tbl}.{c_lower}") != "BLOCKED":
-                            desc = (entry.description or "").strip()
+                            desc = cls._sanitize_prompt_text(entry.description or "", 60)
                             if desc.lower().startswith("registro de datos tipo") or desc.lower() in cls.NON_FORMULAS:
                                 desc = ""
-                            line = f"{c_name}" + (f" - {cls._truncate(desc, 60)}" if desc else "")
+                            line = f"{c_name}" + (f" - {desc}" if desc else "")
                             if entry.synonyms:
-                                line += f" (Sinónimos: {entry.synonyms})"
+                                line += f" (Sinónimos: {cls._sanitize_prompt_text(entry.synonyms, 120)})"
                             col_lines.append(line)
                             table_columns_map[tbl].append(c_name)
+                            table_columns_meta[tbl].append({
+                                "name": c_name,
+                                "type": "",
+                                "is_pk": False,
+                                "label": catalog_label_map.get(f"{tbl}.{c_lower}", "") or c_name,
+                                "is_masked": (
+                                    c_lower in masked_columns
+                                    or column_perm_map.get(f"{tbl}.{c_lower}") == "MASKED"
+                                ),
+                            })
 
-            tbl_syns = catalog_synonyms_map.get(f"{tbl}.*", "")
+            tbl_syns = cls._sanitize_prompt_text(
+                catalog_synonyms_map.get(f"{tbl}.*", ""), 120
+            )
             tbl_header = f"Tabla `{tbl}`" + (f" (Sinónimos: {tbl_syns})" if tbl_syns else "")
             if col_lines:
                 schema_text_lines.append(cls._render_table_as_ddl(tbl, tbl_syns, col_lines))
@@ -633,6 +684,17 @@ class DynamicSchemaPruningService:
         for entry in catalog_entries:
             if not entry.business_formula:
                 continue
+            # CLS: una formula puede nombrar una columna BLOCKED aunque el DDL
+            # ya la haya omitido. Si no se filtra aca, el prompt le devuelve al
+            # modelo el nombre y la expresion de la columna que el rol no puede
+            # leer, y la "defensa en profundidad" queda a medias.
+            if entry.column_name:
+                entry_col = entry.column_name.lower()
+                if (
+                    entry_col in blocked_columns
+                    or column_perm_map.get(f"{entry.table_name.lower()}.{entry_col}") == "BLOCKED"
+                ):
+                    continue
             form_clean = entry.business_formula.strip()
             form_lower = form_clean.lower()
             if form_lower in cls.NON_FORMULAS:
@@ -664,6 +726,8 @@ class DynamicSchemaPruningService:
             "allowed_tables": allowed_tables,
             "blocked_columns": blocked_columns,
             "masked_columns": masked_columns,
+            "table_columns": table_columns_meta,
+            "table_labels": table_labels,
         }
         # La key lleva `q_norm` (el texto de la pregunta), o sea que hay una
         # entrada DISTINTA por cada pregunta que se ha hecho. Con solo TTL y

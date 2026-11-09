@@ -1,4 +1,5 @@
 from typing import List, Set, Dict, Tuple, Optional, Any
+import re
 from sqlglot import exp, parse_one
 from app.core.config import settings
 from app.core.logging import logger
@@ -105,6 +106,29 @@ class ASTValidator:
         getattr(exp, name) for name in ("Bracket",) if hasattr(exp, name)
     )
 
+    # Un `;` antes de una clausula de la MISMA sentencia es ruido de formato
+    # del modelo (visto con Qwen: `... CURRENT_DATE);\nLIMIT 1000;`). No es un
+    # segundo statement y no debe convertir una consulta valida en un rechazo
+    # RBAC. Lo que sigue a `;` debe ser una clausula, nunca SELECT/DROP/etc.
+    _BENIGN_SEMICOLON_BEFORE_CLAUSE = re.compile(
+        r";\s*(?=(?:LIMIT|OFFSET|FETCH|ORDER\s+BY|GROUP\s+BY|HAVING|UNION|"
+        r"INTERSECT|EXCEPT|WHERE|WINDOW|JOIN|LEFT|RIGHT|INNER|FULL|CROSS|ON)\b)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def normalize_single_statement_sql(cls, sql: str) -> str:
+        """Quita separadores de formato que no convierten el SQL en multi-statement.
+
+        No reemplaza al parser: solo elimina un `;` cuando lo que sigue es una
+        clausula de la misma consulta, y los `;` finales. Un intento real de
+        encadenar `; DROP TABLE ...` no matchea y sigue siendo rechazado por
+        `_parse_and_validate_readonly_query`.
+        """
+        text = (sql or "").strip()
+        text = cls._BENIGN_SEMICOLON_BEFORE_CLAUSE.sub(" ", text)
+        return text.rstrip(";").strip()
+
     @classmethod
     def validate_and_secure_sql(
         cls,
@@ -133,6 +157,7 @@ class ASTValidator:
         ningun efecto sobre el. Resolverlo aqui lo lee en cada llamada.
         """
         max_limit = settings.DEFAULT_ROW_LIMIT if max_limit is None else max_limit
+        raw_sql = cls.normalize_single_statement_sql(raw_sql)
         expression, sqlglot_dialect = cls._parse_and_validate_readonly_query(
             raw_sql, dialect
         )
@@ -712,7 +737,7 @@ class ASTValidator:
             raise ASTValidationError(
                 "Seguridad: No se puede expandir 'SELECT *' porque no hay información de columnas "
                 "disponible para esta conexión. Escribe las columnas explícitas "
-                "(ej. SELECT id, monto FROM fact_ventas) o pide al administrador que publique el catálogo."
+                "(ej. SELECT id, monto FROM tu_tabla) o pide al administrador que publique el catálogo."
             )
 
         if expression.find(exp.Star) is None:

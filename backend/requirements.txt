@@ -7,7 +7,10 @@ python-multipart>=0.0.19
 
 # Database ORM & SQL AST Parsing
 sqlalchemy>=2.0.36
-sqlglot>=25.30.0
+# `sqlglot` es el parser del guardrail de solo lectura. Un upgrade de rango
+# menor puede cambiar qué acepta o rechaza el AST, así que se fija la versión
+# exacta y cualquier subida pasa por la suite de AST (test_ast_*.py).
+sqlglot==30.21.0
 
 # Database Drivers (Pre-compiled Universal Binary Wheels)
 psycopg[binary]>=3.2.3
@@ -15,7 +18,10 @@ psycopg[binary]>=3.2.3
 # Security & Authentication
 cryptography>=44.0.0
 bcrypt>=4.0.1,<4.1.0
-python-jose[cryptography]>=3.3.0
+# PyJWT y no python-jose: `pip-audit` reporta PYSEC-2026-4298 en
+# python-jose 3.5.0 y PYSEC-2026-1325 en su dependencia ecdsa, y no hay
+# version corregida. Solo usamos HS256, que PyJWT cubre sin ecdsa.
+PyJWT>=2.10.0,<3.0.0
 
 # HTTP Client (Local LLM - Ollama / LM Studio)
 httpx>=0.28.0

@@ -95,7 +95,10 @@ class TestDynamicPrompts(unittest.TestCase):
             # prompt no pide cifras y el JSON de prueba no trae ninguna.
             self.assertEqual(result["kpis"][0].value, "$1,500,000.00")
             self.assertEqual(result["kpis"][1].value, "$1,500,000.00")
-            self.assertEqual(result["executive_report"].risk_level, "BAJO")
+            # El riesgo lo decide el backend, no el JSON del modelo. Una sola
+            # fila no alcanza para medir concentración: None, no "BAJO".
+            self.assertIsNone(result["executive_report"].risk_level)
+            self.assertIsNone(result["executive_report"].business_impact)
             self.assertEqual(len(result["suggested_questions"]), 3)
 
         # Tier 3: LLM responde solo con texto plano/markdown en vez de JSON
@@ -115,6 +118,39 @@ class TestDynamicPrompts(unittest.TestCase):
             self.assertEqual(result["narrative"], tier3_raw_text)
             self.assertIsNone(result["kpis"])
             self.assertIsNone(result["executive_report"])
+
+    def test_el_riesgo_del_modelo_se_ignora_y_gana_el_determinista(self):
+        """El JSON puede decir BAJO; con 75% de concentración el backend dice ALTO."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from app.modules.chat_engine.kpi_calculator import KPICalculator
+
+        respuesta = """{
+            "narrative": "La entidad principal concentra el resultado.",
+            "kpis": [],
+            "executive_report": {
+                "overview": "Composición del resultado.",
+                "key_findings": ["Concentración observada."],
+                "recommendations": ["Revisar la dependencia."],
+                "risk_level": "BAJO",
+                "business_impact": "Escenario inventado."
+            },
+            "suggested_questions": ["¿Cómo evoluciona?", "¿Qué categorías hay?", "¿Cuál es el total?"]
+        }"""
+        rows = [{"monto": 75}, {"monto": 10}, {"monto": 10}, {"monto": 5}]
+        with patch("app.modules.chat_engine.llm_service.LLMService.generate_completion", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = respuesta
+            result = asyncio.run(KPICalculator.generate_unified_synthesis_with_llm(
+                question="¿Cómo se concentran las ventas?",
+                user_role="Economista",
+                rows=rows,
+                columns=["monto"],
+                secured_sql="SELECT monto FROM fact_ventas",
+                is_llm_active=True,
+            ))
+
+        self.assertEqual(result["executive_report"].risk_level, "ALTO")
+        self.assertIsNone(result["executive_report"].business_impact)
 
 if __name__ == "__main__":
     unittest.main()

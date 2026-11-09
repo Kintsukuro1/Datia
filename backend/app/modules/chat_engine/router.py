@@ -34,11 +34,12 @@ from app.modules.chat_engine.schemas import (
 )
 from app.modules.chat_engine import forecast_service
 from app.modules.chat_engine.engine import QueryEngine
+from app.modules.chat_engine.response_builder import ResponseBuilder
 from app.modules.chat_engine.sql_executor import SQLExecutor
 from app.modules.chat_engine.llm_service import LLMService, resolve_user_llm_config
 from app.modules.chat_engine.llm_diagnostic_router import llm_diagnostic_router
 
-from app.core.constants import ADMIN_ROLES, ROLE_ADMINISTRADOR
+from app.core.constants import ADMIN_ROLES
 from app.core.database import discard_failed_transaction
 from app.core.security import mask_query_rows
 from app.modules.chat_engine.ast_validator import ASTValidator, ASTValidationError
@@ -62,7 +63,24 @@ def _resolve_target_database(db: Session, connection_id: int) -> str:
         # despues en esta request (`QueryEngine.execute_query`) fallara con
         # `InFailedSqlTransaction`, blaming a una etiqueta de auditoria.
         discard_failed_transaction(db)
-    return "demo_corporativa.db"
+    return "sin_conexion"
+
+
+def _resolve_chat_connection(
+    db: Session, requested_id: Optional[int]
+) -> Optional[CorporateConnection]:
+    """Conexión del chat: explícita, o la ACTIVA; nunca "la última" por default.
+
+    `SchemaInspector.default_connection` cae a la última conexión aunque esté
+    inactiva. Ese fallback es útil para metadata, pero en el chat convertía
+    "no hay fuente activa" en una consulta silenciosa a otra base. Sin id
+    explícito, acá solo cuenta una conexión encendida.
+    """
+    if requested_id is not None:
+        # Un id explícito inexistente sigue siendo 404, no un fallback.
+        return SchemaInspector.resolve_connection(db, requested_id)
+    return SchemaInspector.active_connection(db)
+
 
 # `_persist_audit_log` y `_require_assigned_role` viven en `app.api.deps` y se
 # importan arriba: son el piso comun de los endpoints que tocan datos corporativos,
@@ -93,6 +111,7 @@ def _audit_response(
     user_role: str,
     question_prompt: str,
     target_database: str,
+    connection_id: Optional[int] = None,
 ) -> None:
     """Persiste la auditoria de una respuesta y le estampa su id.
 
@@ -114,6 +133,11 @@ def _audit_response(
         (v_status or "").startswith("RECHAZADO") or response.response_type == "error"
     ) else None
 
+    # Estampar la conexión ANTES del snapshot y del JSON de respuesta: el
+    # frontend la usa para feedback/pin/golden, y el snapshot debe poder
+    # reproducir sobre qué base se ejecutó.
+    response.connection_id = connection_id
+
     try:
         snapshot_json = response.model_dump_json()
     except Exception:
@@ -131,7 +155,9 @@ def _audit_response(
         execution_time_ms=exec_time,
         rows_returned=rows_ret,
         error_message=err_msg,
-        result_snapshot=snapshot_json
+        result_snapshot=snapshot_json,
+        # Camino que devuelve filas del cliente: sin auditoria no hay respuesta.
+        required=True,
     )
 
     if audit_id:
@@ -152,11 +178,34 @@ async def process_chat_query(
     Persists audit log of approval or rejection with result snapshot.
     """
     request_llm_base_url, request_llm_model = _request_llm_config(query_in)
-    conn_id = query_in.connection_id or 1
-    target_db_name = _resolve_target_database(db, conn_id)
+    conn_record = _resolve_chat_connection(db, query_in.connection_id)
+    target_db_name = conn_record.name if conn_record else "sin_conexion"
     user_role_name = _require_assigned_role(
         current_user, db, query_in.question, target_db_name
     )
+
+    if conn_record is None:
+        # Sin fuente activa no hay nada que consultar. La respuesta es el
+        # diagnóstico explícito, no un intento contra la demo.
+        state, activate = QueryEngine._diagnose_empty_visibility(
+            db, query_in.connection_id, current_user.is_admin
+        )
+        response = ResponseBuilder.build_visibility_diagnostic_response(
+            query_in.question, user_role_name, state, activate
+        )
+        _audit_response(
+            db=db,
+            response=response,
+            user_id=current_user.id,
+            username=current_user.username,
+            user_role=user_role_name,
+            question_prompt=query_in.question,
+            target_database=target_db_name,
+            connection_id=query_in.connection_id,
+        )
+        return response
+
+    conn_id = conn_record.id
 
     try:
         # La config LLM viaja por ContextVar alrededor de TODO el motor: sus
@@ -181,7 +230,8 @@ async def process_chat_query(
             username=current_user.username,
             user_role=user_role_name,
             question_prompt=query_in.question,
-            target_database=target_db_name
+            target_database=target_db_name,
+            connection_id=conn_id,
         )
 
         return response
@@ -241,18 +291,26 @@ async def process_chat_query_stream(
     que si los soporta. Un JWT en la URL quedaria en los logs del servidor y en
     el historial del navegador; no hace falta.
     """
-    conn_id = query_in.connection_id or 1
     # Validar ANTES de abrir el stream: adentro del generador las cabeceras ya
-    # se enviaron. Un id explicito inexistente tiene que ser un 404 HTTP, no un
-    # evento `error` que el cliente confunde con "el servidor se cayo".
-    SchemaInspector.resolve_connection(db, conn_id)
+    # se enviaron. Un id explícito inexistente tiene que ser 404; la ausencia de
+    # una fuente ACTIVA también tiene que ser HTTP, no un stream vacío.
+    conn_record = _resolve_chat_connection(db, query_in.connection_id)
+    if conn_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "No hay ninguna conexión de datos activa. "
+                "Activá una fuente desde Administración antes de consultar."
+            ),
+        )
+    conn_id = conn_record.id
     request_llm_base_url, request_llm_model = _request_llm_config(query_in)
     # Antes de abrir el stream: el corte de rol tiene que ser un 403 HTTP de
     # verdad. Adentro del generador las cabeceras ya se enviaron y un rechazo
     # solo puede viajar como evento `error`, que el cliente no distingue de
     # "el servidor se cayo".
     user_role_name = _require_assigned_role(
-        current_user, db, query_in.question, _resolve_target_database(db, conn_id)
+        current_user, db, query_in.question, conn_record.name
     )
 
     # Los datos del usuario y la sesion se leen ANTES de abrir el stream. Durante
@@ -301,7 +359,8 @@ async def process_chat_query_stream(
                     username=username,
                     user_role=user_role_name,
                     question_prompt=query_in.question,
-                    target_database=target_db_name
+                    target_database=target_db_name,
+                    connection_id=conn_id,
                 )
 
                 await queue.put(("result", response))
@@ -396,8 +455,14 @@ async def run_prediction(
     con 3 puntos no es una aproximacion: es una cifra con mas decimales que
     evidencia.
     """
-    conn_id = payload.connection_id or 1
-    target_db_name = _resolve_target_database(db, conn_id)
+    conn_record = _resolve_chat_connection(db, payload.connection_id)
+    if conn_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No hay ninguna conexión de datos activa para predecir.",
+        )
+    conn_id = conn_record.id
+    target_db_name = conn_record.name
 
     # --- Gate 1: la cuenta no tiene ningun rol asignado.
     # `/predict` genera el SQL por código, pero lee la misma base corporativa que
@@ -638,7 +703,7 @@ async def get_dynamic_suggestions(
     # `allowed_tables=None`, y asi sigue.
     role_name = _require_assigned_role(
         current_user, db, "Sugerencias: GET /chat/suggestions",
-        _resolve_target_database(db, effective_conn_id) if effective_conn_id else "demo_corporativa.db",
+        _resolve_target_database(db, effective_conn_id) if effective_conn_id else "sin_conexion",
     )
     is_admin = current_user.is_admin or role_name in ADMIN_ROLES
 
@@ -651,6 +716,8 @@ async def get_dynamic_suggestions(
     )
 
     schema_prompt = ""
+    table_columns = {}
+    table_labels = {}
     try:
         from app.modules.chat_engine.dynamic_schema import DynamicSchemaPruningService
         s_info = DynamicSchemaPruningService.get_authorized_schema_prompt(
@@ -661,6 +728,8 @@ async def get_dynamic_suggestions(
             connection_id=effective_conn_id
         )
         schema_prompt = s_info.get("schema_prompt", "")
+        table_columns = s_info.get("table_columns") or {}
+        table_labels = s_info.get("table_labels") or {}
     except Exception:
         # Sin prompt de esquema las sugerencias siguen siendo genericas: ese es el
         # best-effort. La sesion, en cambio, tiene que quedar limpia.
@@ -669,13 +738,20 @@ async def get_dynamic_suggestions(
     suggestions = await QueryEngine.get_dynamic_suggestions_with_llm(
         user_role=role_name,
         allowed_tables=allowed_tables,
-        schema_prompt=schema_prompt
+        schema_prompt=schema_prompt,
+        table_columns=table_columns,
+        table_labels=table_labels,
+    )
+    builder_tables = (
+        QueryEngine.build_builder_options(table_columns, table_labels)
+        if table_columns else []
     )
 
     return SuggestionsResponse(
         user_role=role_name,
         allowed_tables=list(allowed_tables),
-        suggestions=suggestions
+        suggestions=suggestions,
+        builder={"tables": builder_tables} if builder_tables else None
     )
 
 # =========================================================================
@@ -869,7 +945,7 @@ def list_chat_threads(
         summaries.append(ChatThreadSummary(
             id=t.id,
             title=t.title,
-            connection_id=t.connection_id or 1,
+            connection_id=t.connection_id,
             message_count=msg_count,
             updated_at=t.updated_at.isoformat() if t.updated_at else ""
         ))
@@ -895,7 +971,7 @@ def get_chat_thread(
     return ChatThreadDetail(
         id=thread.id,
         title=thread.title,
-        connection_id=thread.connection_id or 1,
+        connection_id=thread.connection_id,
         results=results,
         created_at=thread.created_at.isoformat() if thread.created_at else "",
         updated_at=thread.updated_at.isoformat() if thread.updated_at else ""
@@ -929,7 +1005,15 @@ def get_shared_chat_thread(
         # 404 y no 403: no revelamos si el hilo existe pero es privado.
         raise HTTPException(status_code=404, detail="Hilo de conversación no encontrado")
 
-    connection_id = thread.connection_id or 1
+    if thread.connection_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Este hilo compartido no tiene una conexión de datos asociada; "
+                "no se puede revalidar contra la fuente correcta."
+            ),
+        )
+    connection_id = thread.connection_id
     target_database = _resolve_target_database(db, connection_id)
     role_name = _require_assigned_role(
         current_user,
@@ -997,6 +1081,13 @@ def save_chat_thread(
     db: Session = Depends(get_db)
 ) -> Any:
     """Creates or updates a persistent chat thread with its full results stream."""
+    conn_record = _resolve_chat_connection(db, thread_in.connection_id)
+    if conn_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No hay ninguna conexión de datos activa para asociar el hilo.",
+        )
+    connection_id = conn_record.id
     # Query by (id, user_id): el id lo elige el cliente, asi que buscar solo por id
     # permitia que un usuario enviara el id de un hilo ajeno, lo sobreescribiera y
     # además se quedara con el (`thread.user_id = current_user.id` de abajo).
@@ -1013,18 +1104,22 @@ def save_chat_thread(
 
     if thread:
         thread.title = thread_in.title
-        thread.connection_id = thread_in.connection_id or 1
+        thread.connection_id = connection_id
         thread.messages_json = msgs_json
-        thread.is_shared = bool(getattr(thread_in, "is_shared", False))
+        # Solo tocar la visibilidad si el cliente la envio. Un save de mensajes
+        # (`is_shared` ausente/None) no puede convertir un hilo compartido en
+        # privado como efecto colateral.
+        if thread_in.is_shared is not None:
+            thread.is_shared = bool(thread_in.is_shared)
         thread.updated_at = utcnow_naive()
     else:
         thread = ChatConversation(
             id=thread_in.id,
             user_id=current_user.id,
             title=thread_in.title,
-            connection_id=thread_in.connection_id or 1,
+            connection_id=connection_id,
             messages_json=msgs_json,
-            is_shared=bool(getattr(thread_in, "is_shared", False)),
+            is_shared=bool(thread_in.is_shared) if thread_in.is_shared is not None else False,
             created_at=utcnow_naive(),
             updated_at=utcnow_naive()
         )
@@ -1047,9 +1142,10 @@ def save_chat_thread(
         ).first()
         if thread:
             thread.title = thread_in.title
-            thread.connection_id = thread_in.connection_id or 1
+            thread.connection_id = connection_id
             thread.messages_json = msgs_json
-            thread.is_shared = bool(getattr(thread_in, "is_shared", False))
+            if thread_in.is_shared is not None:
+                thread.is_shared = bool(thread_in.is_shared)
             thread.updated_at = utcnow_naive()
             db.commit()
 
@@ -1064,7 +1160,7 @@ def save_chat_thread(
     return ChatThreadDetail(
         id=thread.id,
         title=thread.title,
-        connection_id=thread.connection_id or 1,
+        connection_id=thread.connection_id,
         results=thread_in.results,
         created_at=thread.created_at.isoformat() if thread.created_at else "",
         updated_at=thread.updated_at.isoformat() if thread.updated_at else ""
@@ -1140,6 +1236,8 @@ def submit_query_feedback(
     """
     learning_saved = False
     is_positive = feedback_in.rating.lower() == "positive"
+    conn_record = _resolve_chat_connection(db, feedback_in.connection_id)
+    connection_id = conn_record.id if conn_record else None
 
     # `QueryLearningMemory` es un recurso COMPARTIDO por conexion: `sql_executor`
     # lo inyecta en el prompt de todos los usuarios de esa conexion (tag
@@ -1171,20 +1269,27 @@ def submit_query_feedback(
             AuditLog.user_id == current_user.id,
         ).first()
         if audit:
-            label = "[CALIFICADO_POSITIVO]" if is_positive else "[CALIFICADO_NEGATIVO]"
-            if label not in (audit.validation_status or ""):
-                audit.validation_status = f"{audit.validation_status or ''} {label}".strip()
+            # Append-only: el feedback va a SUS columnas. No se reescribe
+            # `validation_status` ni `error_message`, que son la evidencia de
+            # compliance de la consulta original.
+            audit.feedback_rating = "positive" if is_positive else "negative"
             if feedback_in.comment:
-                audit.error_message = f"{audit.error_message or ''} (Feedback: {feedback_in.comment})".strip()
+                audit.feedback_comment = feedback_in.comment[:4000]
             db.commit()
 
     # 2. If positive and SQL is present, strengthen learning memory.
     # Gate por rol: la memoria es compartida (ver nota arriba). Un no-admin puede
     # calificar su consulta pero no escribir SQL en el prompt de los demas.
-    if is_positive and is_admin_user and feedback_in.sql and feedback_in.question:
+    if (
+        connection_id is not None
+        and is_positive
+        and is_admin_user
+        and feedback_in.sql
+        and feedback_in.question
+    ):
         clean_q = feedback_in.question.strip().lower()
         existing_mem = db.query(QueryLearningMemory).filter(
-            QueryLearningMemory.connection_id == feedback_in.connection_id,
+            QueryLearningMemory.connection_id == connection_id,
             QueryLearningMemory.question_pattern == clean_q
         ).first()
 
@@ -1196,7 +1301,7 @@ def submit_query_feedback(
         else:
             new_mem = QueryLearningMemory(
                 question_pattern=clean_q,
-                connection_id=feedback_in.connection_id,
+                connection_id=connection_id,
                 user_role=current_user.role.name if current_user.role else "Usuario",
                 successful_sql=feedback_in.sql,
                 execution_count=5,
@@ -1231,9 +1336,16 @@ def toggle_golden_query(
     pisar la golden query curada por el admin y suplantarla con un SQL propio, que
     despues `sql_executor` le inyecta a todos los usuarios de la conexion.
     """
+    conn_record = _resolve_chat_connection(db, item_in.connection_id)
+    if conn_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No hay ninguna conexión de datos activa para asociar la consulta maestra.",
+        )
+    connection_id = conn_record.id
     clean_q = item_in.question.strip().lower()
     mem = db.query(QueryLearningMemory).filter(
-        QueryLearningMemory.connection_id == item_in.connection_id,
+        QueryLearningMemory.connection_id == connection_id,
         QueryLearningMemory.question_pattern == clean_q
     ).first()
     if mem:
@@ -1242,7 +1354,7 @@ def toggle_golden_query(
     else:
         mem = QueryLearningMemory(
             question_pattern=clean_q,
-            connection_id=item_in.connection_id,
+            connection_id=connection_id,
             user_role=current_admin.role.name if current_admin.role else "Usuario",
             successful_sql=item_in.sql,
             execution_count=10,
@@ -1256,7 +1368,7 @@ def toggle_golden_query(
 
 @router.get("/golden-queries", response_model=GoldenQueryList)
 def list_golden_queries(
-    connection_id: int = Query(1, description="La memoria es compartida por conexion"),
+    connection_id: Optional[int] = Query(None, description="La memoria es compartida por conexion"),
     current_admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ) -> Any:
@@ -1271,6 +1383,14 @@ def list_golden_queries(
     El filtro por `connection_id` es el aislamiento: lo que se aprendio de una base
     no se inyecta en otra, asi que tampoco se lista junto.
     """
+    if connection_id is None:
+        active = SchemaInspector.active_connection(db)
+        if active is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No hay ninguna conexión de datos activa para listar la memoria.",
+            )
+        connection_id = active.id
     rows = db.query(QueryLearningMemory).filter(
         QueryLearningMemory.connection_id == connection_id
     ).order_by(
@@ -1366,10 +1486,16 @@ def pin_dashboard_widget(
     db: Session = Depends(get_db)
 ) -> Any:
     """Pins a new analytics widget to the user's executive dashboard."""
+    conn_record = _resolve_chat_connection(db, widget_in.connection_id)
+    if conn_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No hay ninguna conexión de datos activa para fijar el tablero.",
+        )
     new_widget = DashboardWidget(
         user_id=current_user.id,
         title=widget_in.title,
-        connection_id=widget_in.connection_id or 1,
+        connection_id=conn_record.id,
         chart_type=widget_in.chart_type,
         chart_option_json=widget_in.chart_option_json,
         kpis_json=widget_in.kpis_json,

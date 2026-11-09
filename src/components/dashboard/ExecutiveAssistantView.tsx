@@ -2,13 +2,14 @@ import React from 'react';
 import { QueryResult } from '../../types';
 import { AssistantHeader } from '../../features/dashboard/components/assistant/AssistantHeader';
 import { AssistantMarkdownBody } from '../../features/dashboard/components/assistant/AssistantMarkdownBody';
-import { ShieldCheck, AlertTriangle, HelpCircle, Sparkles, Trash2, BarChart3, MapPin } from 'lucide-react';
+import { ShieldCheck, AlertTriangle, Sparkles, Trash2, BarChart3, MapPin, FileText, Table } from 'lucide-react';
 import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 
 interface ExecutiveAssistantViewProps {
   result: QueryResult;
   onOpenTraceability?: () => void;
   onSwitchToStudio?: () => void;
+  onSwitchToTable?: () => void;
   onFollowUp?: (prompt: string) => void;
 }
 
@@ -16,6 +17,7 @@ export const ExecutiveAssistantView: React.FC<ExecutiveAssistantViewProps> = ({
   result,
   onOpenTraceability,
   onSwitchToStudio,
+  onSwitchToTable,
   onFollowUp,
 }) => {
   const { copied, copy } = useCopyFeedback();
@@ -27,10 +29,34 @@ export const ExecutiveAssistantView: React.FC<ExecutiveAssistantViewProps> = ({
   };
 
   const canSwitchToStudio = Boolean(
-    result.chart_type &&
-    result.chart_type !== 'none' &&
-    result.data_rows &&
-    result.data_rows.length > 0
+    (result.kpis && result.kpis.length > 0) ||
+    (result.chart_type && result.chart_type !== 'none' && result.chart_option)
+  );
+
+  const actionOptions = React.useMemo(() => {
+    const seen = new Set<string>();
+    const all = [
+      ...(result.clarification_options || []),
+      ...(result.suggested_questions || []),
+    ];
+    return all
+      .map((q) => (q || '').trim())
+      .filter((q) => {
+        const key = q.toLowerCase();
+        if (!q || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 6);
+  }, [result.clarification_options, result.suggested_questions]);
+
+  const canGenerateReport = Boolean(
+    onFollowUp &&
+    !result.executive_report &&
+    !result.nulls_detected?.has_nulls &&
+    ['data_analysis', 'report', 'hybrid', 'advisory', 'explanation'].includes(
+      result.response_type || ''
+    )
   );
 
   return (
@@ -119,37 +145,15 @@ export const ExecutiveAssistantView: React.FC<ExecutiveAssistantViewProps> = ({
           </div>
         )}
 
-        {/* Proactive Ambiguity Clarification Chips (#5) */}
-        {result.clarification_options && result.clarification_options.length > 0 && (
-          <div className="pt-2 space-y-1.5 border-t border-slate-200/60 dark:border-dark-border/60">
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
-              <HelpCircle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-              <span>Opciones de aclaración rápida:</span>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {result.clarification_options.map((opt, idx) => (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => onFollowUp?.(opt)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-500/10 hover:bg-amber-500/20 text-amber-900 dark:text-amber-200 border border-amber-500/30 hover:border-amber-500/50 transition-all text-left shadow-2xs"
-                >
-                  {opt}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Next Best Questions Chips (#19) */}
-        {result.suggested_questions && result.suggested_questions.length > 0 && (
+        {/* Acciones conversacionales: una sola lista, estilo ChatGPT/Claude */}
+        {actionOptions.length > 0 && (
           <div className="pt-2 space-y-1.5 border-t border-slate-200/60 dark:border-dark-border/60">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-brand-800 dark:text-brand-300">
               <Sparkles className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />
-              <span>Preguntas sugeridas de profundización:</span>
+              <span>¿Qué querés analizar ahora?</span>
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {result.suggested_questions.map((q, idx) => (
+              {actionOptions.map((q, idx) => (
                 <button
                   key={idx}
                   type="button"
@@ -160,6 +164,33 @@ export const ExecutiveAssistantView: React.FC<ExecutiveAssistantViewProps> = ({
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Acciones de segundo nivel: el informe se pide a demanda y la tabla
+            ya viene en la respuesta, asi que no gastan una sintesis extra. */}
+        {(canGenerateReport || (onSwitchToTable && result.data_rows && result.data_rows.length > 0)) && (
+          <div className="flex flex-wrap gap-2 pt-1">
+            {canGenerateReport && (
+              <button
+                type="button"
+                onClick={() => onFollowUp?.('Genera un informe ejecutivo de esta consulta.')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-dark-base dark:hover:bg-dark-card text-slate-700 dark:text-gray-300 border border-slate-300 dark:border-dark-border transition-all shadow-2xs"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Generar informe ejecutivo</span>
+              </button>
+            )}
+            {onSwitchToTable && result.data_rows && result.data_rows.length > 0 && (
+              <button
+                type="button"
+                onClick={onSwitchToTable}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-dark-base dark:hover:bg-dark-card text-slate-700 dark:text-gray-300 border border-slate-300 dark:border-dark-border transition-all shadow-2xs"
+              >
+                <Table className="w-3.5 h-3.5" />
+                <span>Ver tabla ({result.data_rows.length})</span>
+              </button>
+            )}
           </div>
         )}
 

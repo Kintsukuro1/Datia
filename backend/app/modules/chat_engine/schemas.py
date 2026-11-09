@@ -15,7 +15,9 @@ MAX_HISTORY_TURNS = 20
 
 class QueryRequest(BaseModel):
     question: str = Field(..., max_length=MAX_QUESTION_CHARS)
-    connection_id: int = 1
+    # `None` = "la fuente activa". Un default `1` mandaba a la demo cuando el
+    # cliente omitía el id, aunque hubiera otra conexión activa.
+    connection_id: Optional[int] = None
     session_id: Optional[str] = None
     user_role: Optional[str] = "Economista"
     conversation_history: Optional[List[Dict[str, Any]]] = Field(
@@ -38,7 +40,9 @@ class ExecutiveReport(BaseModel):
     overview: str
     key_findings: List[str] = []
     recommendations: List[str] = []
-    risk_level: Optional[str] = "BAJO" # BAJO | MEDIO | ALTO | CRITICO
+    # None = no hay concentración medible. No se degrada a "BAJO": "sin dato"
+    # no es "riesgo bajo". El backend lo calcula; el modelo no lo decide.
+    risk_level: Optional[str] = None # BAJO | MEDIO | ALTO | CRITICO | None
     business_impact: Optional[str] = None
 
 class ForecastCard(BaseModel):
@@ -108,7 +112,7 @@ class PredictionRequest(BaseModel):
     suma latencia a una consulta que solo queria el forecast. Se pide explicita.
     """
     question: Optional[str] = None
-    connection_id: int = 1
+    connection_id: Optional[int] = None
     include_forecast: bool = True
     include_retention: bool = True
     include_data_quality: bool = False
@@ -160,6 +164,9 @@ class PresentationHints(BaseModel):
 class QueryResponse(BaseModel):
     question: str
     summary_text: str
+    # Conexión REAL sobre la que se ejecutó. El frontend la usa para feedback,
+    # golden y pin; antes caía a `1` y podía escribir en otra fuente.
+    connection_id: Optional[int] = None
     executive_report: Optional[ExecutiveReport] = None
     kpis: List[KPICard] = []
     chart_type: str = "bar" # bar | line | area | pie | donut | none
@@ -187,30 +194,57 @@ class QueryResponse(BaseModel):
     # otro perfil: el boton seria un rechazo guaranteed del backend.
     activate_connection_action: Optional[Dict[str, Any]] = None
 
+class BuilderMetric(BaseModel):
+    column: Optional[str] = None
+    label: str
+    aggregate: str = "sum"
+
+class BuilderColumn(BaseModel):
+    name: str
+    label: str
+    type: str = ""
+
+class BuilderTable(BaseModel):
+    name: str
+    label: str
+    metrics: List[BuilderMetric] = []
+    dimensions: List[BuilderColumn] = []
+    dates: List[BuilderColumn] = []
+
+class BuilderOptions(BaseModel):
+    tables: List[BuilderTable] = []
+
 class SuggestionsResponse(BaseModel):
     user_role: Optional[str] = None
     allowed_tables: Optional[List[str]] = None
     suggestions: List[str] = []
+    # Opciones reales (tabla/columna/tipo) para el Smart Builder. Se derivan de
+    # la misma introspeccion que el prompt del LLM y respetan BLOCKED/MASKED.
+    builder: Optional[BuilderOptions] = None
 
 class ChatThreadCreate(BaseModel):
     id: str
     title: str
-    connection_id: Optional[int] = 1
+    # `None` = la conexión activa al momento de guardar. El hilo guarda el id
+    # resuelto para que su lectura no dependa de cuál esté activa después.
+    connection_id: Optional[int] = None
     results: List[Dict[str, Any]] = []
-    # Opt-in explicito: sin esto el hilo es privado y /threads/shared/{id} responde 404.
-    is_shared: bool = False
+    # Opt-in explicito. `None` = el cliente no habla de visibilidad: un update
+    # comun (agregar un mensaje) NO debe descompartir un hilo ya compartido.
+    # `False` sigue siendo un opt-out explicito.
+    is_shared: Optional[bool] = None
 
 class ChatThreadSummary(BaseModel):
     id: str
     title: str
-    connection_id: Optional[int] = 1
+    connection_id: Optional[int] = None
     message_count: int
     updated_at: str
 
 class ChatThreadDetail(BaseModel):
     id: str
     title: str
-    connection_id: Optional[int] = 1
+    connection_id: Optional[int] = None
     results: List[Dict[str, Any]] = []
     created_at: str
     updated_at: str
@@ -219,7 +253,7 @@ class ChatFeedbackRequest(BaseModel):
     audit_log_id: Optional[int] = None
     question: str
     sql: Optional[str] = None
-    connection_id: int = 1
+    connection_id: Optional[int] = None
     rating: str  # positive | negative
     comment: Optional[str] = None
     is_golden: Optional[bool] = False
@@ -227,7 +261,7 @@ class ChatFeedbackRequest(BaseModel):
 class GoldenQueryRequest(BaseModel):
     question: str
     sql: str
-    connection_id: int = 1
+    connection_id: Optional[int] = None
     is_golden: bool = True
 
 class ChatFeedbackResponse(BaseModel):
@@ -258,7 +292,7 @@ class GoldenQueryList(BaseModel):
 
 class DashboardWidgetCreate(BaseModel):
     title: str
-    connection_id: Optional[int] = 1
+    connection_id: Optional[int] = None
     chart_type: str = "bar"
     chart_option_json: str
     kpis_json: Optional[str] = None
@@ -268,7 +302,7 @@ class DashboardWidgetOut(BaseModel):
     id: int
     user_id: int
     title: str
-    connection_id: Optional[int] = 1
+    connection_id: Optional[int] = None
     chart_type: str = "bar"
     chart_option_json: str
     kpis_json: Optional[str] = None
