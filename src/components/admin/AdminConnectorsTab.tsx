@@ -85,24 +85,14 @@ export const AdminConnectorsTab: React.FC<AdminConnectorsTabProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* Action 1: Import Local File (SQLite / Excel / CSV) */}
+          {/* Una sola entrada: el wizard ya deja elegir archivo o conexión remota. */}
           <button
             type="button"
             onClick={() => handleOpenWizard('file')}
             className="flex items-center space-x-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white font-bold px-4 py-2 rounded-xl shadow-sm transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             <UploadCloud className="w-4 h-4" />
-            <span>Importar Archivo (SQLite / Excel / CSV)</span>
-          </button>
-
-          {/* Action 2: Connect Remote DB (PostgreSQL) */}
-          <button
-            type="button"
-            onClick={() => handleOpenWizard('remote')}
-            className="flex items-center space-x-1.5 text-xs bg-app-card hover:bg-app-hover text-app-text border border-app-border font-bold px-4 py-2 rounded-xl transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500"
-          >
-            <Plus className="w-4 h-4 text-brand-500" />
-            <span>Conectar BD Remota (PostgreSQL)</span>
+            <span>Agregar fuente de datos</span>
           </button>
         </div>
       </div>
@@ -461,7 +451,7 @@ export const AdminConnectorsTab: React.FC<AdminConnectorsTabProps> = ({
         <div className="space-y-0.5 min-w-0">
           <span className="text-xs font-semibold text-app-text">Auto-extracción de metadatos asistida por IA</span>
           <p className="text-[11px] text-app-muted leading-relaxed">
-            Al importar una fuente, DATIA analiza el esquema (tablas, columnas y tipos detectados) y genera el catálogo semántico para que puedas consultar en lenguaje natural sin escribir SQL.
+            Al importar una fuente, Dat.ia analiza el esquema (tablas, columnas y tipos detectados) y genera el catálogo semántico para que puedas consultar en lenguaje natural sin escribir SQL.
           </p>
         </div>
       </div>

@@ -52,6 +52,9 @@ class UserAdminCreate(BaseModel):
     """
     username: str = Field(..., min_length=1, max_length=50)
     email: Optional[EmailStr] = None
+    # Nombre de la persona, para mostrarlo en la UI. El username sigue siendo
+    # la credencial y el identificador único.
+    full_name: Optional[str] = Field(None, max_length=120)
 
 class UserRoleUpdate(BaseModel):
     """
@@ -72,6 +75,7 @@ class UserOut(BaseModel):
     id: int
     username: str
     email: Optional[str] = None
+    full_name: Optional[str] = None
     is_admin: bool
     is_active: bool
     role_id: Optional[int] = None

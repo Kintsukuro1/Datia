@@ -165,6 +165,10 @@ jobs:
       POSTGRES_DB: democratizacion_metadatos
       ENVIRONMENT: development
       DEMO_MODE: "true"
+      # El selector de perfiles de prueba del login se gatea con esta variable.
+      # El backend de e2e ya corre con DEMO_MODE=true; el frontend tiene que
+      # acompañarlo o el test del selector no encuentra el desplegable.
+      VITE_DEMO_MODE: "true"
 
     services:
       postgres:

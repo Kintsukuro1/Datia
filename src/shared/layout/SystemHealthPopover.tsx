@@ -10,7 +10,6 @@ import {
   Wifi,
   HelpCircle,
 } from 'lucide-react';
-import { getProviderLabel } from '../../constants';
 import { SystemHealthResponse, ComponentHealth } from '../../types';
 
 interface SystemHealthPopoverProps {
@@ -23,6 +22,12 @@ interface SystemHealthPopoverProps {
   onToggle: () => void;
   onClose: () => void;
 }
+
+// El estado se sigue mostrando (era la función que se quería conservar), pero
+// sin nombres de motor, modelo ni latencias: el usuario final no necesita saber
+// que atrás hay Ollama.
+const statusLabel = (status?: string) =>
+  status === 'OPERATIVO' ? 'Disponible' : 'No disponible';
 
 export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
   status,
@@ -56,30 +61,27 @@ export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
         return {
           bg: 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-500/30 hover:bg-rose-500/25',
           icon: <AlertOctagon className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />,
-          label: 'LLM No Disponible',
+          label: 'Asistente no disponible',
         };
       case 'DEGRADADO':
         return {
           bg: 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/25',
           icon: <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />,
-          label: 'Sistema Degradado',
+          label: 'Asistente con problemas',
         };
-      case 'OPERATIVO': {
-        const provider = details?.llm_engine?.details?.provider;
-        const provLabel = getProviderLabel(typeof provider === 'string' ? provider : undefined);
+      case 'OPERATIVO':
         return {
           bg: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25',
           icon: <Wifi className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />,
-          label: `IA Local Activa (${provLabel})`,
+          label: 'Asistente disponible',
         };
-      }
       // Sin dato del backend: no se afirma que esté bien ni mal.
       case 'DESCONOCIDO':
       default:
         return {
           bg: 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/30 hover:bg-slate-500/25',
           icon: <HelpCircle className="w-3.5 h-3.5 text-slate-600 dark:text-slate-300" />,
-          label: 'Estado del Sistema Desconocido',
+          label: 'Estado desconocido',
         };
     }
   };
@@ -91,7 +93,7 @@ export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
       <button
         type="button"
         onClick={onToggle}
-        aria-label="Ver estado de salud del sistema"
+        aria-label="Ver estado del servicio"
         aria-expanded={isOpen}
         className={`flex items-center space-x-2 px-3 py-1 rounded-full border text-xs font-semibold transition-colors shadow-xs ${badgeUI.bg}`}
       >
@@ -118,16 +120,16 @@ export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
             <div>
               <h4 className="text-xs font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
                 <Server className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />
-                Estado General del Sistema
+                Estado del servicio
               </h4>
               <span className="text-[10px] text-slate-500 dark:text-gray-400">
-                Último chequeo: {lastChecked ? lastChecked.toLocaleTimeString() : 'Reciente'}
+                Actualizado: {lastChecked ? lastChecked.toLocaleTimeString() : 'hace un momento'}
               </span>
             </div>
             <button
               type="button"
               onClick={onClose}
-              aria-label="Cerrar detalles de salud"
+              aria-label="Cerrar el estado del servicio"
               className="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white p-1 rounded-lg transition-colors"
             >
               <X className="w-3.5 h-3.5" />
@@ -136,17 +138,12 @@ export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
 
           {/* Component breakdown */}
           <div className="space-y-2 text-xs">
-            {/* 1. LLM Engine */}
+            {/* 1. Asistente */}
             <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-dark-base border border-slate-200 dark:border-dark-border flex items-center justify-between">
               <div className="flex items-center space-x-2 min-w-0">
                 <Cpu className="w-4 h-4 text-purple-600 dark:text-purple-400 shrink-0" />
-                <div className="truncate">
-                  <div className="text-gray-900 dark:text-white font-medium truncate">
-                    {details?.llm_engine.name || 'Motor LLM'}
-                  </div>
-                  <div className="text-[10px] text-slate-500 dark:text-gray-400">
-                    {details?.llm_engine.latency_ms || 0} ms
-                  </div>
+                <div className="text-gray-900 dark:text-white font-medium truncate">
+                  Asistente
                 </div>
               </div>
               <span
@@ -156,21 +153,16 @@ export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
                     : 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-500/30'
                 }`}
               >
-                {details?.llm_engine.status || 'DESCONOCIDO'}
+                {statusLabel(details?.llm_engine.status)}
               </span>
             </div>
 
-            {/* 2. Metadata Database */}
+            {/* 2. Base interna */}
             <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-dark-base border border-slate-200 dark:border-dark-border flex items-center justify-between">
               <div className="flex items-center space-x-2 min-w-0">
                 <Database className="w-4 h-4 text-brand-600 dark:text-brand-400 shrink-0" />
-                <div className="truncate">
-                  <div className="text-gray-900 dark:text-white font-medium truncate">
-                    {details?.metadata_db.name || 'Base Metadatos (Datia)'}
-                  </div>
-                  <div className="text-[10px] text-slate-500 dark:text-gray-400">
-                    {details?.metadata_db.latency_ms || 0} ms
-                  </div>
+                <div className="text-gray-900 dark:text-white font-medium truncate">
+                  Base interna
                 </div>
               </div>
               <span
@@ -180,7 +172,7 @@ export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
                     : 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/30'
                 }`}
               >
-                {details?.metadata_db.status || 'DESCONOCIDO'}
+                {statusLabel(details?.metadata_db.status)}
               </span>
             </div>
 
@@ -188,7 +180,7 @@ export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
             {details?.corporate_connectors && details.corporate_connectors.length > 0 && (
               <div className="space-y-1 pt-1">
                 <div className="text-[10px] text-slate-600 dark:text-gray-400 font-semibold uppercase tracking-wider">
-                  Fuentes Corporativas Activas ({details.healthy_connectors_count}/{details.total_active_connectors})
+                  Bases conectadas ({details.healthy_connectors_count} de {details.total_active_connectors})
                 </div>
                 <div className="max-h-28 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
                   {details.corporate_connectors.map((c: ComponentHealth) => (
@@ -204,7 +196,7 @@ export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
                             : 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-500/30'
                         }`}
                       >
-                        {c.latency_ms} ms
+                        {statusLabel(c.status)}
                       </span>
                     </div>
                   ))}
@@ -222,7 +214,7 @@ export const SystemHealthPopover: React.FC<SystemHealthPopoverProps> = ({
               className="flex items-center space-x-1 text-xs text-brand-400 hover:text-brand-300 transition-colors"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-              <span>Actualizar Estado</span>
+              <span>Actualizar</span>
             </button>
           </div>
         </div>

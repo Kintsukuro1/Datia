@@ -6,6 +6,10 @@ export default defineConfig({
   testDir: './e2e',
   testMatch: '**/*.spec.ts',
   timeout: 60_000,
+  // Un worker: las pruebas de proyecciones llaman al LLM local y compiten por
+  // CPU. Con 3 workers el escenario de 120 pasos se quedaba sin turno y el
+  // test fallaba por timeout, no por producto.
+  workers: 1,
   use: {
     baseURL: 'http://127.0.0.1:5173',
     trace: 'retain-on-failure',

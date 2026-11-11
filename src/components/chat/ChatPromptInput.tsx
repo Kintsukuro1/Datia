@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Send, Database, Cpu, Wand2, X } from 'lucide-react';
+import { Send, Database, Wand2, X } from 'lucide-react';
 import type { BuilderColumn, BuilderMetric, BuilderOptions } from '../../features/chat/services/query_service';
 import {
   buildBuilderPreview,
@@ -150,12 +150,12 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
           <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-zinc-800">
             <div className="flex items-center space-x-2 text-indigo-700 dark:text-indigo-300 text-xs font-semibold">
               <Wand2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-              <span>Smart Builder (según el esquema activo)</span>
+              <span>Armar consulta paso a paso</span>
             </div>
             <button
               type="button"
               onClick={() => setShowBuilder(false)}
-              aria-label="Cerrar Smart Builder"
+              aria-label="Cerrar el asistente de consulta"
               className="p-1 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
@@ -293,7 +293,7 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
                     onClick={handleExecuteBuilder}
                     disabled={!activeMetric || isGenerating}
                     className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold transition-colors shadow-xs cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
-                    title="Ejecutar la consulta directamente en DATIA"
+                    title="Ejecutar la consulta"
                   >
                     <Send className="w-3.5 h-3.5" />
                     <span>Consultar Ahora ↵</span>
@@ -319,6 +319,19 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
         />
       </div>
 
+      {/* Atajo al constructor guiado. Solo con el campo vacio y el constructor
+          cerrado: con texto escrito el usuario ya sabe que pedir, y con el
+          constructor abierto el toggle de la toolbar ya esta a la vista. */}
+      {!promptInput.trim() && !showBuilder && (
+        <button
+          type="button"
+          onClick={() => setShowBuilder(true)}
+          className="text-[11px] text-app-muted hover:text-brand-500 dark:hover:text-brand-400 transition-colors text-left"
+        >
+          ¿No sabés cómo pedirlo? Armá la consulta paso a paso
+        </button>
+      )}
+
       {/* Toolbar & Action Controls */}
       <div className="flex flex-wrap items-center justify-between gap-2 px-1 pt-1 border-t border-app-border/60">
         {/* Left Items: Active DB Badge & Model Pill */}
@@ -337,7 +350,7 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
             title="Abrir el constructor guiado con las tablas y columnas de la fuente activa"
           >
             <Wand2 className="w-3.5 h-3.5 text-brand-400" />
-            <span>Smart Builder</span>
+            <span>Armar consulta</span>
           </button>
 
           {/* Active Database Badge */}
@@ -345,18 +358,10 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
             <Database className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
             <span className="truncate max-w-[140px] sm:max-w-[200px] font-semibold">{activeDatabaseName}</span>
           </div>
-
-          {/* AI Model & Privacy Badge */}
-          <span className="hidden sm:flex items-center space-x-1.5 px-2.5 py-1 rounded-xl bg-brand-500/10 border border-brand-500/20 text-[10px] text-brand-300 font-medium">
-            <Cpu className="w-3 h-3 text-brand-400 shrink-0" />
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-            <span>IA Local</span>
-          </span>
         </div>
 
         {/* Right Action: Send Button */}
         <div className="flex items-center space-x-2">
-          <span className="hidden sm:inline text-[10px] text-gray-500">Enter ↵</span>
           <button
             type="button"
             onClick={() => {
@@ -365,7 +370,7 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
               }
             }}
             disabled={!promptInput.trim() || isGenerating}
-            aria-label="Enviar consulta a DATIA"
+            aria-label="Enviar consulta"
             title="Enviar consulta"
             className="p-2.5 rounded-full bg-brand-600 hover:bg-brand-500 active:scale-[0.98] text-white disabled:opacity-30 disabled:pointer-events-none transition-all shadow-sm cursor-pointer"
           >

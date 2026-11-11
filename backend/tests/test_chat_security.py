@@ -208,3 +208,27 @@ class TestChatSecurity(unittest.TestCase):
                 self.db.query(User).filter(User.id == user_in_db.id).delete()
                 self.db.commit()
 
+    def test_admin_create_persiste_el_nombre_de_la_persona(self):
+        """El nombre completo viaja al backend y vuelve en el UserOut y el mensaje."""
+        username = f"nombre_{uuid.uuid4().hex[:6]}"
+        admin_headers = make_auth_headers(self.db, "admin")
+        try:
+            resp = self.client.post(
+                "/api/v1/auth/users",
+                json={
+                    "username": username,
+                    "email": f"{username}@example.com",
+                    "full_name": "  Felipe Pérez  ",
+                },
+                headers=admin_headers,
+            )
+            self.assertEqual(resp.status_code, 201, resp.text[:300])
+            data = resp.json()
+            self.assertEqual(data["user"]["full_name"], "Felipe Pérez")
+            self.assertIn("Felipe Pérez", data["message"])
+        finally:
+            user_in_db = self.db.query(User).filter(User.username == username).first()
+            if user_in_db:
+                self.db.delete(user_in_db)
+                self.db.commit()
+

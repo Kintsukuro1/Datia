@@ -56,6 +56,10 @@ from app.modules.ml_forecast.schemas import (
     ProjectionResponse,
     ProjectionVerificationResponse,
 )
+from app.modules.ml_forecast.timeframe import (
+    parse_growth_scenario,
+    parse_question_timeframe,
+)
 from app.modules.telemetry_audit.models import AuditLog
 
 router = APIRouter()
@@ -148,8 +152,49 @@ async def estimate_ml_projection(
     `source="fallback"` con la espera conservadora en vez de inventar una
     medicion. Este endpoint no proyecta nada y por eso no pasa por los gates de
     datos: no hay dato que entregar. El unico requisito es estar autenticado.
+
+    El horizonte sale de la pregunta ("un año" = 12 pasos) para que la barra de
+    progreso no asuma un valor que nadie pidio. El parseo es el mismo del run.
     """
-    return ml_service.estimate_seconds(payload.question, payload.horizon)
+    timeframe = parse_question_timeframe(payload.question)
+    scenario_growth = parse_growth_scenario(payload.question)
+    if payload.horizon is not None:
+        horizon = payload.horizon
+    elif scenario_growth is not None and timeframe.requested_steps is not None:
+        horizon = timeframe.requested_steps
+    else:
+        horizon = timeframe.steps
+    return ml_service.estimate_seconds(payload.question, horizon)
+
+
+_UNIT_LABEL = {
+    "day": "días",
+    "week": "semanas",
+    "month": "meses",
+    "quarter": "trimestres",
+}
+
+
+def _truncation_note(
+    requested: Optional[int], published: int, granularity: str
+) -> Optional[str]:
+    """Frase que declara el recorte cuando la pregunta pide mas que el tope.
+
+    El backend no puede publicar 10 anos con 46 meses de historia y un tope de
+    36 pasos; lo que NO puede hacer es presentar 36 meses como si fueran la
+    respuesta a 10 anos. Esta nota va delante de la narrativa.
+    """
+    if requested is None or requested <= published:
+        return None
+    unit = _UNIT_LABEL.get(granularity, "pasos")
+    requested_label = f"{requested} {unit}"
+    if granularity == "month" and requested % 12 == 0:
+        years = requested // 12
+        requested_label += f" ({years} {'año' if years == 1 else 'años'})"
+    return (
+        f"Pediste {requested_label}; el máximo publicable es {published} {unit}, "
+        f"así que esta proyección cubre {published} {unit}."
+    )
 
 
 @router.post("/projections/run", response_model=ProjectionResponse)
@@ -166,10 +211,10 @@ async def run_ml_projection(
     (validado contra los metadatos) y redacta sobre numeros ya calculados por
     `ml_models`. La serie, la banda y el MAPE salen de filas reales.
 
-    El horizonte explicito del pedido (3, 6 o 12) manda siempre. Con
-    `horizon=null` (Auto) se acepta el que proponga el analisis si esta en
-    {3, 6, 12}; si no, queda `DEFAULT_HORIZON`. El origen viaja en
-    `horizon_source`.
+    El horizonte sale de la pregunta y del modo. En el modo estadistico el tope
+    es 36 pasos y el analisis puede ajustarlo; en un escenario de crecimiento
+    ("10% anual en 10 años") se publican los 120 meses del supuesto, sin backtest
+    ni banda. El origen viaja en `horizon_source`.
     """
     conn_record = _resolve_projection_connection(db, payload.connection_id)
     conn_id = conn_record.id
@@ -180,7 +225,36 @@ async def run_ml_projection(
     started_at = time.perf_counter()
     context: Dict[str, Any] = {}
     analysis: Optional[Dict[str, Any]] = None
-    horizon = payload.horizon
+
+    # La pregunta manda: "un año" = 12 pasos mensuales, "6 semanas" = 6
+    # semanales. El payload explicito sigue ganando (compatibilidad), pero la UI
+    # nueva manda null y deja que el texto decida.
+    timeframe = parse_question_timeframe(payload.question)
+    scenario_growth = parse_growth_scenario(payload.question)
+    requested_horizon = (
+        payload.horizon
+        if payload.horizon is not None
+        else (
+            timeframe.requested_steps
+            if scenario_growth is not None and timeframe.requested_steps is not None
+            else timeframe.steps
+        )
+    )
+    granularity = payload.granularity or timeframe.granularity or "month"
+    horizon = requested_horizon
+    if payload.horizon is not None:
+        horizon_origin: Optional[str] = "pedido"
+    elif scenario_growth is not None:
+        horizon_origin = "pregunta"
+    elif timeframe.steps is None:
+        horizon_origin = None
+    elif (
+        timeframe.requested_steps is not None
+        and timeframe.requested_steps > timeframe.steps
+    ):
+        horizon_origin = "pregunta_recortada"
+    else:
+        horizon_origin = "pregunta"
 
     try:
         context = await _in_thread(
@@ -190,21 +264,27 @@ async def run_ml_projection(
         )
         analysis = await ml_service.analyze_question(
             payload.question, context["table"], context["candidate_cols"],
-            context["heuristic"], horizon,
+            context["heuristic"], requested_horizon,
             payload.metric_column, payload.date_column,
             resolution=context.get("resolution"),
             requested_agg=payload.metric_agg,
         )
         horizon = analysis["horizon"]
+        dimension_column = (
+            None
+            if scenario_growth is not None
+            else (payload.dimension_column or analysis.get("dimension_column"))
+        )
         data = await _in_thread(
             ml_service.run_projection, conn_id, context["table"], context["cols"],
             analysis["metric_column"], analysis["date_column"], horizon,
             user_role_name, current_user.is_admin, current_user.role_id, budget,
             context["candidate_cols"], payload.include_partial_period,
-            payload.dimension_column,
+            dimension_column,
             resolution=context.get("resolution"),
             metric_agg=analysis.get("metric_agg"),
-            granularity=payload.granularity or "month",
+            granularity=granularity,
+            scenario_growth_pct=scenario_growth,
         )
     except (ForecastUnavailable, ASTValidationError) as exc:
         # "No se puede calcular" no es un error del servidor: es una respuesta con
@@ -219,8 +299,9 @@ async def run_ml_projection(
             question=payload.question,
             horizon=horizon if horizon is not None else DEFAULT_HORIZON,
             horizon_source=(
-                (analysis or {}).get("horizon_source")
-                or ("pedido" if payload.horizon is not None else "default")
+                horizon_origin
+                or (analysis or {}).get("horizon_source")
+                or "default"
             ),
             table=context.get("table"),
             table_source=context.get("table_source"),
@@ -230,7 +311,7 @@ async def run_ml_projection(
                 or payload.metric_agg
                 or "sum"
             ),
-            granularity=payload.granularity or "month",
+            granularity=granularity,
             date_column=(analysis or {}).get("date_column"),
             connection_id=conn_id,
             analysis_source=(analysis or {}).get("source"),
@@ -285,7 +366,7 @@ async def run_ml_projection(
         # nombre/tipo, sin abrir los logs. El origen del horizonte se publica por
         # la misma razon: Auto puede haberlo cambiado.
         analysis_source=analysis.get("source"),
-        horizon_source=analysis.get("horizon_source"),
+        horizon_source=horizon_origin or analysis.get("horizon_source"),
         connection_id=conn_id,
         table_source=context.get("table_source"),
     )
@@ -299,7 +380,15 @@ async def run_ml_projection(
         # los numeros ya estan calculados y auditados. Se publica sin prosa.
         try:
             narration, narration_source = await ml_service.narrate(data)
-            response.narration = narration
+            notes = [] if data.get("scenario") else [
+                note for note in (
+                    _truncation_note(timeframe.requested_steps, horizon, granularity),
+                    ml_service._derived_metric_note(
+                        payload.question, analysis.get("metric_column")
+                    ),
+                ) if note
+            ]
+            response.narration = (" ".join(notes) + " " if notes else "") + narration
             response.narration_source = narration_source
         except Exception as exc:
             logger.warning("Narracion de proyeccion no disponible: %s", exc)

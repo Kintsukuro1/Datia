@@ -86,10 +86,10 @@ export const SettingsPage: React.FC = () => {
           </div>
           <div>
             <h1 className="text-lg sm:text-xl font-extrabold text-gray-900 dark:text-white tracking-tight flex items-center gap-2">
-              <span>Studio de Opciones & Diagnóstico del Sistema</span>
+              <span>Configuración y diagnóstico</span>
             </h1>
             <p className="text-xs text-gray-600 dark:text-gray-400">
-              Configuración del Motor IA Local, Base de Metadatos y Playground de Inferencia en Tiempo Real
+              Estado del asistente, la base interna y las pruebas de conexión.
             </p>
           </div>
         </div>

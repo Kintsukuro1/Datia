@@ -83,6 +83,7 @@ export const AdminPage: React.FC = () => {
           name: u.username,
           username: u.username,
           email: u.email || `${u.username}@empresa.com`,
+          full_name: u.full_name ?? null,
           role: resolveRoleLabel(u),
           is_admin: u.is_admin,
           is_active: u.is_active,

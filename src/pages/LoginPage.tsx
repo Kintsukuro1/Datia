@@ -20,16 +20,11 @@ import { CORPORATE_ROLES } from '../constants';
 import logoDatiaDark from './Logo_datia_2.png';
 import logoDatiaLight from './Logo_Datia_3.png';
 
-// Credenciales de los perfiles demo. Viven aca porque el backend las siembra
-// (DEMO_MODE=true) y el desplegable rellena el formulario con ellas. En builds
-// no-demo (VITE_DEMO_MODE=false) el bloque entero — mapas incluidos — cae del
-// bundle: una instalacion cliente no publica claves conocidas.
-//
-// El NOMBRE del rol sale de `CORPORATE_ROLES`, que es la unica lista del
-// frontend. Escribir el nombre dos veces hacia que el perfil del desplegable y
-// el badge del Header dijeran cosas distintas en cuanto uno de los dos se toca.
-// El orden sigue el de la matriz de `init_db`, de mas a menos privilegios.
-const DEMO_MODE = import.meta.env.VITE_DEMO_MODE !== 'false';
+// Selector de perfiles de prueba. Solo existe cuando el build lo pide de forma
+// explicita (`VITE_DEMO_MODE=true`): un build de venta sin la variable, o con
+// `false`, no publica credenciales conocidas ni el selector. El backend siembra
+// estas cuentas solo con `DEMO_MODE=true`.
+const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true';
 
 const DEMO_PASSWORDS: Record<string, string> = {
   'Administrador de Plataforma': 'admin123',
@@ -54,8 +49,7 @@ const DEMO_USERNAMES: Record<string, string> = {
 };
 
 // Condicional a proposito: con DEMO_MODE constante en false, el minificador
-// descarta la rama y con ella `DEMO_PASSWORDS`/`DEMO_USERNAMES`. Los mapas se
-// referencian SOLO aca adentro; sacarlos de este ternario los devuelve al bundle.
+// descarta la rama y con ella los mapas de credenciales.
 const DEMO_PROFILES = DEMO_MODE
   ? CORPORATE_ROLES
       .filter((r) => DEMO_USERNAMES[r.name])
@@ -77,10 +71,8 @@ export const LoginPage: React.FC = () => {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
-  // Perfil elegido en el desplegable de la demo. Es estado propio, no el valor de
-  // `username`: el desplegable elige una cuenta y el login manual escribe en el
-  // campo. Si compartieran estado, teclear un usuario cerrando en el perfil
-  // "Administrador" pondria las credenciales de otro sin que nadie lo pidiera.
+  // Perfil elegido en el selector de prueba. Es estado propio: elegir un perfil
+  // RELLENA el formulario, pero no inicia sesion (el boton "Ingresar" manda).
   const [perfilDemo, setPerfilDemo] = useState<string>(PERFIL_INICIAL);
   // Un solo toggle para el campo: ya no hay confirmación que comparar.
   const [showPasswords, setShowPasswords] = useState(false);
@@ -105,21 +97,20 @@ export const LoginPage: React.FC = () => {
     }
   };
 
-  // Elegir un perfil RELLENA el formulario en vez de entrar directo. El login
-  // manual queda por encima y es el que manda; con autologin, cambiar el
-  // desplegable se comia la sesion de alguien que solo estaba mirando el
-  // catalogo de roles. Rellenar deja la accion a un click explicito y hace
-  // visible que esas credenciales son de la demo y no un atajo.
+  const activeError = localError || error;
+
+  // Elegir un perfil rellena el formulario. El login manual sigue mandando y
+  // evita que cambiar el desplegable cierre la sesion de alguien que solo
+  // estaba mirando los perfiles.
   const handlePerfilChange = (username: string) => {
     setPerfilDemo(username);
-    const p = DEMO_PROFILES.find((x) => x.username === username);
-    if (!p) return;
-    setUsername(p.username);
-    setPassword(p.password);
+    const perfil = DEMO_PROFILES.find((p) => p.username === username);
+    if (!perfil) return;
+    setUsername(perfil.username);
+    setPassword(perfil.password);
     setLocalError(null);
     clearError();
   };
-  const activeError = localError || error;
 
   return (
     <div className="h-[100dvh] overflow-y-auto bg-app-bg text-app-text">
@@ -139,22 +130,23 @@ export const LoginPage: React.FC = () => {
             {/* Cabecera: logo real + wordmark (mismo que el Header) */}
             <div className="relative z-10 flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-app-border bg-app-card shadow-md">
-                <img src={logoDatiaLight} alt="Logo Datia" className="block h-full w-full object-contain p-1 dark:hidden" />
-                <img src={logoDatiaDark} alt="Logo Datia" className="hidden h-full w-full object-contain p-1 dark:block" />
+                <img src={logoDatiaLight} alt="Logo Dat.ia" className="block h-full w-full object-contain p-1 dark:hidden" />
+                <img src={logoDatiaDark} alt="Logo Dat.ia" className="hidden h-full w-full object-contain p-1 dark:block" />
               </div>
-              <span className="text-xl font-bold tracking-tight">DATIA</span>
+              <span className="text-xl font-bold tracking-tight">Dat.ia</span>
             </div>
 
             {/* Contenido central */}
             <div className="relative z-10 max-w-xl space-y-4">
               <div className="inline-flex items-center gap-2 rounded-md border border-app-border bg-app-card px-3 py-1 text-xs text-app-muted">
                 <Database className="h-4 w-4 text-brand-400" />
-                <span>Plataforma Unificada de Inteligencia Semántica</span>
+                <span>Asistente de datos con IA</span>
               </div>
 
               <h1 className="text-3xl font-bold tracking-tight lg:text-4xl">Democratización de Datos</h1>
               <p className="max-w-md text-sm leading-relaxed text-app-muted lg:text-base">
-                Consultá tus bases corporativas en lenguaje natural, con gobernanza, control de acceso y trazabilidad de extremo a extremo.
+                Hacé preguntas en lenguaje natural y obtené respuestas, gráficos e informes de tus
+                datos. Cada persona ve solo lo que su perfil permite.
               </p>
 
               <div className="flex flex-col gap-5 pt-2">
@@ -163,9 +155,9 @@ export const LoginPage: React.FC = () => {
                     <Sparkles className="h-4 w-4" />
                   </div>
                   <div>
-                    <h2 className="text-sm font-semibold">Asistente de IA sobre tus datos</h2>
+                    <h2 className="text-sm font-semibold">Preguntá como hablás</h2>
                     <p className="mt-0.5 text-xs leading-relaxed text-app-muted">
-                      Generación de consultas SQL, análisis instantáneo y respuestas sintetizadas en segundos.
+                      Escribí lo que necesitás saber y Dat.ia busca la respuesta en tus datos.
                     </p>
                   </div>
                 </div>
@@ -175,9 +167,9 @@ export const LoginPage: React.FC = () => {
                     <Network className="h-4 w-4" />
                   </div>
                   <div>
-                    <h2 className="text-sm font-semibold">Catálogo semántico y diccionario de datos</h2>
+                    <h2 className="text-sm font-semibold">Respuestas listas para usar</h2>
                     <p className="mt-0.5 text-xs leading-relaxed text-app-muted">
-                      Terminología de negocio mapeada sobre esquemas relacionales complejos.
+                      Tablas, gráficos e informes sobre tus datos, sin escribir una línea de código.
                     </p>
                   </div>
                 </div>
@@ -187,27 +179,13 @@ export const LoginPage: React.FC = () => {
                     <ShieldCheck className="h-4 w-4" />
                   </div>
                   <div>
-                    <h2 className="text-sm font-semibold">Control de acceso por roles (RBAC)</h2>
+                    <h2 className="text-sm font-semibold">Acceso según tu perfil</h2>
                     <p className="mt-0.5 text-xs leading-relaxed text-app-muted">
-                      Permisos de tablas y columnas y bitácora de auditoría continua.
+                      Cada usuario ve solo los datos que le corresponden y cada consulta queda registrada.
                     </p>
                   </div>
                 </div>
               </div>
-            </div>
-
-            {/* Pie del panel: solo hechos verificables en el código.
-                bcrypt: backend/app/core/security.py. Sesiones: tabla UserSession.
-                (El "Argon2/bcrypt" anterior era impreciso: es bcrypt directo.) */}
-            <div className="relative z-10 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-app-muted">
-              <span className="flex items-center gap-1.5">
-                <ShieldCheck className="h-4 w-4 text-emerald-400" />
-                Sesiones auditadas
-              </span>
-              <span className="flex items-center gap-1.5">
-                <Lock className="h-4 w-4 text-brand-400" />
-                Hashing bcrypt de contraseñas
-              </span>
             </div>
           </div>
 
@@ -221,7 +199,7 @@ export const LoginPage: React.FC = () => {
                   <ShieldCheck className="h-5 w-5 text-brand-400" />
                 </div>
                 <p className="text-xs text-app-muted">
-                  Ingresá tus credenciales corporativas autorizadas.
+                  Ingresá con tu usuario y contraseña.
                 </p>
               </div>
 
@@ -236,14 +214,14 @@ export const LoginPage: React.FC = () => {
               {/* Form */}
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-1.5">
-                  <label htmlFor="login-username-input" className="block text-xs font-medium text-app-muted">Usuario Corporativo</label>
+                  <label htmlFor="login-username-input" className="block text-xs font-medium text-app-muted">Usuario</label>
                   <div className="relative">
                     <input
                       id="login-username-input"
                       type="text"
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
-                      placeholder="ej. economista"
+                      placeholder="tu usuario"
                       required
                       className="h-11 w-full rounded-xl border border-app-border bg-app-bg pl-10 pr-3 text-sm text-app-text placeholder-gray-500 transition-colors focus:border-brand-500 focus:outline-none"
                     />
@@ -296,19 +274,16 @@ export const LoginPage: React.FC = () => {
                 </button>
               </form>
 
-              {/* Selector de perfil de la demo: un desplegable y no una fila de
-                  botones. Los 8 perfiles no entran en tres botones sin que las
-                  etiquetas se corten, y un desplegable deja leer el nombre completo
-                  del rol, que es justo lo que hay que comparar entre perfiles.
-                  Gateado por DEMO_MODE: en un build no-demo el bloque no se
-                  renderiza (y no llega al bundle). */}
+              {/* Selector de perfiles de prueba. Solo se renderiza con
+                  VITE_DEMO_MODE=true; el build de venta no lo incluye. Elige un
+                  perfil y RELLENA el formulario: el acceso sigue siendo manual. */}
               {DEMO_MODE && (
                 <div className="border-t border-app-border/60 pt-4">
                   <label
                     htmlFor="login-demo-perfil"
                     className="mb-2 block text-[11px] font-medium text-app-muted"
                   >
-                    O entrá con un perfil de la demo
+                    O elegí un perfil de prueba
                   </label>
                   <div className="relative">
                     <select
@@ -327,7 +302,7 @@ export const LoginPage: React.FC = () => {
                     <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
                   </div>
                   <p className="mt-1.5 text-center text-[10px] text-app-muted/80">
-                    Rellena el formulario. El acceso ocurre al pulsar «Ingresar».
+                    Completa el formulario; ingresás al pulsar «Ingresar».
                   </p>
                 </div>
               )}
@@ -344,7 +319,7 @@ export const LoginPage: React.FC = () => {
             {/* Nota legal: la auditoría de sesiones es real (UserSession + módulo
                 de auditoría), a diferencia del "SOC2 Tipo II" del mock. */}
             <p className="max-w-sm text-center text-[11px] leading-relaxed text-app-muted/90">
-              Acceso restringido a personal autorizado. Las sesiones quedan registradas en la bitácora de auditoría.
+              Acceso solo para personal autorizado. Cada ingreso queda registrado.
             </p>
           </div>
         </div>

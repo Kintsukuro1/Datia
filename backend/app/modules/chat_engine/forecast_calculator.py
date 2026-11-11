@@ -47,7 +47,7 @@ MIN_PERIODS = 6
 
 # Granularidades que acepta la proyeccion. El chat y la retencion siguen usando
 # el default mensual: el parametro nuevo no cambia su contrato.
-GRANULARITIES = ("day", "week", "month")
+GRANULARITIES = ("day", "week", "month", "quarter")
 DEFAULT_GRANULARITY = "month"
 
 # Minimo de observaciones para publicar una probabilidad de retorno. Por debajo
@@ -65,6 +65,11 @@ _DAY_PREFIX_RE = re.compile(
     r"^\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?=$|[ T])"
 )
 _WEEK_RE = re.compile(r"^\s*(\d{4})-[Ww](\d{1,2})\s*$")
+_QUARTER_RE = re.compile(r"^\s*(\d{4})[-/][Qq]([1-4])\s*$")
+
+
+def _quarter_number(month: int) -> int:
+    return (month - 1) // 3 + 1
 
 
 def _check_granularity(granularity: str) -> str:
@@ -81,6 +86,8 @@ def _normalize_datetime(value: Any, granularity: str) -> str:
         return value.strftime("%Y-%m-%d")
     if granularity == "week":
         return value.strftime("%G-W%V")
+    if granularity == "quarter":
+        return f"{value.year:04d}-Q{_quarter_number(value.month)}"
     return value.strftime("%Y-%m")
 
 
@@ -104,6 +111,7 @@ def normalize_period(
     - `month`: 'YYYY-MM' (contrato historico).
     - `day`: 'YYYY-MM-DD'.
     - `week`: 'YYYY-Www' (semana ISO).
+    - `quarter`: 'YYYY-Qn'.
 
     Acepta texto, `datetime.date` y prefijos ISO con hora. Rechaza etiquetas
     libres: adivinar el periodo de una cadena no parseable seria inventar el eje
@@ -130,6 +138,25 @@ def normalize_period(
     if granularity == "day":
         parsed = _parse_day_prefix(text)
         return parsed.isoformat() if parsed else None
+
+    if granularity == "quarter":
+        match = _QUARTER_RE.match(text)
+        if match:
+            year, quarter = int(match.group(1)), int(match.group(2))
+            return f"{year:04d}-Q{quarter}" if 1 <= quarter <= 4 else None
+        parsed = _parse_day_prefix(text)
+        if parsed is not None:
+            return f"{parsed.year:04d}-Q{_quarter_number(parsed.month)}"
+        match = _PERIOD_RE.match(text)
+        if match:
+            year, month = int(match.group(1)), int(match.group(2))
+            return f"{year:04d}-Q{_quarter_number(month)}" if 1 <= month <= 12 else None
+        match = _ISO_PREFIX_RE.match(text)
+        if match is None:
+            return None
+        prefix = match.group(1)
+        year, month = int(prefix[:4]), int(prefix[5:7])
+        return f"{year:04d}-Q{_quarter_number(month)}" if 1 <= month <= 12 else None
 
     # week
     match = _WEEK_RE.match(text)
@@ -158,6 +185,11 @@ def next_period(period: str, granularity: str = DEFAULT_GRANULARITY) -> str:
         ) + timedelta(weeks=1)
         iso = monday.isocalendar()
         return f"{iso.year:04d}-W{iso.week:02d}"
+    if granularity == "quarter":
+        year, quarter = int(period[:4]), int(period[6])
+        if quarter == 4:
+            return f"{year + 1:04d}-Q1"
+        return f"{year:04d}-Q{quarter + 1}"
     year, month = int(period[:4]), int(period[5:7])
     return f"{year + 1:04d}-01" if month == 12 else f"{year:04d}-{month + 1:02d}"
 
@@ -173,6 +205,10 @@ def period_distance(
         monday_a = date.fromisocalendar(int(a[:4]), int(a[6:8]), 1)
         monday_b = date.fromisocalendar(int(b[:4]), int(b[6:8]), 1)
         return (monday_b - monday_a).days // 7
+    if granularity == "quarter":
+        ya, qa = int(a[:4]), int(a[6])
+        yb, qb = int(b[:4]), int(b[6])
+        return (yb - ya) * 4 + (qb - qa)
     ya, ma = int(a[:4]), int(a[5:7])
     yb, mb = int(b[:4]), int(b[5:7])
     return (yb - ya) * 12 + (mb - ma)

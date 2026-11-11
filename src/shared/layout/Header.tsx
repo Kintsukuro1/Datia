@@ -12,24 +12,30 @@ import {
   X,
   Moon,
   Sun,
+  KeyRound,
+  ChevronDown,
 } from 'lucide-react';
 import { SystemHealthPopover } from './SystemHealthPopover';
+import { MandatoryPasswordChangeModal } from '../../components/auth/MandatoryPasswordChangeModal';
 import { NO_ROLE_LABEL, isPlatformAdmin, resolveRoleLabel } from '../../constants';
 import logoDatiaDark from '../../pages/Logo_datia_2.png';
 import logoDatiaLight from '../../pages/Logo_Datia_3.png';
 
 export const Header: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, completePasswordChange } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const { status, details, lastChecked, isLoading, refetch } = useSystemHealth();
   const [isHealthPopoverOpen, setIsHealthPopoverOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window === 'undefined') return 'light';
     return (localStorage.getItem('datia-theme') as 'light' | 'dark') || 'light';
   });
   const mobileMenuRef = useRef<HTMLDivElement>(null);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -55,6 +61,21 @@ export const Header: React.FC = () => {
     };
   }, [isMobileMenuOpen]);
 
+  // Close the "Mi cuenta" menu when clicking outside.
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(e.target as Node)) {
+        setIsAccountMenuOpen(false);
+      }
+    };
+    if (isAccountMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isAccountMenuOpen]);
+
   if (!user) return null;
 
   // Un solo nombre para el rol en las dos vistas (desktop y movil). La cuenta sin
@@ -68,12 +89,13 @@ export const Header: React.FC = () => {
     : 'text-brand-700 dark:text-brand-400';
 
   return (
-    <header className="h-16 border-b border-dark-border/80 bg-dark-surface/95 backdrop-blur-xl px-3 sm:px-6 flex items-center justify-between z-30 relative select-none font-sans">
+    <>
+      <header className="h-16 border-b border-dark-border/80 bg-dark-surface/95 backdrop-blur-xl px-3 sm:px-6 flex items-center justify-between z-40 relative select-none font-sans">
       {/* Brand & Offline / Dynamic Health Status Badge */}
       <div className="flex items-center space-x-3 sm:space-x-4">
         <button
           type="button"
-          aria-label="Ir a Dashboard de DATIA"
+          aria-label="Ir al inicio de Dat.ia"
           className="flex items-center space-x-2.5 sm:space-x-3 text-left group rounded-xl p-1 transition-all focus-visible:ring-2 focus-visible:ring-brand-500"
           onClick={() => {
             navigate('/chat');
@@ -90,11 +112,8 @@ export const Header: React.FC = () => {
             className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl object-contain shrink-0"
           />
           <div className="truncate">
-            <h1 className="text-xs sm:text-base font-bold text-gray-900 dark:text-white tracking-tight flex items-center gap-1.5 sm:gap-2">
-              <span>DATIA</span>
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-brand-500/15 text-brand-700 dark:text-brand-300 border border-brand-500/30">
-                IA Local
-              </span>
+            <h1 className="text-xs sm:text-base font-bold text-gray-900 dark:text-white tracking-tight">
+              <span>Dat.ia</span>
             </h1>
             <p className="text-[10px] sm:text-xs text-slate-500 dark:text-gray-400 font-medium hidden sm:block truncate">
               Democratización de Datos Corporativos
@@ -128,22 +147,24 @@ export const Header: React.FC = () => {
           }`}
         >
           <LayoutDashboard className="w-4 h-4" />
-          <span>Dashboard & Chat</span>
+          <span>Consultar</span>
         </button>
 
-        <button
-          type="button"
-          aria-current={activePath === '/settings' ? 'page' : undefined}
-          onClick={() => navigate('/settings')}
-          className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-semibold transition-all ${
-            activePath === '/settings'
-              ? 'bg-brand-600 text-white shadow-sm'
-              : 'text-slate-600 dark:text-gray-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-dark-card/60'
-          }`}
-        >
-          <Settings className="w-4 h-4" />
-          <span>Opciones</span>
-        </button>
+        {isPlatformAdmin(user) && (
+          <button
+            type="button"
+            aria-current={activePath === '/settings' ? 'page' : undefined}
+            onClick={() => navigate('/settings')}
+            className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-semibold transition-all ${
+              activePath === '/settings'
+                ? 'bg-brand-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-gray-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-dark-card/60'
+            }`}
+          >
+            <Settings className="w-4 h-4" />
+            <span>Opciones</span>
+          </button>
+        )}
 
         <button
           type="button"
@@ -171,7 +192,7 @@ export const Header: React.FC = () => {
             }`}
           >
             <ShieldAlert className="w-4 h-4 text-brand-600 dark:text-brand-200" />
-            <span>Gobernanza RBAC</span>
+            <span>Administración</span>
           </button>
         )}
       </nav>
@@ -189,22 +210,59 @@ export const Header: React.FC = () => {
           <span>{theme === 'dark' ? 'Claro' : 'Oscuro'}</span>
         </button>
 
-        <div className="text-right hidden sm:block">
-          <div className="text-xs font-bold text-gray-900 dark:text-white tracking-tight">{user.username}</div>
-          <div className={`text-[10px] font-semibold ${roleLabelColor} px-2.5 py-0.5 rounded-full border inline-block mt-0.5`}>
-            {roleLabel}
-          </div>
-        </div>
+        {/* Mi cuenta: cambio de contraseña voluntario y salida. Reemplaza el
+            bloque de solo lectura + el icono de logout suelto. */}
+        <div className="relative hidden sm:block" ref={accountMenuRef}>
+          <button
+            type="button"
+            onClick={() => setIsAccountMenuOpen((prev) => !prev)}
+            aria-expanded={isAccountMenuOpen}
+            aria-haspopup="menu"
+            aria-label="Mi cuenta"
+            className="flex items-center gap-2 rounded-xl px-2 py-1 text-right transition-colors hover:bg-slate-100 dark:hover:bg-dark-card"
+          >
+            <div>
+              <div className="text-xs font-bold text-gray-900 dark:text-white tracking-tight">{user.username}</div>
+              <div className={`text-[10px] font-semibold ${roleLabelColor} px-2.5 py-0.5 rounded-full border inline-block mt-0.5`}>
+                {roleLabel}
+              </div>
+            </div>
+            <ChevronDown
+              className={`h-3.5 w-3.5 text-gray-400 transition-transform ${isAccountMenuOpen ? 'rotate-180' : ''}`}
+              aria-hidden
+            />
+          </button>
 
-        <button
-          type="button"
-          onClick={logout}
-          title="Cerrar Sesión Segura"
-          aria-label="Cerrar Sesión Segura"
-          className="hidden sm:flex p-2.5 rounded-xl text-gray-500 dark:text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/30 transition-all focus-visible:ring-2 focus-visible:ring-rose-500"
-        >
-          <LogOut className="w-4 h-4" />
-        </button>
+          {isAccountMenuOpen && (
+            <div
+              role="menu"
+              aria-label="Opciones de mi cuenta"
+              className="absolute right-0 mt-2 w-56 rounded-2xl border border-slate-200 dark:border-dark-border bg-white dark:bg-dark-surface p-2 shadow-2xl z-50 space-y-1 animate-fadeIn"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setIsAccountMenuOpen(false);
+                  setIsPasswordModalOpen(true);
+                }}
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-700 dark:text-gray-300 transition-colors hover:bg-slate-100 dark:hover:bg-dark-card hover:text-slate-900 dark:hover:text-white"
+              >
+                <KeyRound className="h-4 w-4 text-brand-500" aria-hidden />
+                <span>Cambiar contraseña</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={logout}
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-medium text-rose-600 dark:text-rose-400 transition-colors hover:bg-rose-500/10"
+              >
+                <LogOut className="h-4 w-4" aria-hidden />
+                <span>Cerrar sesión</span>
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Mobile Hamburger Button */}
         <div className="xl:hidden relative" ref={mobileMenuRef}>
@@ -243,24 +301,26 @@ export const Header: React.FC = () => {
                   }`}
                 >
                   <LayoutDashboard className="w-4 h-4" />
-                  <span>Dashboard & Chat</span>
+                  <span>Consultar</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigate('/settings');
-                    setIsMobileMenuOpen(false);
-                  }}
-                  className={`w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold text-left transition-colors ${
-                    activePath === '/settings'
-                      ? 'bg-brand-600 text-white'
-                      : 'text-slate-600 dark:text-gray-300 hover:bg-slate-100 dark:hover:bg-dark-card'
-                  }`}
-                >
-                  <Settings className="w-4 h-4" />
-                  <span>Opciones & Configuración</span>
-                </button>
+                {isPlatformAdmin(user) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigate('/settings');
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold text-left transition-colors ${
+                      activePath === '/settings'
+                        ? 'bg-brand-600 text-white'
+                        : 'text-slate-600 dark:text-gray-300 hover:bg-slate-100 dark:hover:bg-dark-card'
+                    }`}
+                  >
+                    <Settings className="w-4 h-4" />
+                    <span>Opciones</span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -275,7 +335,7 @@ export const Header: React.FC = () => {
                   }`}
                 >
                   <TrendingUp className="w-4 h-4" />
-                  <span>Proyecciones ML</span>
+                  <span>Proyecciones</span>
                 </button>
 
                 {isPlatformAdmin(user) && (
@@ -292,13 +352,25 @@ export const Header: React.FC = () => {
                     }`}
                   >
                     <ShieldAlert className="w-4 h-4" />
-                    <span>Gobernanza RBAC & BD</span>
+                    <span>Administración</span>
                   </button>
                 )}
               </div>
 
-              {/* Theme & Logout Button */}
+              {/* Cuenta, tema y salida */}
               <div className="pt-2 border-t border-dark-border space-y-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    setIsPasswordModalOpen(true);
+                  }}
+                  className="w-full flex items-center space-x-2 px-3 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-gray-300 hover:bg-slate-100 dark:hover:bg-dark-card transition-colors"
+                >
+                  <KeyRound className="w-4 h-4 text-brand-500" />
+                  <span>Cambiar contraseña</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -326,6 +398,17 @@ export const Header: React.FC = () => {
           )}
         </div>
       </div>
-    </header>
+      </header>
+
+      <MandatoryPasswordChangeModal
+        isOpen={isPasswordModalOpen}
+        voluntary
+        onSuccess={() => {
+          completePasswordChange();
+          setIsPasswordModalOpen(false);
+        }}
+        onCancel={() => setIsPasswordModalOpen(false)}
+      />
+    </>
   );
 };

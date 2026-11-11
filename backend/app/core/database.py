@@ -198,6 +198,10 @@ def ensure_schema_migrations(eng):
                     # cuentas existentes quedan como estaban: no se les inventa
                     # una fecha de emisión que nadie registró.
                     pending.append("ALTER TABLE users ADD COLUMN temp_password_issued_at TIMESTAMP NULL")
+                if "full_name" not in user_cols:
+                    # Nombre de la persona para mostrar en la UI. NULL en las
+                    # cuentas viejas: el username sigue siendo el identificador.
+                    pending.append("ALTER TABLE users ADD COLUMN full_name VARCHAR(120) NULL")
                 if pending:
                     with eng.begin() as conn:
                         _safe_alter(conn, pending)

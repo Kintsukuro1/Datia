@@ -141,13 +141,15 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
 
     # --- utilidades -----------------------------------------------------------
 
-    def _tabla(self, filas, extra_numeric=None, dimension=False):
+    def _tabla(self, filas, extra_numeric=None, dimension=False, fechas_explicitas=False):
         """Base desechable con la serie pedida, mas la CorporateConnection real.
 
         `extra_numeric` agrega una segunda columna numerica con los MISMOS
         valores, para probar que bloquear `valor` no deja a la proyeccion sin
         metrica si el rol puede leer otra. `dimension` agrega `complemento`
-        TEXT con dos grupos alternados para el desglose.
+        TEXT con dos grupos alternados para el desglose. `fechas_explicitas`
+        usa el primer elemento de cada fila como fecha ISO completa (para
+        series trimestrales); por defecto se arma `<periodo>-15`.
         """
         from sqlalchemy import text
 
@@ -167,7 +169,10 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
                 c.execute(text(ddl + ")"))
                 for index, (periodo, valor) in enumerate(filas):
                     columns = ["fecha", "valor"]
-                    params = {"f": periodo + "-15", "v": valor}
+                    params = {
+                        "f": periodo if fechas_explicitas else periodo + "-15",
+                        "v": valor,
+                    }
                     if extra_numeric:
                         columns.append(extra_numeric)
                         params["extra"] = valor
@@ -367,14 +372,14 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
 
     # --- 4. El borde ----------------------------------------------------------
 
-    def test_horizonte_fuera_de_la_lista_es_422_en_los_dos_endpoints(self):
+    def test_horizonte_fuera_de_rango_es_422_en_los_dos_endpoints(self):
         conn = self._tabla(SERIE)
         role = self._rol(conn)
         _, headers = self._cuenta(role)
 
         malo_run = self.client.post(
             "/api/v1/ml/projections/run",
-            json={"question": "proyecta", "connection_id": conn, "horizon": 5},
+            json={"question": "proyecta", "connection_id": conn, "horizon": 37},
             headers=headers,
         )
         self.assertEqual(malo_run.status_code, 422, malo_run.text)
@@ -386,7 +391,7 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
         )
         self.assertEqual(malo_est.status_code, 422, malo_est.text)
 
-        for valido in (3, 6, 12):
+        for valido in (1, 5, 12, 36):
             ok = self.client.post(
                 "/api/v1/ml/projections/estimate",
                 json={"question": "proyecta", "horizon": valido},
@@ -401,7 +406,113 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(auto.status_code, 200, auto.text)
-        self.assertEqual(auto.json()["horizon_used"], 12, "Auto estima con el mayor")
+        self.assertEqual(auto.json()["horizon_used"], 6, "sin horizonte en el texto, default")
+
+        # La pregunta manda: el endpoint de estimacion tambien parsea.
+        doce = self.client.post(
+            "/api/v1/ml/projections/estimate",
+            json={"question": "proyecta los proximos 12 meses", "horizon": None},
+            headers=headers,
+        )
+        self.assertEqual(doce.status_code, 200, doce.text)
+        self.assertEqual(doce.json()["horizon_used"], 12)
+
+    def test_la_pregunta_fija_horizonte_y_granularidad(self):
+        conn = self._tabla(SERIE)
+        role = self._rol(conn)
+        _, headers = self._cuenta(role)
+
+        resp = self.client.post(
+            "/api/v1/ml/projections/run",
+            json={
+                "question": "proyecta un año",
+                "connection_id": conn,
+                "horizon": None,
+            },
+            headers=headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertEqual(data["horizon"], 12)
+        self.assertEqual(data["granularity"], "month")
+        self.assertEqual(data["horizon_source"], "pregunta")
+
+        recortado = self.client.post(
+            "/api/v1/ml/projections/run",
+            json={
+                "question": "proyecta 10 años",
+                "connection_id": conn,
+                "horizon": None,
+            },
+            headers=headers,
+        )
+        self.assertEqual(recortado.status_code, 200, recortado.text)
+        self.assertEqual(recortado.json()["horizon"], 36)
+        self.assertEqual(recortado.json()["horizon_source"], "pregunta_recortada")
+        narration = recortado.json()["narration"]
+        self.assertIn("Pediste 120 meses (10 años)", narration)
+        self.assertIn("36 meses", narration)
+
+    def test_la_pregunta_pide_trimestres_y_publica_pasos_trimestrales(self):
+        serie = [
+            ("2024-08-15", 1_000), ("2024-11-15", 1_200),
+            ("2025-02-15", 1_400), ("2025-05-15", 1_600),
+            ("2025-08-15", 1_800), ("2025-11-15", 2_000),
+            ("2026-02-15", 2_200), ("2026-05-15", 2_400),
+        ]
+        conn = self._tabla(serie, fechas_explicitas=True)
+        role = self._rol(conn)
+        _, headers = self._cuenta(role)
+
+        resp = self.client.post(
+            "/api/v1/ml/projections/run",
+            json={
+                "question": "proyecta 3 trimestres",
+                "connection_id": conn,
+                "horizon": None,
+            },
+            headers=headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertEqual(data["granularity"], "quarter")
+        self.assertEqual(data["horizon"], 3)
+        self.assertEqual(data["horizon_source"], "pregunta")
+        self.assertTrue(data["available"], data.get("reason"))
+        self.assertEqual(
+            [step["period"] for step in data["steps"]],
+            ["2026-Q3", "2026-Q4", "2027-Q1"],
+        )
+
+    def test_la_pregunta_de_crecimiento_publica_un_escenario(self):
+        conn = self._tabla(SERIE)
+        role = self._rol(conn)
+        _, headers = self._cuenta(role)
+
+        resp = self.client.post(
+            "/api/v1/ml/projections/run",
+            json={
+                "question": "Proyectame una ganancia con el 10% de las bases en 10 años",
+                "connection_id": conn,
+                "horizon": None,
+            },
+            headers=headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertTrue(data["available"], data.get("reason"))
+        self.assertEqual(data["horizon"], 120)
+        self.assertEqual(data["horizon_source"], "pregunta")
+        self.assertEqual(data["granularity"], "month")
+        self.assertIsNone(data["quality"])
+        self.assertEqual(data["scenario"]["growth_pct"], 10.0)
+        self.assertGreater(
+            data["scenario"]["final_value"], data["scenario"]["base_value"]
+        )
+        self.assertEqual(len(data["steps"]), 120)
+        self.assertEqual(data["steps"][0]["period"], "2026-10")
+        self.assertIn("Escenario", data["narration"])
+        self.assertIn("crecimiento anual del 10%", data["narration"])
 
     def test_sin_token_los_dos_endpoints_son_401(self):
         conn = self._tabla(SERIE)

@@ -45,7 +45,7 @@ export function ProjectionSuggestionCard({ question, onDismiss }: ProjectionSugg
         <div className="chat-bot-response bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700/60 rounded-2xl rounded-tl-sm p-4 max-w-[85%] sm:max-w-2xl space-y-2.5 shadow-xl">
           <div className="flex items-center space-x-2 text-[10px] text-brand-700 dark:text-brand-400 font-semibold">
             <Bot className="w-3 h-3" />
-            <span>DATIA IA</span>
+            <span>Dat.ia</span>
             <span className="text-slate-400 dark:text-slate-500">•</span>
             <span className="text-slate-600 dark:text-slate-400 font-normal">Proyección</span>
           </div>

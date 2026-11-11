@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Plus, History, Trash2, X, Database, Search } from 'lucide-react';
+import { Plus, History, Trash2, X, Search } from 'lucide-react';
 import { useModalA11y } from '../../hooks/useModalA11y';
+import triDataFooter from '../../shared/layout/TriData_footer.jpeg';
 
 export interface ChatThread {
   id: string;
@@ -12,7 +13,6 @@ export interface ChatThread {
 interface SidebarChatHistoryProps {
   threads: ChatThread[];
   activeId: string | null;
-  activeDatabaseName?: string;
   isOpenMobile?: boolean;
   searchInputRef?: React.RefObject<HTMLInputElement>;
   onCloseMobile?: () => void;
@@ -26,7 +26,6 @@ const DATE_GROUP_ORDER = ['Hoy', 'Ayer', 'Anteriores'] as const;
 export const SidebarChatHistory: React.FC<SidebarChatHistoryProps> = ({
   threads,
   activeId,
-  activeDatabaseName = 'Sin fuente de datos',
   isOpenMobile = false,
   searchInputRef,
   onCloseMobile,
@@ -197,19 +196,16 @@ export const SidebarChatHistory: React.FC<SidebarChatHistoryProps> = ({
         )}
       </div>
 
-      {/* Database Active Status Footer */}
+      {/* Footer del proyecto (reemplaza la antigua "Fuente BD activa": la fuente
+          ya se muestra en la barra de entrada). El recorte muestra solo la franja
+          con el logo: la captura original trae relleno oscuro arriba. */}
       <div className="p-3 border-t border-app-border bg-app-card/60">
-        <div className="flex items-center space-x-2.5 bg-app-surface p-2.5 rounded-xl border border-app-border">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 dark:bg-emerald-400 animate-pulse shrink-0" />
-          <div className="truncate min-w-0">
-            <div className="text-[10px] text-app-muted uppercase font-semibold flex items-center gap-1">
-              <Database className="w-2.5 h-2.5 text-brand-400" />
-              <span>Fuente BD activa</span>
-            </div>
-            <div className="text-[11px] text-app-text truncate font-mono font-medium">
-              {activeDatabaseName}
-            </div>
-          </div>
+        <div className="h-16 w-full max-w-[240px] overflow-hidden rounded-lg bg-[#0B1220]">
+          <img
+            src={triDataFooter}
+            alt="TriData · Proyecto Capstone 2026"
+            className="h-full w-full object-cover object-bottom"
+          />
         </div>
       </div>
     </div>

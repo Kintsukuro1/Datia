@@ -4,6 +4,7 @@ export interface User {
   id: number;
   username: string;
   email?: string;
+  full_name?: string | null;
   is_admin: boolean;
   // Alta/baja de la cuenta. Opcional porque el usuario se persiste en
   // localStorage y un registro viejo (o un caller parcial) no lo trae;

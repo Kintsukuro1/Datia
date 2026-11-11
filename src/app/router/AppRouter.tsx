@@ -2,6 +2,7 @@ import React, { Suspense, lazy } from 'react';
 import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../features/auth/context/AuthContext';
 import { hasPendingPasswordChange } from '../../features/auth/temp_password';
+import { isPlatformAdmin } from '../../constants';
 import { Header } from '../../shared/layout/Header';
 import { ToastContainer } from '../../components/shared/ToastContainer';
 import { MandatoryPasswordChangeModal } from '../../components/auth/MandatoryPasswordChangeModal';
@@ -148,9 +149,13 @@ export const AppRouter: React.FC = () => {
           path="/settings"
           element={
             <ProtectedLayout>
-              <Suspense fallback={<RouteFallback />}>
-                <SettingsPage />
-              </Suspense>
+              {user && isPlatformAdmin(user) ? (
+                <Suspense fallback={<RouteFallback />}>
+                  <SettingsPage />
+                </Suspense>
+              ) : (
+                <Navigate to="/chat" replace />
+              )}
             </ProtectedLayout>
           }
         />
@@ -158,9 +163,13 @@ export const AppRouter: React.FC = () => {
           path="/admin"
           element={
             <ProtectedLayout>
-              <Suspense fallback={<RouteFallback />}>
-                <AdminPage />
-              </Suspense>
+              {user && isPlatformAdmin(user) ? (
+                <Suspense fallback={<RouteFallback />}>
+                  <AdminPage />
+                </Suspense>
+              ) : (
+                <Navigate to="/chat" replace />
+              )}
             </ProtectedLayout>
           }
         />

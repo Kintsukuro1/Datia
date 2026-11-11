@@ -121,10 +121,12 @@ def create_user(
     default_role = db.query(Role).filter(Role.name == DEFAULT_USER_ROLE).first()
     temporary_password = _generate_temp_password()
     now = utcnow_naive()
+    full_name = (user_in.full_name or "").strip() or None
 
     new_user = User(
         username=username,
         email=user_in.email,
+        full_name=full_name,
         hashed_password=get_password_hash(temporary_password),
         is_admin=False,
         is_active=True,
@@ -147,7 +149,11 @@ def create_user(
         user_id=current_admin.id,
         username=current_admin.username,
         user_role=display_role_name(current_admin),
-        question_prompt=f"Alta de cuenta '{new_user.username}' por administrador.",
+        question_prompt=(
+            f"Alta de cuenta '{new_user.username}'"
+            + (f" ({new_user.full_name})" if new_user.full_name else "")
+            + " por administrador."
+        ),
         sql_generated=None,
         validation_status="AUTH_ALTA_CUENTA",
         target_database="metadata",
@@ -155,7 +161,9 @@ def create_user(
 
     return UserCreationResponse(
         message=(
-            f"Cuenta '{new_user.username}' creada. Entrega la contraseña temporal "
+            f"Cuenta '{new_user.username}' creada"
+            + (f" para {new_user.full_name}" if new_user.full_name else "")
+            + ". Entrega la contraseña temporal "
             f"al usuario: solo se muestra esta vez. Debe cambiarla en su primer "
             f"inicio de sesión; la temporal vence en "
             f"{settings.TEMP_PASSWORD_TTL_DAYS} días."

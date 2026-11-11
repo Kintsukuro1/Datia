@@ -3,16 +3,19 @@
 Por que el horizonte se valida en el borde y no en el servicio
 -------------------------------------------------------------
 `horizon` decide cuantos pasos se publican y para cuantos de ellos hay backtest
-propio. Un valor fuera de {3, 6, 12} no es una proyeccion que no se pudo
-calcular: es una peticion mal armada. Se corta en el punto de entrada —FastAPI
-responde 422 con el campo nombrado— mientras el error todavia tiene nombre, en
-vez de llegar al motor y volver como un "no se pudo" que culpa a los datos.
+propio. Un valor fuera de rango no es una proyeccion que no se pudo calcular: es
+una peticion mal armada. Se corta en el punto de entrada —FastAPI responde 422
+con el campo nombrado— mientras el error todavia tiene nombre, en vez de llegar
+al motor y volver como un "no se pudo" que culpa a los datos.
 
-La misma lista la reusa `ml_service.analyze_question` para aceptar (o ignorar)
-el horizonte que proponga el LLM: una sola definicion, dos puertas.
+El rango publicable es 1..36 pasos. La UI ya no ofrece un selector: el horizonte
+sale de lo que el usuario escribe ("un año", "6 semanas") y lo resuelve
+`ml_forecast/timeframe.py`. El limite superior existe para no publicar una banda
+de 120 pasos construida sobre una serie corta; no es una lista de valores
+comodos.
 
 `horizon=None` es "Auto": el analisis puede ajustarlo a lo que pida la pregunta.
-Un 3, 6 o 12 explicito siempre manda sobre el LLM. El default sigue siendo 6
+Un valor explicito siempre manda sobre el LLM. El default sigue siendo 6
 para que un cliente viejo que no manda el campo conserve el comportamiento.
 """
 
@@ -25,23 +28,23 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.modules.chat_engine.schemas import MAX_QUESTION_CHARS
 
-# Horizontes publicables: trimestre, semestre y ano. No es una lista de valores
-# comodos —es el conjunto que el backtest puede sostener con series de ~9 meses y
-# el unico que el motor acepta— y por eso se comparte con el analisis del LLM.
-SUPPORTED_HORIZONS = (3, 6, 12)
+# Rango publicable. El piso evita un horizonte de 0 pasos (que no es una
+# proyeccion) y el techo evita bandas sin evidencia sobre series cortas.
+MIN_HORIZON = 1
+MAX_HORIZON = 36
 
-# Horizonte que se usa cuando el pedido no lo trae y el analisis no propone uno
-# valido. Se mantiene 6 por compatibilidad con los clientes existentes.
+# Horizonte que se usa cuando el pedido no lo trae y la pregunta tampoco lo dice.
+# Se mantiene 6 por compatibilidad con los clientes existentes.
 DEFAULT_HORIZON = 6
 
 
 def _validar_horizonte(value: Optional[int]) -> Optional[int]:
-    """Corta cualquier horizonte que no sea publicable. `None` es Auto."""
+    """Corta cualquier horizonte fuera de rango. `None` es Auto."""
     if value is None:
         return None
-    if value not in SUPPORTED_HORIZONS:
+    if not MIN_HORIZON <= value <= MAX_HORIZON:
         raise ValueError(
-            f"horizon debe ser uno de {list(SUPPORTED_HORIZONS)} o null (Auto); "
+            f"horizon debe estar entre {MIN_HORIZON} y {MAX_HORIZON}, o null (Auto); "
             f"recibido: {value!r}"
         )
     return value
@@ -74,7 +77,7 @@ class ProjectionRequest(BaseModel):
         Literal["sum", "count", "count_distinct", "formula"]
     ] = None
     # Granularidad manual del eje. `None` conserva el contrato histórico: mes.
-    granularity: Optional[Literal["day", "week", "month"]] = None
+    granularity: Optional[Literal["day", "week", "month", "quarter"]] = None
     # Escape hatch para auditar un mes en curso: por defecto se excluye porque un
     # periodo incompleto hunde el ultimo punto y el backtest lo lee como caida.
     include_partial_period: bool = False
@@ -178,6 +181,22 @@ class ProjectionQuality(BaseModel):
     reasons: List[str] = Field(default_factory=list)
 
 
+class ProjectionScenario(BaseModel):
+    """Supuesto de crecimiento aplicado a la base historica.
+
+    No es un pronostico estadistico: no hay backtest, ni banda, ni MAPE. Se
+    publica separado para que la UI no lo presente con el semaforo de calidad.
+    """
+
+    growth_pct: float
+    annual: bool = True
+    base_value: float
+    base_period: Optional[str] = None
+    final_value: float
+    gain: float
+    label: str = "Escenario de crecimiento"
+
+
 class ProjectionResponse(BaseModel):
     """Lo que ve el usuario: la proyeccion, su evidencia y el SQL que la produjo.
 
@@ -198,6 +217,8 @@ class ProjectionResponse(BaseModel):
     total: Optional[ProjectionTotal] = None
     # Desglose opcional por una dimension de texto permitida.
     breakdown: Optional[ProjectionBreakdown] = None
+    # Escenario de crecimiento (supuesto), separado de la proyeccion estadistica.
+    scenario: Optional[ProjectionScenario] = None
     method: Optional[str] = None
     beats_naive: Optional[bool] = None
     mape: Optional[float] = None
@@ -228,7 +249,7 @@ class ProjectionResponse(BaseModel):
 
 
 class ProjectionEstimateRequest(BaseModel):
-    """Pedido de estimacion. Mismo tope de pregunta, misma lista y Auto."""
+    """Pedido de estimacion. Mismo tope de pregunta, mismo rango y Auto."""
 
     question: str = Field(..., max_length=MAX_QUESTION_CHARS)
     horizon: Optional[int] = DEFAULT_HORIZON
@@ -242,8 +263,8 @@ class ProjectionEstimateRequest(BaseModel):
 class ProjectionEstimateResponse(BaseModel):
     """Estimacion instantanea. `source="fallback"` declara que NO hubo medicion.
 
-    `horizon_used` es el horizonte con el que se calculo la estimacion: con Auto
-    se asume el mayor de la lista, porque el LLM todavia no respondio.
+    `horizon_used` es el horizonte con el que se calculo la estimacion: la
+    pregunta manda, y sin horizonte en el texto se usa el default declarado.
     """
 
     estimated_seconds: float
@@ -307,7 +328,7 @@ class ProjectionContextResponse(BaseModel):
     metric_options: List[ProjectionMetricOption] = Field(default_factory=list)
     identifier_options: List[ProjectionMetricOption] = Field(default_factory=list)
     count_option: Optional[ProjectionMetricOption] = None
-    granularities: List[str] = Field(default_factory=lambda: ["day", "week", "month"])
+    granularities: List[str] = Field(default_factory=lambda: ["day", "week", "month", "quarter"])
     default_granularity: str = "month"
     min_periods: int = 6
 

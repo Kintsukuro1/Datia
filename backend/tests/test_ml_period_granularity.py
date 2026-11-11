@@ -73,6 +73,19 @@ class TestPeriodos(unittest.TestCase):
             period_distance("2026-W01", "2026-W03", "week"), 2
         )
 
+    def test_trimestre_normaliza_y_avanza(self):
+        self.assertEqual(normalize_period("2026-Q3", "quarter"), "2026-Q3")
+        self.assertEqual(normalize_period("2026-q3", "quarter"), "2026-Q3")
+        self.assertEqual(normalize_period("2026-08-15", "quarter"), "2026-Q3")
+        self.assertEqual(normalize_period("2026-08", "quarter"), "2026-Q3")
+        self.assertEqual(normalize_period(date(2026, 12, 31), "quarter"), "2026-Q4")
+        self.assertIsNone(normalize_period("2026-Q5", "quarter"))
+        self.assertIsNone(normalize_period("ene 2026", "quarter"))
+        self.assertEqual(next_period("2026-Q4", "quarter"), "2027-Q1")
+        self.assertEqual(next_period("2026-Q1", "quarter"), "2026-Q2")
+        self.assertEqual(period_distance("2025-Q4", "2026-Q2", "quarter"), 2)
+        self.assertEqual(period_distance("2026-Q1", "2027-Q1", "quarter"), 4)
+
 
 class TestSqlPorGranularidad(unittest.TestCase):
     def test_dia_usa_to_char_de_dia(self):
@@ -101,6 +114,14 @@ class TestSqlPorGranularidad(unittest.TestCase):
         self.assertIn('TO_CHAR("fecha", \'YYYY-MM\')', sql)
         _assert_sql(sql)
 
+    def test_trimestre_usa_to_char_de_trimestre(self):
+        sql = build_series_sql(
+            "movimientos", "fecha", "valor",
+            granularity="quarter", diagnostic_periods=True,
+        )
+        self.assertIn('TO_CHAR("fecha", \'YYYY-"Q"Q\')', sql)
+        _assert_sql(sql)
+
     def test_desglose_usa_la_misma_granularidad(self):
         sql = build_group_series_sql(
             "movimientos", "fecha", "valor", "complemento", "A",
@@ -115,6 +136,7 @@ class TestSqlPorGranularidad(unittest.TestCase):
             ("day", "YYYY-MM-DD"),
             ("week", "IYYY-"),
             ("month", "YYYY-MM"),
+            ("quarter", 'YYYY-"Q"Q'),
         ):
             for agg, agg_token in (
                 ("sum", "SUM("),
@@ -181,6 +203,25 @@ class TestPreparacionDePeriodos(unittest.TestCase):
         self.assertEqual(len(out["rows"]), 3)
         self.assertIsNone(out["partial_period_excluded"])
 
+    def test_trimestre_excluye_el_trimestre_en_curso_incompleto(self):
+        rows = [
+            {"periodo": "2025-Q2", "ultima_fecha": "2025-06-30", "dias_con_datos": 90},
+            {"periodo": "2025-Q3", "ultima_fecha": "2025-09-30", "dias_con_datos": 90},
+            {"periodo": "2025-Q4", "ultima_fecha": "2025-12-31", "dias_con_datos": 90},
+            {"periodo": "2026-Q1", "ultima_fecha": "2026-03-31", "dias_con_datos": 90},
+            {"periodo": "2026-Q2", "ultima_fecha": "2026-04-10", "dias_con_datos": 10},
+        ]
+        out = ml_service._prepare_period_rows(
+            rows, today=date(2026, 4, 10), granularity="quarter"
+        )
+
+        self.assertEqual(
+            [row["periodo"] for row in out["rows"]],
+            ["2025-Q2", "2025-Q3", "2025-Q4", "2026-Q1"],
+        )
+        self.assertEqual(out["future_periods_excluded"], [])
+        self.assertEqual(out["partial_period_excluded"], "2026-Q2")
+
     def test_huecos_y_pasos_por_granularidad(self):
         self.assertFalse(ml_service._has_gaps(
             ["2026-10-01", "2026-10-02", "2026-10-03"], "day"
@@ -193,6 +234,12 @@ class TestPreparacionDePeriodos(unittest.TestCase):
         ))
         self.assertTrue(ml_service._has_gaps(
             ["2026-W40", "2026-W42"], "week"
+        ))
+        self.assertFalse(ml_service._has_gaps(
+            ["2025-Q4", "2026-Q1", "2026-Q2"], "quarter"
+        ))
+        self.assertTrue(ml_service._has_gaps(
+            ["2025-Q4", "2026-Q2"], "quarter"
         ))
 
         steps = [{"step": 1}, {"step": 2}]
@@ -207,6 +254,12 @@ class TestPreparacionDePeriodos(unittest.TestCase):
                 steps, ["2025-W52"], "week"
             )],
             ["2026-W01", "2026-W02"],
+        )
+        self.assertEqual(
+            [step["period"] for step in ml_service._with_periods(
+                steps, ["2026-Q3"], "quarter"
+            )],
+            ["2026-Q4", "2027-Q1"],
         )
 
     def test_grupo_alineado_por_dia(self):

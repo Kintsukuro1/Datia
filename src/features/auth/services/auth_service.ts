@@ -35,7 +35,7 @@ export const authService = {
 
   // Alta exclusiva de administrador. La clave la genera el servidor y se
   // devuelve una sola vez; el cliente no la elige ni la reenvía.
-  async createUser(data: { username: string; email?: string }): Promise<UserCreationResult> {
+  async createUser(data: { username: string; email?: string; full_name?: string }): Promise<UserCreationResult> {
     const res = await apiClient.post<UserCreationResult>('/auth/users', data);
     return res.data;
   },

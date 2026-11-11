@@ -309,11 +309,70 @@ def test_el_analisis_solo_acepta_nombres_reales():
     # Una eleccion valida se canonicaliza al nombre REAL de los metadatos.
     elegido = ml_service._validate_llm_choice(
         {"metric_column": "Valor", "date_column": "FECHA", "horizon": 12}, COLS)
-    assert elegido == {"metric_column": "valor", "date_column": "fecha", "horizon": 12}
-    # Horizonte fuera de la lista: se ignora (no se recorta), decide el pedido.
+    assert elegido == {
+        "metric_column": "valor",
+        "date_column": "fecha",
+        "dimension_column": None,
+        "horizon": 12,
+    }
+    # Horizonte fuera de rango: se ignora (no se recorta), decide el pedido.
+    assert ml_service._validate_llm_choice(
+        {"metric_column": "valor", "date_column": "fecha", "horizon": 99}, COLS
+    )["horizon"] is None
+    # 18 ya es un horizonte publicable: la pregunta manda y no hay lista cerrada.
     assert ml_service._validate_llm_choice(
         {"metric_column": "valor", "date_column": "fecha", "horizon": 18}, COLS
-    )["horizon"] is None
+    )["horizon"] == 18
+
+
+def test_la_dimension_se_valida_contra_las_columnas_permitidas():
+    resolution = {
+        "date_options": [{"column": "fecha"}],
+        "metric_options": [{"column": "valor", "agg": "sum"}],
+        "count_option": None,
+        "dimension_columns": ["producto", "metodo_pago"],
+    }
+    elegido = ml_service._validate_llm_choice_resolved(
+        {
+            "metric_column": "valor",
+            "date_column": "fecha",
+            "dimension_column": "Producto",
+        },
+        resolution,
+    )
+    assert elegido["dimension_column"] == "producto"
+
+    # Una columna que el RBAC no ofrecio no sale del analisis, aunque el LLM la
+    # nombre: fail-closed.
+    bloqueada = ml_service._validate_llm_choice_resolved(
+        {
+            "metric_column": "valor",
+            "date_column": "fecha",
+            "dimension_column": "cliente",
+        },
+        resolution,
+    )
+    assert bloqueada["dimension_column"] is None
+
+
+def test_el_llm_puede_elegir_la_dimension_para_desglosar():
+    resolution = {
+        "date_options": [{"column": "fecha"}],
+        "metric_options": [{"column": "valor", "agg": "sum"}],
+        "count_option": None,
+        "dimension_columns": ["producto"],
+    }
+    mock = AsyncMock(return_value=(
+        '{"metric_column": "valor", "date_column": "fecha", '
+        '"dimension_column": "producto", "horizon": 12}'
+    ))
+    with patch(_LLM, new=mock):
+        out = asyncio.run(ml_service.analyze_question(
+            "dime cuál es el producto con más ventas en el próximo año",
+            "movimientos", [], {}, 12, resolution=resolution,
+        ))
+    assert out["dimension_column"] == "producto"
+    assert out["horizon"] == 12
     # El fallback heuristico tambien resuelve un nombre real (el unico numerico).
     assert resolve_columns(COLS)["value_col"] == "valor"
 
@@ -403,7 +462,7 @@ def test_el_analisis_valido_se_publica_como_llm():
 
 def test_el_analisis_con_horizonte_invalido_cae_al_default_de_auto():
     out = _analizar(
-        '{"metric_column": "valor", "date_column": "fecha", "horizon": 18}',
+        '{"metric_column": "valor", "date_column": "fecha", "horizon": 99}',
         horizonte=None)
     assert out["source"] == "llm"
     assert out["horizon"] == 6
@@ -488,14 +547,52 @@ def test_un_override_manual_sobrevive_a_la_fecha_invalida_del_llm():
 def test_la_plantilla_dice_los_mismos_hechos_que_el_llm_podria_citar():
     texto = ml_service._template_narration(_payload_proyectado(6))
     assert texto.strip()
-    assert "naive" in texto
-    assert "9 periodos" in texto
+    assert "último período" in texto
+    assert "9 períodos" in texto
     assert "9.0%" in texto
-    assert "pasos 4, 5, 6" in texto   # extrapolados: banda heredada, no medida
+    assert "pasos 4, 5, 6" in texto   # extrapolados: margen heredado, no medido
     assert "pasos 1, 2, 3" in texto   # evidencia escasa: reliable=False
     assert "El total de los 6 pasos" in texto
-    assert "se hereda del total de 3 pasos" in texto
-    assert "no es una promesa de precision futura" in texto
+    assert "los primeros 3 pasos" in texto
+    assert "no es una promesa de precisión futura" in texto
+
+
+def test_la_plantilla_nombra_el_grupo_con_mayor_proyeccion():
+    """Sin LLM, la respuesta tiene que contestar "cual producto vende mas".
+
+    El payload real no trae pasos por grupo: el numero que se cita es el total
+    proyectado del grupo (`total.point`), tal cual viene. Un grupo sin total no
+    se compara, y la frase se limita a los grupos PUBLICADOS (el top-N por
+    volumen historico, no toda la dimension).
+    """
+    payload = _payload_proyectado(6)
+    payload["breakdown"] = {
+        "available": True,
+        "reason": None,
+        "dimension_column": "producto",
+        "top_n": 3,
+        "groups": [
+            {"value": "Lácteos", "available": True, "total": {"point": 1500.0}},
+            {"value": "Bebidas", "available": True, "total": {"point": 9000.0}},
+            {"value": "Snacks", "available": False, "total": None},
+        ],
+    }
+    texto = ml_service._template_narration(payload)
+    assert "Entre los grupos publicados, el de mayor proyección es Bebidas" in texto
+    assert "9.000" in texto
+    assert "Snacks" not in texto
+
+
+def test_sin_desglose_disponible_la_plantilla_no_inventa_un_grupo():
+    payload = _payload_proyectado(6)
+    sin_breakdown = ml_service._template_narration(payload)
+    payload["breakdown"] = {
+        "available": False,
+        "reason": "La proyeccion principal no esta disponible; no se desglosa.",
+        "groups": [{"value": "Lácteos", "available": True, "total": {"point": 1.0}}],
+    }
+    assert ml_service._template_narration(payload) == sin_breakdown
+    assert "mayor proyección" not in sin_breakdown
 
 
 def test_la_narrativa_sin_llm_publica_plantilla_nunca_vacia():
@@ -509,6 +606,110 @@ def test_la_narrativa_sin_llm_publica_plantilla_nunca_vacia():
             texto, fuente = asyncio.run(ml_service.narrate(payload))
         assert fuente == "plantilla", caida
         assert texto == ml_service._template_narration(payload)
+
+
+def test_la_narrativa_que_contradice_el_horizonte_cae_a_plantilla():
+    payload = _payload_proyectado(36)
+    payload["horizon"] = 36
+    payload["granularity"] = "month"
+    for contradiccion in (
+        "La proyección para los próximos 10 meses (hasta octubre de 2029) se sitúa en...",
+        "La proyección total para el horizonte de 10 meses (enero de 2029 a octubre de 2029) es...",
+        "Durante los 10 meses siguientes el total asciende a...",
+    ):
+        mock = AsyncMock(return_value=contradiccion)
+        with patch(_LLM, new=mock):
+            texto, fuente = asyncio.run(ml_service.narrate(payload))
+        assert fuente == "plantilla", contradiccion
+        assert texto == ml_service._template_narration(payload)
+
+
+def test_la_narrativa_que_respeta_el_horizonte_se_publica():
+    payload = _payload_proyectado(36)
+    payload["horizon"] = 36
+    payload["granularity"] = "month"
+    mock = AsyncMock(return_value="La proyección para los próximos 36 meses se sitúa en...")
+    with patch(_LLM, new=mock):
+        texto, fuente = asyncio.run(ml_service.narrate(payload))
+    assert fuente == "llm"
+    assert "36 meses" in texto
+
+    # El mismo horizonte en años es correcto: 36 meses = 3 años.
+    mock = AsyncMock(return_value="La proyección para los próximos 3 años se sitúa en...")
+    with patch(_LLM, new=mock):
+        texto, fuente = asyncio.run(ml_service.narrate(payload))
+    assert fuente == "llm"
+
+
+def test_la_narrativa_con_jerga_cae_a_plantilla():
+    payload = _payload_proyectado(36)
+    payload["horizon"] = 36
+    payload["granularity"] = "month"
+    for jerga in (
+        "El método naive fue el mejor para esta serie.",
+        "La banda de error y los backtests muestran poca evidencia.",
+        "El MAPE del paso es 2,5%.",
+    ):
+        mock = AsyncMock(return_value=jerga)
+        with patch(_LLM, new=mock):
+            texto, fuente = asyncio.run(ml_service.narrate(payload))
+        assert fuente == "plantilla", jerga
+        assert texto == ml_service._template_narration(payload)
+
+
+def test_aviso_cuando_la_pregunta_pide_ganancia_con_porcentaje():
+    note = ml_service._derived_metric_note(
+        "Proyectame una ganancia con el 10% de las bases en 10 años",
+        "monto_total",
+    )
+    assert note is not None
+    assert "no aplica supuestos de porcentaje" in note
+    assert "monto total" in note
+
+    # Si la metrica elegida SI es de ganancia, no hay aviso.
+    assert ml_service._derived_metric_note(
+        "Proyectame una ganancia del 10% en 10 años", "margen_ganancia"
+    ) is None
+    # Sin porcentaje o sin palabra de ganancia, tampoco.
+    assert ml_service._derived_metric_note(
+        "proyecta las ventas del próximo año", "monto_total"
+    ) is None
+    assert ml_service._derived_metric_note(
+        "proyecta la ganancia del próximo año", "monto_total"
+    ) is None
+
+
+def test_el_escenario_compone_el_crecimiento_anual():
+    out = ml_service._scenario_projection(
+        [100.0, 110.0, 121.0],
+        ["2025-01", "2025-02", "2025-03"],
+        12,
+        "month",
+        10.0,
+    )
+    assert out["available"] is True
+    assert out["scenario"]["base_value"] == 121.0
+    assert out["scenario"]["base_period"] == "2025-03"
+    assert abs(out["scenario"]["final_value"] - 121.0 * 1.10) < 0.01
+    assert abs(out["scenario"]["gain"] - (121.0 * 0.10)) < 0.01
+    assert out["steps"][0]["period"] == "2025-04"
+    assert out["steps"][-1]["period"] == "2026-03"
+    assert all(
+        step["lower"] is None and step["mape"] is None and step["n_backtests"] == 0
+        for step in out["steps"]
+    )
+    assert out["quality"] is None
+
+    # 120 meses = 10 años: composición anual, no lineal.
+    long = ml_service._scenario_projection(
+        [100.0, 110.0, 121.0],
+        ["2025-01", "2025-02", "2025-03"],
+        120,
+        "month",
+        10.0,
+    )
+    assert abs(long["scenario"]["final_value"] - 121.0 * (1.10 ** 10)) < 0.01
+    assert len(long["steps"]) == 120
 
 
 def test_la_narrativa_con_llm_publica_su_texto():
@@ -529,6 +730,11 @@ def test_el_prompt_de_la_narrativa_explica_los_campos_por_paso():
     assert "Un MAPE mas bajo es mejor" in prompt
     assert "`n_backtests` cuenta los backtests de ESE paso" in prompt
     assert "`beats_naive: true` es ese veredicto ya calculado" in prompt
+    # El desglose se cita solo si esta en el payload; el ranking es del total
+    # proyectado de cada grupo, no de una suma de grupos.
+    assert "si la pregunta pide un ranking" in prompt
+    assert "mayor `total.point`" in prompt
+    assert "no sumes los grupos" in prompt
 
 
 # --- 5: la estimacion no mide, reusa lo medido --------------------------------
@@ -544,14 +750,18 @@ def test_estimate_sin_medicion_declara_fallback():
         }
 
 
-def test_estimate_auto_asume_el_horizonte_mas_largo():
-    """Auto estima con 12 pasos: el LLM todavia no eligio y no se subestima."""
+def test_estimate_sin_horizonte_en_el_texto_usa_el_default():
+    """Sin horizonte en la pregunta se estima con el default, no con el maximo.
+
+    El router parsea la pregunta antes de llamar (`timeframe.parse_question_timeframe`);
+    aca se prueba solo el fallback del servicio.
+    """
     from app.modules.catalog.services import enrich_estimator
 
     with patch.dict(enrich_estimator._SPEED_CACHE, {}, clear=True):
         out = ml_service.estimate_seconds("proyecta los ingresos", None)
     assert out["source"] == "fallback"
-    assert out["horizon_used"] == 12
+    assert out["horizon_used"] == 6
 
 
 def test_estimate_con_medicion_no_llama_al_llm():
@@ -579,8 +789,8 @@ def test_estimate_ignora_una_medicion_vencida():
 
 # --- el borde del contrato ----------------------------------------------------
 
-def test_horizonte_solo_3_6_12_o_auto():
-    for valido in (3, 6, 12):
+def test_horizonte_entre_1_y_36_o_auto():
+    for valido in (1, 3, 6, 12, 18, 36):
         assert ProjectionRequest(question="proyecta", horizon=valido).horizon == valido
         assert ProjectionEstimateRequest(question="proyecta", horizon=valido).horizon == valido
     # `None` es Auto; el default del campo sigue siendo 6.
@@ -588,7 +798,7 @@ def test_horizonte_solo_3_6_12_o_auto():
     assert ProjectionEstimateRequest(question="proyecta", horizon=None).horizon is None
     assert ProjectionRequest(question="proyecta").horizon == 6
     assert ProjectionEstimateRequest(question="proyecta").horizon == 6
-    for invalido in (0, 5, 13):
+    for invalido in (0, -1, 37):
         with pytest.raises(ValidationError):
             ProjectionRequest(question="proyecta", horizon=invalido)
         with pytest.raises(ValidationError):

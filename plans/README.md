@@ -21,6 +21,7 @@
 | **005** | [`005-medicion-base.md`](005-medicion-base.md) | ✅ **Ejecutado (21/10/2026)** | Foto de línea base, sin correcciones: knip 22 exports/tipos sin uso, chunk de echarts 1.053,95 kB, ruff C901 24 funciones sobre el umbral, vulture 9 hallazgos, 107 líneas con `any`. La limpieza posterior (21–22/10) dejó knip en exit 0, echarts en 665,26 kB y `api_client.ts`/`types/index.ts` sin `any`. |
 | **006** | [`006-calidad-llm-chat-y-proyecciones.md`](006-calidad-llm-chat-y-proyecciones.md) | 🚧 **Fase 1 implementada (05/11/2026); fases 2–4 pendientes** | Eliminado el fallback de emergencia, riesgo determinista, prompt sin What-If/causa raíz, fences de pregunta/ejemplos/metadatos, y proyecciones con ID no métrico + auditoría obligatoria. Suite `888 passed`; revisión independiente aprobada con cambios menores ya corregidos. |
 | **007** | [`007-proyecciones-genericas-resolvedor.md`](007-proyecciones-genericas-resolvedor.md) | ✅ **Fases 1–5 implementadas (07/11/2026) + cierre de pendientes** | Resolvedor catálogo + perfil; granularidad manual día/semana/mes; tabla auto por pregunta + override manual; `COUNT(*)` y `COUNT(DISTINCT)` también en el selector de UI; verificación sobre la tabla del snapshot; calidad por reglas con badge y razones; banda inferior de conteos acotada a 0; golden set multi-esquema y regresión mensual de la demo. Evidencia: `datos` diario proyecta 31 periodos, queda `no_confiable` por MAPE y ya no muestra bandas negativas; la demo mensual reproduce la línea base. Suite completa: **990 passed, 258 subtests**; frontend 18/142. |
+| **008** | [`008-feedback-uf-usabilidad.md`](008-feedback-uf-usabilidad.md) | ✅ **Bloques A–F + lotes 2, 3 y escenario (11/11/2026)** | Feedback del usuario final (26 puntos, 27 capturas): marca `Dat.ia`, selector demo gateado por `VITE_DEMO_MODE`, navegación simplificada, "Opciones" y `/admin` solo admin, alertas de seguridad filtradas, "Mi cuenta" con cambio de contraseña voluntario, un solo alta de fuente, `full_name`, Detener con copy honesto, horizonte desde el texto (1–36) con granularidad trimestral real, dimensión inferida, narrativa simple con guards contra horizonte contradictorio y jerga, resultados con nombres legibles y detalle técnico colapsado, calidad en lenguaje simple, tooltips sin MAPE/backtest, ayuda y **modo escenario** para "10% anual en 10 años" (120 meses, sin backtest, etiquetado como supuesto). "Los botones no funcionan" no reprodujo. Evidencia: pytest **1035 passed, 264 subtests**; vitest 20/157; tsc exit 0; build OK; e2e **8 passed**. Pendiente: PNG original del footer y escenario con dimensión. |
 
 ---
 
@@ -39,7 +40,10 @@ solo el lote de Docker/deps/scripts (`DK-01..03`, `DEP-BE-04/05`, `SC-R-01`,
 `BS-04/05`), que exige un build limpio de Docker para verificarse, dos ítems
 menores con causa declarada (`DUP-09` y `H15`) y el resto de la Fase 5
 (`useChatEngine`, `ChatDashboardPage`, `router.py`, `init_db.py`), que sigue
-siendo por demanda.
+siendo por demanda. **008** es el plan vigente del feedback del usuario final:
+los bloques A–F están implementados y verificados; quedan solo el PNG original
+del footer (E2), la pasada visual por Admin (V1) y verificar la dimensión
+inferida con el modelo local real.
 
 ---
 

@@ -68,6 +68,16 @@ export interface ProjectionQuality {
   reasons: string[];
 }
 
+export interface ProjectionScenario {
+  growth_pct: number;
+  annual?: boolean;
+  base_value: number;
+  base_period?: string | null;
+  final_value: number;
+  gain: number;
+  label?: string;
+}
+
 export interface ProjectionResult {
   available: boolean;
   reason?: string | null;
@@ -82,6 +92,8 @@ export interface ProjectionResult {
   total?: ProjectionTotal | null;
   /** Top de grupos por volumen historico; no reemplaza el total general. */
   breakdown?: ProjectionBreakdown | null;
+  /** Escenario de crecimiento (supuesto), separado de la proyeccion estadistica. */
+  scenario?: ProjectionScenario | null;
   method?: string | null;
   beats_naive?: boolean | null;
   mape?: number | null;
@@ -99,7 +111,7 @@ export interface ProjectionResult {
   table_source?: string | null;
   metric_column?: string | null;
   metric_agg?: string | null;
-  /** "day" | "week" | "month": unidad del eje publicado. */
+  /** "day" | "week" | "month" | "quarter": unidad del eje publicado. */
   granularity?: string | null;
   date_column?: string | null;
   /** Conexion usada; la verificacion la necesita para releer el dato actual. */
@@ -217,7 +229,7 @@ export interface ProjectionOverrides {
   dateColumn?: string | null;
   dimensionColumn?: string | null;
   /** Unidad manual del eje; el default del backend es mes. */
-  granularity?: 'day' | 'week' | 'month' | null;
+  granularity?: 'day' | 'week' | 'month' | 'quarter' | null;
 }
 
 export const projectionService = {

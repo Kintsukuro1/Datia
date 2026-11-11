@@ -22,6 +22,7 @@ export const UserAddModal: React.FC<UserAddModalProps> = ({
 }) => {
   const [newUsername, setNewUsername] = useState('');
   const [newEmail, setNewEmail] = useState('');
+  const [newFullName, setNewFullName] = useState('');
   const [created, setCreated] = useState<UserCreationResult | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -30,6 +31,7 @@ export const UserAddModal: React.FC<UserAddModalProps> = ({
   const resetForm = () => {
     setNewUsername('');
     setNewEmail('');
+    setNewFullName('');
     setCreated(null);
     setCreateError(null);
     resetCopy();
@@ -63,12 +65,14 @@ export const UserAddModal: React.FC<UserAddModalProps> = ({
       const data = await authService.createUser({
         username: newUsername.trim(),
         email: newEmail.trim() || undefined,
+        full_name: newFullName.trim() || undefined,
       });
 
       const createdItem: UserItem = {
         id: data.user.id,
         name: data.user.username,
         email: data.user.email || `${data.user.username}@empresa.com`,
+        full_name: data.user.full_name ?? null,
         role: resolveRoleLabel(data.user),
         is_admin: data.user.is_admin,
         is_active: data.user.is_active,
@@ -78,6 +82,7 @@ export const UserAddModal: React.FC<UserAddModalProps> = ({
 
       setNewUsername('');
       setNewEmail('');
+      setNewFullName('');
       setCreateError(null);
       onSuccess(createdItem);
       setCreated(data);
@@ -126,7 +131,13 @@ export const UserAddModal: React.FC<UserAddModalProps> = ({
                 <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
                 <div>
                   <p className="font-semibold text-app-text">
-                    Cuenta «{created.user.username}» creada.
+                    {created.user.full_name
+                      ? `Cuenta de ${created.user.full_name} creada`
+                      : `Cuenta «${created.user.username}» creada`}
+                    {created.user.full_name && (
+                      <span className="font-normal text-gray-400"> (@{created.user.username})</span>
+                    )}
+                    .
                   </p>
                   <p className="text-gray-400 mt-0.5">
                     Entrega esta contraseña temporal al usuario. Solo se muestra esta vez.
@@ -168,6 +179,22 @@ export const UserAddModal: React.FC<UserAddModalProps> = ({
             </div>
           ) : (
             <form id="user-add-form" onSubmit={handleSubmit} className="space-y-3.5">
+              <div>
+                <label htmlFor="new-user-full-name" className="block text-gray-300 font-medium mb-1">
+                  Nombre completo
+                </label>
+                <input
+                  id="new-user-full-name"
+                  aria-label="Nombre completo"
+                  type="text"
+                  value={newFullName}
+                  onChange={(e) => setNewFullName(e.target.value)}
+                  placeholder="ej. Felipe Pérez"
+                  maxLength={120}
+                  className="w-full bg-app-bg border border-app-border rounded-xl px-3 py-2 text-app-text focus:outline-none focus:border-purple-500"
+                />
+              </div>
+
               <div>
                 <label htmlFor="new-user-username" className="block text-gray-300 font-medium mb-1">
                   Nombre de Usuario

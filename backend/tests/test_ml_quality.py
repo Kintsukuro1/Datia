@@ -34,26 +34,28 @@ class TestCalidadPorReglas(unittest.TestCase):
         out = self._quality(_projection(mape=None))
         self.assertEqual(out["status"], "sin_medicion")
         self.assertIsNone(out["mape"])
-        self.assertIn("no hay MAPE medible", out["reasons"])
+        self.assertIn("no hay un error promedio medible", out["reasons"])
 
     def test_no_confiable_por_mape(self):
         out = self._quality(_projection(mape=67.7))
         self.assertEqual(out["status"], "no_confiable")
-        self.assertIn("MAPE 67,7% supera el 50%", out["reasons"])
+        self.assertIn(
+            "el error promedio (67,7%) supera el límite de 50%", out["reasons"]
+        )
         self.assertEqual(out["unreliable_threshold"], UNRELIABLE_MAPE)
         self.assertEqual(out["exploratory_threshold"], EXPLORATORY_MAPE)
 
     def test_no_confiable_si_no_le_gana_al_naive(self):
         out = self._quality(_projection(mape=10, beats_naive=False))
         self.assertEqual(out["status"], "no_confiable")
-        self.assertIn("no le gana al naive", out["reasons"])
+        self.assertIn("no mejora a repetir el último valor", out["reasons"])
 
     def test_no_confiable_si_no_hay_total(self):
         out = self._quality(_projection(mape=10, measured=None))
         self.assertEqual(out["status"], "no_confiable")
         reasons = " ".join(out["reasons"])
         self.assertIn("no se pudo calcular el total", reasons)
-        self.assertNotIn("no hay pasos medidos", reasons)
+        self.assertNotIn("el total no tiene pasos medidos", reasons)
 
     def test_no_confiable_si_el_total_no_tiene_pasos_medidos(self):
         out = self._quality(_projection(mape=10, measured=None))
@@ -66,7 +68,7 @@ class TestCalidadPorReglas(unittest.TestCase):
             "steps": [{"point": 1.0, "n_backtests": 5}],
         })
         self.assertEqual(out["status"], "no_confiable")
-        self.assertIn("no hay pasos medidos", " ".join(out["reasons"]))
+        self.assertIn("el total no tiene pasos medidos", " ".join(out["reasons"]))
 
     def test_no_confiable_si_la_banda_no_cubre_el_horizonte(self):
         out = self._quality(_projection(mape=10, measured=3))
@@ -76,22 +78,26 @@ class TestCalidadPorReglas(unittest.TestCase):
     def test_exploratoria_por_mape_entre_30_y_50(self):
         out = self._quality(_projection(mape=40))
         self.assertEqual(out["status"], "exploratoria")
-        self.assertIn("MAPE 40% supera el 30%", out["reasons"])
+        self.assertIn(
+            "el error promedio (40%) supera el límite de 30%", out["reasons"]
+        )
 
     def test_exploratoria_por_pocos_backtests(self):
         out = self._quality(_projection(mape=10, backtests=2))
         self.assertEqual(out["status"], "exploratoria")
-        self.assertIn("2 backtests", " ".join(out["reasons"]))
+        self.assertIn("2 pruebas", " ".join(out["reasons"]))
 
     def test_exploratoria_sin_comparacion_contra_naive(self):
         out = self._quality(_projection(mape=10, beats_naive=None))
         self.assertEqual(out["status"], "exploratoria")
-        self.assertIn("sin comparación contra naive", out["reasons"])
+        self.assertIn(
+            "sin comparación con repetir el último valor", out["reasons"]
+        )
 
     def test_exploratoria_con_huecos(self):
         out = self._quality(_projection(mape=10), has_gaps=True)
         self.assertEqual(out["status"], "exploratoria")
-        self.assertIn("periodos faltantes", " ".join(out["reasons"]))
+        self.assertIn("faltan períodos", " ".join(out["reasons"]))
 
     def test_confiable_con_toda_la_evidencia(self):
         out = self._quality(_projection(mape=20))
@@ -101,9 +107,9 @@ class TestCalidadPorReglas(unittest.TestCase):
     def test_el_estado_ganador_no_mezcla_razones_del_peor(self):
         out = self._quality(_projection(mape=67.7, backtests=1, measured=3))
         self.assertEqual(out["status"], "no_confiable")
-        self.assertIn("MAPE", " ".join(out["reasons"]))
+        self.assertIn("error promedio", " ".join(out["reasons"]))
         self.assertIn("cubre 3 de 6", " ".join(out["reasons"]))
-        self.assertNotIn("backtests", " ".join(out["reasons"]))
+        self.assertNotIn("pruebas", " ".join(out["reasons"]))
 
 
 class TestBandaDeConteo(unittest.TestCase):

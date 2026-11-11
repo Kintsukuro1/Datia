@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from app.api.deps import get_db, get_current_user, require_assigned_role
+from app.api.deps import get_db, get_current_user, is_admin_user, require_assigned_role
 from app.core.database import discard_failed_transaction
 from app.modules.auth.models import User
 from app.modules.admin_catalog.models import CorporateConnection
@@ -427,12 +427,23 @@ async def get_system_anomalies(
                 "id": f"conn-rev-{c.id}",
                 "type": "security",
                 "severity": "warning",
-                "title": f"Revisión requerida: {c.name}",
-                "description": f"La base de datos '{c.database_name}' tiene {pending} elemento(s) pendientes de asignar a un dominio RBAC.",
+                "title": f"Hay tablas sin clasificar en {c.name}",
+                "description": f"Faltan {pending} tablas de '{c.database_name}' por asignar a un perfil. Mientras tanto, esas tablas no aparecen en las respuestas.",
                 "action_label": "Ir a Administración" if current_user.is_admin else "Revisar Catálogo",
                 "action_route": "/admin" if current_user.is_admin else None,
                 "query_prompt": f"¿Cuáles son las tablas y columnas pendientes de clasificar en la base de datos {c.name}?"
             })
+
+    # Las anomalias de tipo "security" (tablas sin perfil asignado en el catalogo,
+    # bloqueos AST) describen la gobernanza interna de la base. Un usuario sin
+    # privilegios de admin no las recibe: le cuentan que tablas existen y que no
+    # estan clasificadas, aunque su perfil no pueda verlas.
+    #
+    # El filtro va sobre la lista YA armada, asi `count` y `has_critical` se
+    # calculan solo sobre lo que el usuario efectivamente ve. Contar lo oculto
+    # delata su existencia (y deja un "critico" que no aparece en ningun lado).
+    if not is_admin_user(current_user):
+        anomalies = [a for a in anomalies if a["type"] != "security"]
 
     return {
         "count": len(anomalies),

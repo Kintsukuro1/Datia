@@ -1,20 +1,17 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import echarts from '../shared/echarts';
-import { useNavigate } from 'react-router-dom';
 import { useChatEngine } from '../features/chat/hooks/useChatEngine';
 import { SidebarChatHistory } from '../components/chat/SidebarChatHistory';
 import { ChatMessageItem } from '../components/chat/ChatMessageItem';
 import { ChatEmptyState } from '../components/chat/ChatEmptyState';
 import { ChatPromptInput } from '../components/chat/ChatPromptInput';
+import { HelpModal } from '../components/chat/HelpModal';
 import { TraceabilityModal } from '../components/traceability/TraceabilityModal';
 import {
   History,
-  Database,
   User as UserIcon,
   Bot,
-  Tv,
-  Minimize2,
   LayoutDashboard,
   AlertTriangle,
   Pin,
@@ -24,7 +21,7 @@ import {
   Sparkles,
   BarChart3,
   RefreshCw,
-  TrendingUp,
+  HelpCircle,
 } from 'lucide-react';
 import { queryService } from '../features/chat/services/query_service';
 import { ProjectionSuggestionCard } from '../features/chat/components/ProjectionSuggestionCard';
@@ -34,7 +31,6 @@ import { useModalA11y } from '../hooks/useModalA11y';
 
 export const ChatDashboardPage: React.FC = () => {
   const { notify } = useNotifications();
-  const navigate = useNavigate();
   const {
     user,
     userRole,
@@ -50,8 +46,6 @@ export const ChatDashboardPage: React.FC = () => {
     setIsMobileHistoryOpen,
     activeDatabaseName,
     activeConnectionId,
-    connectors,
-    promptSuggestions,
     builderOptions,
     activeThread,
     sidebarThreads,
@@ -87,10 +81,7 @@ export const ChatDashboardPage: React.FC = () => {
     ? sidebarThreads.find((t) => t.id === attemptThreadId)
     : undefined;
 
-  const [isPresentationMode, setIsPresentationMode] = useState(false);
-
-  // Stable identities for the props that cross into ChatMessageItem.
-  // elapsedSeconds ticks every second and re-renders this page; as inline
+  // Stable identities for the props that cross into ChatMessageItem.  // elapsedSeconds ticks every second and re-renders this page; as inline
   // arrows these two were new on every render, which defeated React.memo on
   // the message list and made every chart in the thread rebuild its ECharts
   // instance once per second for the whole 8-25s of "thinking".
@@ -170,12 +161,13 @@ export const ChatDashboardPage: React.FC = () => {
   } | null>(null);
   const [anomaliesError, setAnomaliesError] = useState<string | null>(null);
   const [isAnomaliesOpen, setIsAnomaliesOpen] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
   // La ultima consulta gana: al cambiar de fuente, la respuesta de la anterior
   // no puede pintarse como si fuera de la actual.
   const anomaliesSeqRef = useRef(0);
   const [unpinningId, setUnpinningId] = useState<number | null>(null);
 
-  const fetchWidgets = async () => {
+  const fetchWidgets = useCallback(async () => {
     const seq = ++widgetsSeqRef.current;
     try {
       const data = await queryService.getWidgets();
@@ -188,7 +180,7 @@ export const ChatDashboardPage: React.FC = () => {
       // Sin fallback a []: la UI dice "DESCONOCIDO" en vez de "Tablero (0)".
       setWidgetsError(err.message || 'No se pudieron consultar los tableros.');
     }
-  };
+  }, []);
 
   const fetchAnomalies = async (connId?: number | null) => {
     const seq = ++anomaliesSeqRef.current;
@@ -208,7 +200,7 @@ export const ChatDashboardPage: React.FC = () => {
 
   useEffect(() => {
     fetchWidgets();
-  }, []);
+  }, [fetchWidgets]);
 
   useEffect(() => {
     // Al cambiar de fuente, lo de la anterior se descarta de inmediato: no hay
@@ -235,76 +227,32 @@ export const ChatDashboardPage: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    const handleGlobalKeys = (e: KeyboardEvent) => {
-      if (e.key === 'F11') {
-        e.preventDefault();
-        setIsPresentationMode((prev) => !prev);
-      } else if (e.key === 'Escape' && isPresentationMode) {
-        setIsPresentationMode(false);
-      }
-    };
-    window.addEventListener('keydown', handleGlobalKeys);
-    return () => window.removeEventListener('keydown', handleGlobalKeys);
-  }, [isPresentationMode]);
-
   return (
-    <div className={`flex ${isPresentationMode ? 'fixed inset-0 z-50 bg-[#07090E]' : 'h-[calc(100dvh-4rem)]'} overflow-hidden bg-[#0A0D14] chat-shell`}>
-      {/* Sidebar Desktop & Mobile (Hidden in Presentation Mode) */}
-      {!isPresentationMode && (
-        <SidebarChatHistory
-          threads={sidebarThreads}
-          activeId={activeThreadId}
-          activeDatabaseName={activeDatabaseName}
-          isOpenMobile={isMobileHistoryOpen}
-          searchInputRef={searchInputRef}
-          onCloseMobile={() => setIsMobileHistoryOpen(false)}
-          onSelectThread={handleSelectThread}
-          onNewThread={handleNewThread}
-          onDeleteThread={handleDeleteThread}
-        />
-      )}
+    <div className="flex h-[calc(100dvh-4rem)] overflow-hidden bg-[#0A0D14] chat-shell">
+      {/* Sidebar Desktop & Mobile */}
+      <SidebarChatHistory
+        threads={sidebarThreads}
+        activeId={activeThreadId}
+        isOpenMobile={isMobileHistoryOpen}
+        searchInputRef={searchInputRef}
+        onCloseMobile={() => setIsMobileHistoryOpen(false)}
+        onSelectThread={handleSelectThread}
+        onNewThread={handleNewThread}
+        onDeleteThread={handleDeleteThread}
+      />
 
       {/* Main Container */}
       <div className="flex-1 flex flex-col min-w-0 h-full relative bg-gradient-to-b from-[#0B0F19] via-[#0A0D14] to-[#07090E] chat-shell-panel">
         {/* Top Context Subheader */}
         <div className="relative z-30 h-12 border-b border-[#1E293B]/60 bg-[#0F172A]/80 backdrop-blur-md px-4 flex items-center justify-between shrink-0 chat-shell-header">
           <div className="flex items-center gap-3">
-            {!isPresentationMode && (
-              <button
-                onClick={() => setIsMobileHistoryOpen(true)}
-                className="md:hidden p-1.5 rounded-lg text-app-muted hover:text-app-text hover:bg-app-hover transition"
-                title="Ver Historial"
-              >
-                <History size={18} />
-              </button>
-            )}
-
-            <div className="flex items-center gap-2 text-xs font-medium">
-              <Database size={14} className="text-cyan-400 shrink-0" />
-              {connectors.length > 1 ? (
-                <div className="flex items-center gap-1.5">
-                  <label htmlFor="chat-active-db-select" className="sr-only">Seleccionar Fuente de Datos</label>
-                  <select
-                    id="chat-active-db-select"
-                    aria-label="Seleccionar Fuente de Datos Activa"
-                    value={activeConnectionId || ''}
-                    onChange={(e) => handleSelectConnection(Number(e.target.value))}
-                    className="bg-app-surface border border-app-border text-app-text text-xs rounded-lg px-2.5 py-1 focus:outline-none focus:border-brand-500 cursor-pointer font-medium hover:border-brand-500/50 transition-colors shadow-xs"
-                  >
-                    {connectors.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} ({c.db_type.toUpperCase()})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ) : (
-                <span className="text-app-text font-semibold truncate max-w-[200px] sm:max-w-none">
-                  {activeDatabaseName}
-                </span>
-              )}
-            </div>
+            <button
+              onClick={() => setIsMobileHistoryOpen(true)}
+              className="md:hidden p-1.5 rounded-lg text-app-muted hover:text-app-text hover:bg-app-hover transition"
+              title="Ver Historial"
+            >
+              <History size={18} />
+            </button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -351,7 +299,7 @@ export const ChatDashboardPage: React.FC = () => {
                       <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-zinc-800">
                         <span className="text-xs font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
                           <AlertTriangle size={14} className="text-amber-500 dark:text-amber-400" />
-                          Alertas y Monitoreo Proactivo
+                          Alertas
                         </span>
                         <button
                           type="button"
@@ -365,8 +313,7 @@ export const ChatDashboardPage: React.FC = () => {
                       <div className="max-h-60 overflow-y-auto space-y-2">
                         {anomaliesData.anomalies.length === 0 && (
                           <p className="p-2.5 text-[11px] text-gray-600 dark:text-zinc-400">
-                            El servidor registró {anomaliesData.count} pero no devolvió el detalle.
-                          </p>
+                            Hay {anomaliesData.count} {anomaliesData.count === 1 ? 'alerta' : 'alertas'}, pero no se pudo ver el detalle.                          </p>
                         )}
                         {anomaliesData.anomalies.map((a) => (
                           <div key={a.id} className="p-2.5 rounded-xl bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 space-y-1.5">
@@ -379,7 +326,7 @@ export const ChatDashboardPage: React.FC = () => {
                                   ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
                                   : 'bg-blue-500/20 text-blue-700 dark:text-blue-300'
                               }`}>
-                                {a.severity}
+                                {a.severity === 'critical' ? 'Crítico' : a.severity === 'warning' ? 'Aviso' : 'Info'}
                               </span>
                             </div>
                             <p className="text-[11px] text-gray-600 dark:text-zinc-400">{a.description}</p>
@@ -415,44 +362,33 @@ export const ChatDashboardPage: React.FC = () => {
               </div>
             )}
 
-            {/* Tablero Ejecutivo Button */}
-            <button
-              type="button"
-              onClick={() => {
-                fetchWidgets();
-                setIsWidgetsOpen(true);
-              }}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-app-muted hover:text-app-text bg-app-card hover:bg-app-hover border border-app-border transition shadow-xs"
-              title="Ver Tablero Ejecutivo con gráficos fijados"
-            >
-              <LayoutDashboard size={13} className="text-amber-500 dark:text-amber-400" />
-              <span>Tablero ({widgetsError ? '?' : widgetsLoaded ? widgets.length : '…'})</span>
-            </button>
-
-            {/* Proyecciones ML: entrada a la seccion completa (la pregunta se
-                escribe alla; el chat no calcula proyecciones). */}
-            <button
-              type="button"
-              onClick={() => navigate('/projections')}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-app-muted hover:text-app-text bg-app-card hover:bg-app-hover border border-app-border transition shadow-xs"
-              title="Proyecciones con machine learning sobre tus datos"
-            >
-              <TrendingUp size={13} className="text-violet-500 dark:text-violet-400" />
-              <span>Proyecciones</span>
-            </button>
+            {/* Tablero Ejecutivo Button. Se oculta solo cuando el servidor confirmo
+                que no hay widgets fijados: ahi "Tablero (0)" abre un modal vacio y
+                no lleva a ningun lado. Cargando (…) o con error (?) el conteo es
+                DESCONOCIDO, no cero, y el boton se mantiene. */}
+            {!(widgetsLoaded && !widgetsError && widgets.length === 0) && (
+              <button
+                type="button"
+                onClick={() => {
+                  fetchWidgets();
+                  setIsWidgetsOpen(true);
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-app-muted hover:text-app-text bg-app-card hover:bg-app-hover border border-app-border transition shadow-xs"
+                title="Ver Tablero Ejecutivo con gráficos fijados"
+              >
+                <LayoutDashboard size={13} className="text-amber-500 dark:text-amber-400" />
+                <span>Tablero ({widgetsError ? '?' : widgetsLoaded ? widgets.length : '…'})</span>
+              </button>
+            )}
 
             <button
               type="button"
-              onClick={() => setIsPresentationMode(!isPresentationMode)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition shadow-xs ${
-                isPresentationMode
-                  ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40'
-                  : 'text-app-muted hover:text-app-text bg-app-card hover:bg-app-hover border border-app-border'
-              }`}
-              title="Alternar Modo Presentación Pantalla Completa (F11 / ESC)"
+              onClick={() => setIsHelpOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-app-muted hover:text-app-text bg-app-card hover:bg-app-hover border border-app-border transition shadow-xs"
+              title="Cómo usar Dat.ia"
             >
-              {isPresentationMode ? <Minimize2 size={13} /> : <Tv size={13} />}
-              <span>{isPresentationMode ? 'Salir (ESC)' : 'Presentar'}</span>
+              <HelpCircle size={13} className="text-brand-500" />
+              <span>Ayuda</span>
             </button>
           </div>
         </div>
@@ -468,17 +404,11 @@ export const ChatDashboardPage: React.FC = () => {
         )}
 
         {/* Scrollable Conversation Stream */}
-        <div className={`flex-1 overflow-y-auto px-4 py-6 md:px-8 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 ${isPresentationMode ? 'max-w-6xl mx-auto w-full' : ''}`}>
+        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-8 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
           {(!activeThread || activeThread.results.length === 0) && !attemptCard && !projectionSuggestion ? (
-            <ChatEmptyState
-              promptSuggestions={promptSuggestions}
-              onSelectSuggestion={(sugg) => {
-                setPromptInput(sugg);
-                handleSendPrompt(sugg);
-              }}
-            />
+            <ChatEmptyState onOpenHelp={() => setIsHelpOpen(true)} />
           ) : (
-            <div className={`${isPresentationMode ? 'max-w-5xl' : 'max-w-4xl'} mx-auto space-y-8`}>
+            <div className="max-w-4xl mx-auto space-y-8">
               {activeThread?.results.map((res, index) => (
                 <ChatMessageItem
                   key={res.id || index}
@@ -491,6 +421,7 @@ export const ChatDashboardPage: React.FC = () => {
                   onEditPrompt={handleEditPrompt}
                   onFeedback={handleFeedback}
                   onFollowUp={sendFollowUp}
+                  onWidgetPinned={fetchWidgets}
                 />
               ))}
 
@@ -533,7 +464,7 @@ export const ChatDashboardPage: React.FC = () => {
                     <div className="chat-bot-response bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700/60 rounded-2xl rounded-tl-sm p-4 max-w-[85%] sm:max-w-2xl space-y-2.5 shadow-xl">
                       <div className="flex items-center space-x-2 text-[10px] text-brand-700 dark:text-brand-400 font-semibold">
                         <Bot className="w-3 h-3" />
-                        <span>DATIA IA</span>
+                        <span>Dat.ia</span>
                         <span className="text-slate-400 dark:text-slate-500">•</span>
                         {pendingError ? (
                           <span className="text-rose-600 dark:text-rose-400 font-normal flex items-center gap-1.5">
@@ -543,7 +474,7 @@ export const ChatDashboardPage: React.FC = () => {
                         ) : (
                           <span className="text-slate-600 dark:text-slate-400 font-normal flex items-center gap-1.5">
                             <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse" />
-                            Procesando con IA Local
+                            Procesando…
                           </span>
                         )}
                       </div>
@@ -557,7 +488,7 @@ export const ChatDashboardPage: React.FC = () => {
                           <span className="inline-block w-2 h-2 rounded-full bg-brand-500 dark:bg-cyan-400 animate-bounce [animation-delay:0.2s]" />
                           <span className="inline-block w-2 h-2 rounded-full bg-brand-500 dark:bg-cyan-400 animate-bounce [animation-delay:0.4s]" />
                           <span className="text-brand-700 dark:text-cyan-300 text-xs pl-1 font-medium animate-fadeIn">
-                            Analizando tu pregunta con el modelo local
+                            Buscando la respuesta en tus datos…
                           </span>
                           {/* Lo unico que el navegador sabe con certeza: que sigue
                               corriendo y cuanto lleva. Sin barra de progreso: no
@@ -582,9 +513,8 @@ export const ChatDashboardPage: React.FC = () => {
 
                       {longWaitNotice && !pendingError && (
                         <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-2 animate-fadeIn">
-                          La primera respuesta con un modelo local puede tardar entre 8 y 25 segundos: el motor encadena varias
-                          llamadas al LLM en CPU antes de poder responder. No está colgado. Podés seguir esperando o
-                          cancelar y reformular la pregunta.
+                          Está tardando un poco más de lo normal. Seguimos trabajando: podés esperar
+                          o cancelar y volver a preguntar.
                         </p>
                       )}
 
@@ -608,7 +538,7 @@ export const ChatDashboardPage: React.FC = () => {
                       ) : (
                         <div className="flex items-center justify-between gap-2 pt-0.5">
                           <span className="text-[10px] text-slate-500 dark:text-slate-400">
-                            El motor no informa en qué etapa está hasta que responda.
+                            Estamos preparando la respuesta.
                           </span>
                           <button
                             type="button"
@@ -632,29 +562,39 @@ export const ChatDashboardPage: React.FC = () => {
           <div ref={chatBottomRef} />
         </div>
 
-        {/* Floating Input Controls (Hidden in Presentation Mode) */}
-        {!isPresentationMode && (
-          <div className="p-4 md:p-6 bg-gradient-to-t from-[#07090E] via-[#0A0D14] to-transparent shrink-0 chat-shell-input-wrap">
-            <div className="max-w-4xl mx-auto">
-              {isGenerating && !attemptCard && (
-                <p className="mb-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-2">
+        {/* Floating Input Controls */}
+        <div className="p-4 md:p-6 bg-gradient-to-t from-[#07090E] via-[#0A0D14] to-transparent shrink-0 chat-shell-input-wrap">
+          <div className="max-w-4xl mx-auto">
+            {isGenerating && !attemptCard && (
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-2">
+                <span>
                   Hay una consulta en curso
                   {attemptThread ? ` en «${attemptThread.title}»` : ''} (lleva {elapsedSeconds}s).
-                  El campo se habilita cuando termine: su respuesta va a quedar en esa conversación.
-                </p>
-              )}
-              <ChatPromptInput
-                promptInput={promptInput}
-                setPromptInput={setPromptInput}
-                isGenerating={isGenerating}
-                activeDatabaseName={activeDatabaseName}
-                builderOptions={builderOptions}
-                textareaRef={promptTextareaRef}
-                onSubmit={(customPrompt) => handleSendPrompt(customPrompt || promptInput)}
-              />
-            </div>
+                  El campo se habilita cuando termine.
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCancelPrompt}
+                  aria-label="Detener la consulta en curso"
+                  title="Dejar de esperar la respuesta. El servidor puede seguir trabajando."
+                  className="flex items-center gap-1 rounded-lg border border-amber-500/40 px-2 py-0.5 font-semibold transition-colors hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-600 dark:hover:text-rose-400"
+                >
+                  <X className="w-3 h-3" />
+                  <span>Detener</span>
+                </button>
+              </div>
+            )}
+            <ChatPromptInput
+              promptInput={promptInput}
+              setPromptInput={setPromptInput}
+              isGenerating={isGenerating}
+              activeDatabaseName={activeDatabaseName}
+              builderOptions={builderOptions}
+              textareaRef={promptTextareaRef}
+              onSubmit={(customPrompt) => handleSendPrompt(customPrompt || promptInput)}
+            />
           </div>
-        )}
+        </div>
       </div>
 
       {/* Traceability Modal */}
@@ -663,6 +603,8 @@ export const ChatDashboardPage: React.FC = () => {
         isOpen={Boolean(activeTraceability)}
         onClose={() => setActiveTraceability(null)}
       />
+
+      <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
 
 
       {/* Tablero Ejecutivo Modal */}

@@ -118,19 +118,19 @@ function buildOption(result: ProjectionResult) {
           html += tooltipRow('Proyección', moneyOrDash(step.point), PROJECTED_COLOR);
           if (step.lower !== null && step.upper !== null) {
             html += tooltipRow(
-              step.band_pct === null ? 'Banda' : `Banda ±${fmtPct(step.band_pct)}`,
+              step.band_pct === null ? 'Margen' : `Margen ±${fmtPct(step.band_pct)}`,
               `${formatMetricNumber(step.lower, true)} – ${formatMetricNumber(step.upper, true)}`,
               PROJECTED_COLOR
             );
           }
           if (step.mape !== null) {
-            html += tooltipRow('MAPE del paso', fmtPct(step.mape), '#F59E0B');
+            html += tooltipRow('Error del paso', fmtPct(step.mape), '#F59E0B');
           }
-          html += tooltipRow('Backtests', String(step.n_backtests), '#64748B');
+          html += tooltipRow('Pruebas', String(step.n_backtests), '#64748B');
           if (step.extrapolated) {
-            html += `<div style="margin-top:5px;font-size:10px;color:#FBBF24;">Sin backtest propio: hereda la banda del último paso medido.</div>`;
+            html += `<div style="margin-top:5px;font-size:10px;color:#FBBF24;">Sin prueba propia: usa el margen del último paso medido.</div>`;
           } else if (!step.reliable) {
-            html += `<div style="margin-top:5px;font-size:10px;color:#FBBF24;">Poca evidencia: menos de 4 backtests en este paso.</div>`;
+            html += `<div style="margin-top:5px;font-size:10px;color:#FBBF24;">Poca evidencia: menos de 4 pruebas en este paso.</div>`;
           }
         }
         return html + '</div>';

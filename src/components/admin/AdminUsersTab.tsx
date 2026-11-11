@@ -12,6 +12,7 @@ export interface UserItem {
   name: string;
   username?: string;
   email: string;
+  full_name?: string | null;
   role: string;
   is_admin: boolean;
   // `undefined` en caches viejos = cuenta activa (default del backend).
@@ -134,12 +135,14 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({ users, usersLoaded
                 <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
                   <div className="flex items-center space-x-2">
                   <span className="w-7 h-7 rounded-full bg-brand-50 border border-brand-200 text-brand-700 dark:bg-purple-500/20 dark:border-purple-500/30 dark:text-purple-300 font-bold text-xs flex items-center justify-center">
-                    {u.name.charAt(0).toUpperCase()}
+                    {(u.full_name || u.name).charAt(0).toUpperCase()}
                   </span>
                   <div>
-                    <span>{u.name}</span>
-                    {u.username && u.username !== u.name && (
-                      <p className="text-[10px] text-slate-500 dark:text-gray-500">@{u.username}</p>
+                    <span>{u.full_name || u.name}</span>
+                    {(u.full_name || (u.username && u.username !== u.name)) && (
+                      <p className="text-[10px] text-slate-500 dark:text-gray-500">
+                        @{u.username || u.name}
+                      </p>
                     )}
                     {(u.must_change_password || u.temp_password_expires_at) && (
                       <span

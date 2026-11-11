@@ -3,6 +3,7 @@ import { AlertTriangle, ChevronDown, FileSpreadsheet, FileText, Info, Loader2, S
 import { ProjectionChart } from './ProjectionChart';
 import type { ProjectionGroupSummary, ProjectionResult } from '../services/projection_service';
 import { sumLastPeriods, variationPct } from '../services/projection_metrics';
+import { humanizeLabel } from '../../chat/utils/query_builder';
 import { reportService } from '../../dashboard/services/report_service';
 import { useNotifications } from '../../../context/NotificationContext';
 
@@ -26,7 +27,7 @@ const pct = (n: number | null | undefined): string =>
   n === null || n === undefined ? '—' : `${Number(n).toLocaleString('es-CL', { maximumFractionDigits: 1 })}%`;
 
 const METHOD_LABELS: Record<string, string> = {
-  naive: 'Naive (último valor)',
+  naive: 'Repetir el último valor',
   mean: 'Media histórica',
   ols_trend: 'Tendencia lineal (OLS)',
 };
@@ -37,10 +38,14 @@ const GRANULARITY_LABELS: Record<string, string> = {
   day: 'Día',
   week: 'Semana',
   month: 'Mes',
+  quarter: 'Trimestre',
 };
 
 const granularityLabel = (value?: string | null): string =>
   GRANULARITY_LABELS[value ?? 'month'] ?? 'Mes';
+
+/** `monto_neto` -> `Monto neto`; el nombre crudo queda en el `title` del elemento. */
+const legibleColumn = (raw?: string | null): string => humanizeLabel(raw ?? '') || '—';
 
 const tableSourceLabel = (source?: string | null): string => {
   if (source === 'manual') return 'elegida manualmente';
@@ -50,9 +55,9 @@ const tableSourceLabel = (source?: string | null): string => {
 };
 
 const QUALITY_LABELS: Record<string, string> = {
-  confiable: 'Confiable',
-  exploratoria: 'Exploratoria',
-  no_confiable: 'No confiable',
+  confiable: 'Estimación sólida',
+  exploratoria: 'Revisar con cautela',
+  no_confiable: 'Poco confiable',
   sin_medicion: 'Sin medición de error',
 };
 
@@ -83,9 +88,9 @@ const QUALITY_EXPLANATIONS: Record<string, string> = {
   exploratoria:
     'La proyección se puede leer, pero hay señales que reducen la confianza: error medio, poca evidencia en algún paso o huecos en la serie.',
   no_confiable:
-    'El error medido o la cobertura de la banda no permiten tratar estas cifras como una estimación confiable.',
+    'El error medido o el margen del total no permiten tratar estas cifras como una estimación confiable.',
   sin_medicion:
-    'No se pudo medir el error: no hay backtests suficientes para afirmar qué tan precisa es la proyección.',
+    'No se pudo medir el error: no hay pruebas suficientes para afirmar qué tan precisa es la proyección.',
 };
 
 /**
@@ -114,25 +119,25 @@ const QualityBadge: React.FC<{ result: ProjectionResult; compact?: boolean }> = 
     if (quality.mape !== null && quality.mape !== undefined) {
       checks.push(
         quality.exploratory_threshold !== null && quality.exploratory_threshold !== undefined
-          ? `MAPE global ${pct(quality.mape)}, por debajo del umbral exploratorio ${pct(quality.exploratory_threshold)}.`
-          : `MAPE global ${pct(quality.mape)}.`
+          ? `Error promedio ${pct(quality.mape)}, por debajo del umbral de referencia ${pct(quality.exploratory_threshold)}.`
+          : `Error promedio ${pct(quality.mape)}.`
       );
     }
     if (result.beats_naive === true) {
-      checks.push('Le ganó al naive en el walk-forward.');
+      checks.push('Mejora a repetir el último valor.');
     }
     const measured = result.total?.measured_steps;
     if (measured !== null && measured !== undefined && measured >= result.horizon) {
-      checks.push(`La banda del total está medida sobre los ${result.horizon} pasos.`);
+      checks.push(`El margen del total está medido sobre los ${result.horizon} pasos.`);
     }
     const minBacktests = Math.min(
       ...result.steps.filter((step) => step.point !== null).map((step) => step.n_backtests)
     );
     if (Number.isFinite(minBacktests) && minBacktests >= 4) {
-      checks.push(`El paso con menos evidencia tiene ${minBacktests} backtests.`);
+      checks.push(`El paso con menos evidencia tiene ${minBacktests} pruebas.`);
     }
     if (!result.has_gaps) {
-      checks.push('La serie no tiene periodos faltantes.');
+      checks.push('La serie no tiene períodos faltantes.');
     }
   }
 
@@ -184,7 +189,7 @@ const QualityBadge: React.FC<{ result: ProjectionResult; compact?: boolean }> = 
 
         {hasThresholds && status !== 'confiable' && (
           <span className="mt-2 block border-t border-app-border/70 pt-1.5 text-[10px] text-app-muted">
-            Umbrales del servidor: exploratoria si el MAPE supera{' '}
+            Umbrales del servidor: exploratoria si el error promedio supera{' '}
             {pct(quality.exploratory_threshold)}; no confiable si supera{' '}
             {pct(quality.unreliable_threshold)}.
           </span>
@@ -196,9 +201,18 @@ const QualityBadge: React.FC<{ result: ProjectionResult; compact?: boolean }> = 
 
 const horizonSourceLabel = (source?: string | null): string | null => {
   if (source === 'pedido') return 'elegido en el pedido';
+  if (source === 'pregunta') return 'según tu pregunta';
+  if (source === 'pregunta_recortada') return 'según tu pregunta (máximo 36 pasos)';
   if (source === 'llm') return 'ajustado por la IA (Auto)';
   if (source === 'default') return 'valor por defecto de Auto';
   return null;
+};
+
+const horizonUnit = (granularity?: string | null): string => {
+  if (granularity === 'week') return 'semanas';
+  if (granularity === 'day') return 'días';
+  if (granularity === 'quarter') return 'trimestres';
+  return 'meses';
 };
 
 /**
@@ -390,6 +404,62 @@ const EvidenceChip: React.FC<{ step: ProjectionResult['steps'][number] }> = ({ s
   );
 };
 
+const ScenarioCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
+  const scenario = result.scenario;
+  if (!scenario) return null;
+  return (
+    <section className="rounded-2xl border border-violet-500/30 bg-violet-500/5 p-4 shadow-xs">
+      <header className="flex flex-wrap items-baseline justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-bold text-app-text">Escenario de crecimiento</h3>
+          <p className="mt-0.5 text-xs text-app-muted">
+            Supuesto determinista: no es un pronóstico estadístico.
+          </p>
+        </div>
+        <span className="inline-flex items-center rounded-md border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[11px] font-semibold text-violet-700 dark:text-violet-300">
+          {pct(scenario.growth_pct)} anual
+        </span>
+      </header>
+
+      <dl className="mt-3 grid grid-cols-2 gap-3 text-xs lg:grid-cols-4">
+        <div>
+          <dt className="text-app-muted">Base</dt>
+          <dd className="mt-0.5 text-lg font-bold tabular-nums text-app-text">
+            {money(scenario.base_value)}
+          </dd>
+          {scenario.base_period && (
+            <dd className="text-[10px] text-app-muted">{scenario.base_period}</dd>
+          )}
+        </div>
+        <div>
+          <dt className="text-app-muted">Valor final</dt>
+          <dd className="mt-0.5 font-semibold tabular-nums text-app-text">
+            {money(scenario.final_value)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-app-muted">Ganancia vs. base</dt>
+          <dd className="mt-0.5 font-semibold tabular-nums text-app-text">
+            {money(scenario.gain)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-app-muted">Total del escenario</dt>
+          <dd className="mt-0.5 font-semibold tabular-nums text-app-text">
+            {money(result.total?.point ?? null)}
+          </dd>
+        </div>
+      </dl>
+
+      <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-app-muted">
+        <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+        Escenario determinista: no incluye banda de error ni una medición de
+        precisión. Sirve para explorar un supuesto, no para prometer un resultado.
+      </p>
+    </section>
+  );
+};
+
 const TotalCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
   const total = result.total;
   if (!total || total.point === null) {
@@ -497,7 +567,7 @@ const TotalCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
           </dd>
         </div>
         <div>
-          <dt className="text-app-muted">MAPE del total</dt>
+          <dt className="text-app-muted">Error promedio del total</dt>
           <dd className="mt-0.5 font-semibold tabular-nums text-app-text">{pct(total.mape)}</dd>
         </div>
       </dl>
@@ -587,7 +657,10 @@ const BreakdownCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
     <section className="overflow-hidden rounded-2xl border border-app-border bg-app-card shadow-xs">
       <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-app-border/80 px-4 py-3">
         <h3 className="text-sm font-bold text-app-text">
-          Desglose por {breakdown.dimension_column ?? 'dimensión'}
+          Desglose por{' '}
+          <span title={breakdown.dimension_column ?? undefined}>
+            {breakdown.dimension_column ? legibleColumn(breakdown.dimension_column) : 'dimensión'}
+          </span>
         </h3>
         <span className="text-[11px] text-app-muted">
           Top {breakdown.top_n} por volumen histórico
@@ -667,7 +740,7 @@ const StepsTable: React.FC<{ result: ProjectionResult }> = ({ result }) => (
     <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-app-border/80 px-4 py-3">
       <h3 className="text-sm font-bold text-app-text">Error y evidencia por paso</h3>
       <span className="text-[11px] text-app-muted">
-        Horizonte publicado: {result.horizon} {result.horizon === 1 ? 'paso' : 'pasos'}
+        Horizonte publicado: {result.horizon} {horizonUnit(result.granularity)}
         {horizonSourceLabel(result.horizon_source)
           ? ` · ${horizonSourceLabel(result.horizon_source)}`
           : ''}
@@ -736,14 +809,14 @@ const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
   const beatsNaive =
     result.beats_naive === true ? (
       <span className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
-        Le ganó al naive
+        Mejor que repetir el último valor
       </span>
     ) : result.beats_naive === false ? (
       <span
         className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
-        title="El backtest walk-forward no encontró ningún método estrictamente mejor que el naive para esta serie."
+        title="Ninguna forma de calcular la proyección superó a repetir el último valor de la serie."
       >
-        No le ganó al naive
+        No mejora a repetir el último valor
       </span>
     ) : (
       <span className="text-app-muted">—</span>
@@ -760,7 +833,7 @@ const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
           <dd className="mt-0.5 text-sm font-semibold text-app-text">{methodLabel(result.method)}</dd>
         </div>
         <div>
-          <dt className="text-app-muted">¿Le ganó al naive?</dt>
+          <dt className="text-app-muted">¿Mejor que repetir el último valor?</dt>
           <dd className="mt-0.5">{beatsNaive}</dd>
         </div>
         <div>
@@ -784,14 +857,14 @@ const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
           </dd>
         </div>
         <div>
-          <dt className="text-app-muted">MAPE global</dt>
+          <dt className="text-app-muted">Error promedio</dt>
           <dd className="mt-0.5 text-sm font-semibold tabular-nums text-app-text">{pct(result.mape)}</dd>
         </div>
       </dl>
 
       {candidates.length > 0 && (
         <p className="mt-3 text-[11px] leading-relaxed text-app-muted">
-          MAPE por candidato en el walk-forward:{' '}
+          Error de cada método probado:{' '}
           {candidates.map(([m, v], i) => (
             <span key={m}>
               {i > 0 && ' · '}
@@ -810,9 +883,9 @@ const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
           {result.analysis_source === 'manual'
             ? 'Métrica y eje elegidos manualmente por el usuario.'
             : result.analysis_source === 'llm'
-              ? 'Métrica y eje elegidos por la IA local.'
+              ? 'Métrica y eje elegidos a partir de tu pregunta.'
               : result.analysis_source === 'heuristica'
-                ? 'Métrica y eje elegidos por heurística: el modelo local no respondió.'
+                ? 'Elegimos la métrica y el eje a partir de tu pregunta.'
                 : 'Métrica y eje elegidos en el servidor.'}
         </span>
       </p>
@@ -855,13 +928,10 @@ const NarrationCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
       <header className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="flex items-center gap-2 text-sm font-bold text-app-text">
           <Sparkles className="h-4 w-4 shrink-0 text-violet-600 dark:text-violet-400" aria-hidden />
-          Lectura del resultado
+          Qué dicen los números
         </h3>
         <div className="flex flex-wrap items-center gap-1.5">
           <QualityBadge result={result} compact />
-          <span className="inline-flex items-center rounded-md border border-app-border bg-app-card px-2 py-0.5 text-[10px] font-medium text-app-muted">
-            {result.narration_source === 'llm' ? 'IA local' : 'plantilla'}
-          </span>
         </div>
       </header>
 
@@ -891,7 +961,7 @@ const NarrationCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
           <span>
             {expanded
               ? 'Mostrar menos'
-              : `Leer análisis completo (${paragraphs.length - 1} párrafo${paragraphs.length - 1 === 1 ? '' : 's'} más)`}
+              : `Ver el resto del resumen (${paragraphs.length - 1} párrafo${paragraphs.length - 1 === 1 ? '' : 's'} más)`}
           </span>
           <ChevronDown
             className={`h-3.5 w-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`}
@@ -902,16 +972,18 @@ const NarrationCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
 
       <p className="mt-2.5 flex items-start gap-1.5 text-[11px] text-app-muted">
         <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
-        {result.narration_source === 'llm'
-          ? 'Redactada por el modelo local a partir de los números ya calculados; no calcula nada por su cuenta.'
-          : 'Plantilla determinista del servidor: el modelo local no respondió, y la lectura se publica igual.'}
+        {result.scenario
+          ? 'Escenario determinista; no es un pronóstico estadístico.'
+          : result.narration_source === 'llm'
+            ? 'Resumen automático a partir de los números ya calculados; no calcula nada por su cuenta.'
+            : 'El resumen se generó con la plantilla del servidor porque el asistente no respondió; la lectura se publica igual.'}
       </p>
     </section>
   );
 };
 
 /** Leyenda compacta: tres muestras visuales en vez de un parrafo explicativo. */
-const ChartLegend: React.FC = () => (
+const ChartLegend: React.FC<{ scenario?: boolean }> = ({ scenario = false }) => (
   <ul className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-app-muted">
     <li className="flex items-center gap-1.5">
       <span aria-hidden className="inline-block h-0.5 w-5 rounded bg-[#94A3B8]" />
@@ -919,15 +991,17 @@ const ChartLegend: React.FC = () => (
     </li>
     <li className="flex items-center gap-1.5">
       <span aria-hidden className="inline-block w-5 border-t-2 border-dashed border-[#7C3AED]" />
-      Proyección
+      {scenario ? 'Escenario' : 'Proyección'}
     </li>
-    <li className="flex items-center gap-1.5">
-      <span
-        aria-hidden
-        className="inline-block h-2.5 w-5 rounded-sm border border-[#7C3AED]/40 bg-[rgba(124,58,237,0.16)]"
-      />
-      banda de error (backtest)
-    </li>
+    {!scenario && (
+      <li className="flex items-center gap-1.5">
+        <span
+          aria-hidden
+          className="inline-block h-2.5 w-5 rounded-sm border border-[#7C3AED]/40 bg-[rgba(124,58,237,0.16)]"
+        />
+        banda de error (backtest)
+      </li>
+    )}
   </ul>
 );
 
@@ -935,10 +1009,19 @@ export const ProjectionResults: React.FC<{ result: ProjectionResult }> = ({ resu
   // El scope de la captura del grafico: el contenedor de ESTE chart, para que
   // el PDF no incruste una figura ajena si la pagina llegara a tener mas de una.
   const chartScopeRef = useRef<HTMLDivElement>(null);
+  // El detalle tecnico nace cerrado y NO se renderiza mientras este cerrado:
+  // es evidencia de auditoria, no la lectura, y no debe quedar en el texto
+  // visible de la pagina.
+  const [detailOpen, setDetailOpen] = useState(false);
+  const detailId = useId();
 
   if (!result.available) {
     return <UnavailableBlock result={result} />;
   }
+
+  const lastSeries = result.series[result.series.length - 1];
+  const lastPeriod =
+    result.series.length > 0 && lastSeries?.periodo ? String(lastSeries.periodo) : null;
 
   return (
     <div className="animate-slideUp space-y-5">
@@ -947,11 +1030,20 @@ export const ProjectionResults: React.FC<{ result: ProjectionResult }> = ({ resu
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-sm font-bold text-app-text">
               <TrendingUp className="h-4 w-4 shrink-0 text-violet-600 dark:text-violet-400" aria-hidden />
-              Proyección publicada
+              {result.scenario ? 'Escenario de crecimiento' : 'Proyección publicada'}
             </h2>
             <p className="mt-0.5 text-xs text-app-muted">
-              {result.table ?? '—'} · {result.metric_column ?? '—'} · eje {result.date_column ?? '—'}
+              <span title={result.table ?? undefined}>{legibleColumn(result.table)}</span>
+              {' · '}
+              <span title={result.metric_column ?? undefined}>{legibleColumn(result.metric_column)}</span>
+              {' · eje '}
+              <span title={result.date_column ?? undefined}>{legibleColumn(result.date_column)}</span>
             </p>
+            {lastPeriod !== null && (
+              <p className="mt-1 text-xs text-app-muted">
+                Datos hasta: <span className="font-semibold text-app-text">{lastPeriod}</span>
+              </p>
+            )}
             {result.question && (
               <p className="mt-1 truncate text-xs italic text-app-muted" title={result.question}>
                 «{result.question}»
@@ -965,11 +1057,13 @@ export const ProjectionResults: React.FC<{ result: ProjectionResult }> = ({ resu
       {/* La lectura va primero: es la conclusion, no un anexo al final. */}
       <NarrationCard result={result} />
 
-      <TotalCard result={result} />
+      {result.scenario ? <ScenarioCard result={result} /> : <TotalCard result={result} />}
 
       <section className="rounded-2xl border border-app-border bg-app-card p-4 shadow-xs">
         <header className="flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="text-sm font-bold text-app-text">Serie y proyección</h3>
+          <h3 className="text-sm font-bold text-app-text">
+            {result.scenario ? 'Serie y escenario' : 'Serie y proyección'}
+          </h3>
           <span className="text-[11px] text-app-muted">
             {result.horizon} {result.horizon === 1 ? 'paso publicado' : 'pasos publicados'}
           </span>
@@ -977,12 +1071,37 @@ export const ProjectionResults: React.FC<{ result: ProjectionResult }> = ({ resu
         <div className="mt-2" ref={chartScopeRef}>
           <ProjectionChart result={result} />
         </div>
-        <ChartLegend />
+        <ChartLegend scenario={Boolean(result.scenario)} />
       </section>
 
       <BreakdownCard result={result} />
-      <StepsTable result={result} />
-      <MethodCard result={result} />
+
+      {!result.scenario && (
+        <>
+          <div>
+            <button
+              type="button"
+              onClick={() => setDetailOpen((value) => !value)}
+              aria-expanded={detailOpen}
+              aria-controls={detailId}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-app-border bg-app-card px-3 py-2 text-xs font-semibold text-app-text shadow-xs transition-colors hover:bg-app-hover"
+            >
+              <span>{detailOpen ? 'Ocultar detalle técnico' : 'Ver detalle técnico'}</span>
+              <ChevronDown
+                className={`h-3.5 w-3.5 transition-transform ${detailOpen ? 'rotate-180' : ''}`}
+                aria-hidden
+              />
+            </button>
+          </div>
+
+          {detailOpen && (
+            <div id={detailId} className="space-y-5">
+              <StepsTable result={result} />
+              <MethodCard result={result} />
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 };

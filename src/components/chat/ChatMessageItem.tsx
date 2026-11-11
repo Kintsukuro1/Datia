@@ -35,6 +35,8 @@ interface ChatMessageItemProps {
   onEditPrompt?: (question: string) => void;
   onFeedback?: (result: QueryResult, rating: 'positive' | 'negative') => void | Promise<unknown>;
   onFollowUp?: (prompt: string) => void;
+  /** El gráfico se fijó en el servidor: la página refresca el conteo del tablero. */
+  onWidgetPinned?: () => void;
 }
 
 const PipelineBadge: React.FC<{ source?: string }> = ({ source }) => {
@@ -80,6 +82,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
   onEditPrompt,
   onFeedback,
   onFollowUp,
+  onWidgetPinned,
 }) => {
   const { notify } = useNotifications();
   const { copied: copiedSql, copy: copySql } = useCopyFeedback();
@@ -184,6 +187,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
       });
       if (ok) {
         setIsPinned(true);
+        onWidgetPinned?.();
       } else {
         notify('error', 'No se pudo fijar el gráfico en el tablero.');
       }
@@ -259,7 +263,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
           <div className="flex flex-wrap items-center gap-2 px-1">
             <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-app-text bg-app-card border border-app-border px-2.5 py-0.5 rounded-full">
               <Sparkles className="w-3 h-3 text-brand-400" />
-              DATIA
+              Dat.ia
             </span>
             <span className="font-mono text-[10px] tabular-nums text-app-muted">{result.timestamp}</span>
             {/* Provenance: whether this answer came from the backend, straight

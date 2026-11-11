@@ -530,27 +530,28 @@ def evaluate_quality(
             "status": "sin_medicion",
             "mape": None,
             **thresholds,
-            "reasons": ["no hay MAPE medible"],
+            "reasons": ["no hay un error promedio medible"],
         }
 
     no_confiable: List[str] = []
     if mape > UNRELIABLE_MAPE:
         no_confiable.append(
-            f"MAPE {_quality_pct(mape)} supera el {_quality_pct(UNRELIABLE_MAPE)}"
+            f"el error promedio ({_quality_pct(mape)}) supera el límite de "
+            f"{_quality_pct(UNRELIABLE_MAPE)}"
         )
     if projection.get("beats_naive") is False:
-        no_confiable.append("no le gana al naive")
+        no_confiable.append("no mejora a repetir el último valor")
 
     total = projection.get("total")
     if total is None:
-        no_confiable.append("no se pudo calcular el total del horizonte")
+        no_confiable.append("no se pudo calcular el total del período")
     else:
         measured = total.get("measured_steps")
         if measured is None:
-            no_confiable.append("no hay pasos medidos en el total")
+            no_confiable.append("el total no tiene pasos medidos")
         elif int(measured) < horizon:
             no_confiable.append(
-                f"la banda del total cubre {measured} de {horizon} pasos"
+                f"el margen del total cubre {measured} de {horizon} pasos"
             )
 
     if no_confiable:
@@ -573,17 +574,18 @@ def evaluate_quality(
     exploratory: List[str] = []
     if mape > EXPLORATORY_MAPE:
         exploratory.append(
-            f"MAPE {_quality_pct(mape)} supera el {_quality_pct(EXPLORATORY_MAPE)}"
+            f"el error promedio ({_quality_pct(mape)}) supera el límite de "
+            f"{_quality_pct(EXPLORATORY_MAPE)}"
         )
     if min_backtests < MIN_BACKTESTS_RELIABLE:
         exploratory.append(
-            f"el paso con menos evidencia tiene {min_backtests} backtests "
+            f"el paso con menos evidencia tiene {min_backtests} pruebas "
             f"(mínimo {MIN_BACKTESTS_RELIABLE})"
         )
     if projection.get("beats_naive") is None:
-        exploratory.append("sin comparación contra naive")
+        exploratory.append("sin comparación con repetir el último valor")
     if has_gaps:
-        exploratory.append("la serie tiene periodos faltantes")
+        exploratory.append("faltan períodos en la serie")
 
     if exploratory:
         return {

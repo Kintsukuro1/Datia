@@ -125,9 +125,12 @@ export function useAdminUsers(users: UserItem[], usersLoaded: boolean, onRefresh
   const handleUserCreated = (createdItem: UserItem) => {
     const updatedUsers = [...state.userList, createdItem];
     saveUsersToStorage(updatedUsers);
+    const displayName = createdItem.full_name
+      ? `${createdItem.full_name} (${createdItem.name})`
+      : createdItem.name;
     dispatch({
       type: 'SET_SUCCESS_BANNER',
-      message: `Usuario '${createdItem.name}' registrado correctamente.`,
+      message: `Usuario '${displayName}' registrado correctamente.`,
     });
     if (onRefreshUsers) onRefreshUsers();
     setTimeout(() => dispatch({ type: 'SET_SUCCESS_BANNER', message: null }), 3500);

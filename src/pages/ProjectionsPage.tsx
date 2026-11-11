@@ -4,7 +4,6 @@ import { Database, Loader2, TrendingUp, X } from 'lucide-react';
 import { useChatEngine } from '../features/chat/hooks/useChatEngine';
 import {
   projectionService,
-  type ProjectionContext,
   type ProjectionHistoryItem,
   type ProjectionResult,
 } from '../features/projections/services/projection_service';
@@ -30,34 +29,11 @@ import { useNotifications } from '../context/NotificationContext';
 // Fases por tiempo: la corrida no informa en que etapa esta hasta responder.
 // Se muestran como contexto del trabajo del servidor, no como medicion.
 const GENERATION_PHASES = [
-  'Analizando la pregunta y eligiendo tabla y métrica...',
-  'Leyendo los datos con tus permisos vigentes...',
-  'Calculando la proyección (walk-forward de 3 métodos)...',
-  'Redactando la lectura de los resultados...',
+  'Entendiendo tu pregunta…',
+  'Leyendo tus datos…',
+  'Calculando la proyección…',
+  'Preparando el resumen…',
 ];
-
-const HORIZONS = [3, 6, 12] as const;
-
-// El selector de métrica usa tokens para las opciones que no son una columna
-// sumable: COUNT(*) y COUNT(DISTINCT col).
-const COUNT_METRIC = '__count__';
-const COUNT_DISTINCT_PREFIX = 'count_distinct:';
-
-function metricPayload(value: string): {
-  metricColumn: string | null;
-  metricAgg: 'count' | 'count_distinct' | null;
-} {
-  if (value === COUNT_METRIC) {
-    return { metricColumn: '*', metricAgg: 'count' };
-  }
-  if (value.startsWith(COUNT_DISTINCT_PREFIX)) {
-    return {
-      metricColumn: value.slice(COUNT_DISTINCT_PREFIX.length),
-      metricAgg: 'count_distinct',
-    };
-  }
-  return { metricColumn: value || null, metricAgg: null };
-}
 
 export const ProjectionsPage: React.FC = () => {
   const { notify } = useNotifications();
@@ -69,19 +45,6 @@ export const ProjectionsPage: React.FC = () => {
   const [question, setQuestion] = useState<string>(
     () => (location.state as { question?: string } | null)?.question ?? ''
   );
-  // 6 explicito por compatibilidad; `null` es Auto (la IA puede ajustarlo).
-  const [horizon, setHorizon] = useState<number | null>(6);
-  // Granularidad manual: día, semana o mes. El backend default es mes.
-  const [granularity, setGranularity] = useState<'day' | 'week' | 'month'>('month');
-  // Selector manual: vacio es "Automatico" y NO viaja al backend.
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [columnContext, setColumnContext] = useState<ProjectionContext | null>(null);
-  const [contextLoading, setContextLoading] = useState(false);
-  const [contextError, setContextError] = useState<string | null>(null);
-  const [tableOverride, setTableOverride] = useState('');
-  const [metricOverride, setMetricOverride] = useState('');
-  const [dateOverride, setDateOverride] = useState('');
-  const [dimensionOverride, setDimensionOverride] = useState('');
   const [phase, setPhase] = useState<'idle' | 'running' | 'done'>('idle');
   const [result, setResult] = useState<ProjectionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,8 +54,8 @@ export const ProjectionsPage: React.FC = () => {
   const liveResultRef = useRef<ProjectionResult | null>(null);
   const archivedTopRef = useRef<HTMLDivElement>(null);
   // Foto del pedido al lanzar: la pantalla de generacion tiene que mostrar lo
-  // que corre de verdad, aunque el textarea o el selector cambien despues.
-  const [runInfo, setRunInfo] = useState<{ question: string; horizon: number | null } | null>(null);
+  // que corre de verdad, aunque el textarea cambie despues.
+  const [runInfo, setRunInfo] = useState<{ question: string } | null>(null);
   const [elapsed, setElapsed] = useState(0);
   // Referencia nominal de 60s mientras no llegue la estimacion (mismo criterio
   // que el wizard): un numero conservador declarado, no una medicion fingida.
@@ -103,7 +66,6 @@ export const ProjectionsPage: React.FC = () => {
   const startedAtRef = useRef<number | null>(null);
   const runIdRef = useRef(0);
   const runControllerRef = useRef<AbortController | null>(null);
-  const contextSeqRef = useRef(0);
 
   useEffect(() => () => {
     runIdRef.current += 1;
@@ -120,57 +82,18 @@ export const ProjectionsPage: React.FC = () => {
     return () => clearInterval(id);
   }, [phase]);
 
-  // Cambiar de conexion invalida las listas y los overrides: un nombre de la
-  // base anterior no existe en la nueva y el backend lo rechazaria.
+  // Cambiar de conexion invalida el resultado: los números de A no se pueden
+  // leer como si fueran de B. También aborta la corrida en vuelo.
   useEffect(() => {
-    // Cambiar de fuente invalida el resultado: los números de A no se pueden
-    // leer como si fueran de B. También aborta la corrida en vuelo.
     runIdRef.current += 1;
     runControllerRef.current?.abort();
     runControllerRef.current = null;
-    contextSeqRef.current += 1;
-    setContextLoading(false);
     liveResultRef.current = null;
     setArchivedView(null);
     setResult(null);
     setError(null);
     setPhase('idle');
-    setColumnContext(null);
-    setContextError(null);
-    setTableOverride('');
-    setMetricOverride('');
-    setDateOverride('');
-    setDimensionOverride('');
   }, [activeConnectionId]);
-
-  const loadContext = async (tableName?: string) => {
-    if (contextLoading) return;
-    const seq = ++contextSeqRef.current;
-    const connectionId = activeConnectionId ?? null;
-    setContextLoading(true);
-    setContextError(null);
-    try {
-      const data = await projectionService.context(connectionId, tableName);
-      if (seq !== contextSeqRef.current) return;
-      setColumnContext(data);
-    } catch (err: any) {
-      if (seq !== contextSeqRef.current) return;
-      setContextError(
-        getApiErrorMessage(err, 'No se pudieron cargar las columnas para elegir.', true)
-      );
-    } finally {
-      if (seq === contextSeqRef.current) setContextLoading(false);
-    }
-  };
-
-  const selectTable = (value: string) => {
-    setTableOverride(value === 'auto' ? '' : value);
-    // Un nombre de columna de otra tabla no existe en la nueva: se resetea.
-    setMetricOverride('');
-    setDateOverride('');
-    setDimensionOverride('');
-    void loadContext(value === 'auto' ? undefined : value);
-  };
 
   const isRunning = phase === 'running';
   const canRun = question.trim().length > 0 && !isRunning;
@@ -191,7 +114,7 @@ export const ProjectionsPage: React.FC = () => {
     if (!archivedView) liveResultRef.current = result;
     setArchivedView({ auditLogId: item.audit_log_id, timestamp: item.timestamp });
     setResult(saved);
-    setRunInfo({ question: saved.question, horizon: saved.horizon });
+    setRunInfo({ question: saved.question });
     setError(null);
     setPhase('done');
   };
@@ -219,10 +142,6 @@ export const ProjectionsPage: React.FC = () => {
       ? archivedView.timestamp
       : date.toLocaleString('es-CL', { dateStyle: 'medium', timeStyle: 'short' });
   })();
-  // Con tabla Auto no se fijan columnas: el backend elige tabla y columnas
-  // juntas. Si el backend viejo no manda `tables`, se conserva el selector.
-  const columnsLocked =
-    !tableOverride && (columnContext?.tables?.length ?? 0) > 0;
 
   const runProjection = async () => {
     const prompt = question.trim();
@@ -237,7 +156,7 @@ export const ProjectionsPage: React.FC = () => {
     setResult(null);
     setArchivedView(null);
     liveResultRef.current = null;
-    setRunInfo({ question: prompt, horizon });
+    setRunInfo({ question: prompt });
     startedAtRef.current = Date.now();
     setElapsed(0);
     setExpected({ seconds: 60, source: null });
@@ -245,9 +164,9 @@ export const ProjectionsPage: React.FC = () => {
 
     try {
       // La estimacion es un adorno de la barra: si falla, la corrida sigue con
-      // la referencia nominal y la pantalla lo dice ("sin medición reciente").
+      // la referencia nominal y la pantalla lo dice.
       try {
-        const estimate = await projectionService.estimate(prompt, horizon);
+        const estimate = await projectionService.estimate(prompt, null);
         if (estimate && estimate.estimated_seconds > 0) {
           setExpected({ seconds: estimate.estimated_seconds, source: estimate.source });
         }
@@ -256,23 +175,13 @@ export const ProjectionsPage: React.FC = () => {
       }
       if (runId !== runIdRef.current) return;
 
-      const selectedMetric = metricPayload(metricOverride);
-      const overrides =
-        tableOverride || metricOverride || dateOverride || dimensionOverride || granularity !== 'month'
-          ? {
-              tableName: tableOverride || null,
-              metricColumn: selectedMetric.metricColumn,
-              metricAgg: selectedMetric.metricAgg,
-              dateColumn: dateOverride || null,
-              dimensionColumn: dimensionOverride || null,
-              granularity,
-            }
-          : undefined;
+      // El horizonte y la granularidad los decide el backend a partir de la
+      // pregunta: la UI ya no manda selectores ni overrides.
       const response = await projectionService.run(
         prompt,
         activeConnectionId ?? null,
-        horizon,
-        overrides,
+        null,
+        undefined,
         controller.signal
       );
       if (runId !== runIdRef.current) return;
@@ -287,6 +196,17 @@ export const ProjectionsPage: React.FC = () => {
       setPhase('done');
       runControllerRef.current = null;
     }
+  };
+
+  // Cancelar la espera. El servidor puede seguir trabajando: esto corta la
+  // espera del navegador, no el cálculo remoto (misma semántica que el chat).
+  const cancelProjection = () => {
+    runIdRef.current += 1;
+    runControllerRef.current?.abort();
+    runControllerRef.current = null;
+    startedAtRef.current = null;
+    setPhase('idle');
+    notify('info', 'Proyección cancelada.');
   };
 
   // Avance: fraccion transcurrida de la estimacion. El tope de 96% no se alcanza
@@ -306,12 +226,11 @@ export const ProjectionsPage: React.FC = () => {
             </div>
             <div className="min-w-0">
               <h1 className="text-lg font-extrabold tracking-tight text-app-text sm:text-xl">
-                Proyecciones con Machine Learning
+                Proyecciones
               </h1>
               <p className="text-xs leading-relaxed text-app-muted">
-                Analiza tu pregunta, elige la serie y proyecta con backtest walk-forward sobre
-                datos reales. El modelo de lenguaje narra, pero no calcula: cada número sale
-                medido y sus límites se publican.
+                Escribí qué querés proyectar y Dat.ia calcula la estimación sobre tus datos,
+                con su margen de error a la vista.
               </p>
             </div>
           </div>
@@ -343,221 +262,8 @@ export const ProjectionsPage: React.FC = () => {
                 <span className="truncate font-semibold text-app-text">{activeDatabaseName}</span>
               )}
             </div>
-
-            <div className="flex items-center gap-1.5">
-              <label htmlFor="projections-horizon-select" className="text-app-muted">
-                Horizonte
-              </label>
-              <select
-                id="projections-horizon-select"
-                value={horizon === null ? 'auto' : String(horizon)}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  setHorizon(value === 'auto' ? null : Number(value));
-                }}
-                className="cursor-pointer rounded-lg border border-app-border bg-app-surface px-2.5 py-1 text-xs font-medium text-app-text shadow-xs transition-colors hover:border-brand-500/50 focus:border-brand-500 focus:outline-none"
-              >
-                <option value="auto">Auto (según la pregunta)</option>
-                {HORIZONS.map((h) => (
-                  <option key={h} value={h}>
-                    {h} pasos
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex items-center gap-1.5">
-              <label htmlFor="projections-granularity-select" className="text-app-muted">
-                Granularidad
-              </label>
-              <select
-                id="projections-granularity-select"
-                value={granularity}
-                onChange={(e) =>
-                  setGranularity(e.target.value as 'day' | 'week' | 'month')
-                }
-                className="cursor-pointer rounded-lg border border-app-border bg-app-surface px-2.5 py-1 text-xs font-medium text-app-text shadow-xs transition-colors hover:border-brand-500/50 focus:border-brand-500 focus:outline-none"
-              >
-                <option value="day">Día</option>
-                <option value="week">Semana</option>
-                <option value="month">Mes</option>
-              </select>
-            </div>
           </div>
 
-          {/* Selector manual: opcional, solo con columnas permitidas por el rol. */}
-          <div className="mt-3">
-            <button
-              type="button"
-              id="projections-advanced-toggle"
-              aria-expanded={advancedOpen}
-              aria-controls="projections-advanced-panel"
-              onClick={() => {
-                const next = !advancedOpen;
-                setAdvancedOpen(next);
-                if (next && !columnContext && !contextLoading) {
-                  void loadContext(tableOverride || undefined);
-                }
-              }}
-              className="rounded-lg border border-app-border bg-app-surface px-2.5 py-1 text-[11px] font-semibold text-app-muted transition-colors hover:border-brand-500/50 hover:text-app-text"
-            >
-              {advancedOpen ? 'Ocultar ajustes avanzados' : 'Ajustes avanzados'}
-            </button>
-
-            {advancedOpen && (
-              <div
-                id="projections-advanced-panel"
-                className="mt-2 rounded-xl border border-app-border bg-app-surface/60 p-3"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-[11px] leading-relaxed text-app-muted">
-                    Elegí tabla, métrica, eje temporal y desglose. Solo se listan columnas que tu rol
-                    puede leer; si dejás «Automático», decide el backend.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => void loadContext(tableOverride || undefined)}
-                    disabled={contextLoading}
-                    className="text-[11px] font-semibold text-violet-600 underline-offset-2 hover:underline disabled:opacity-50 dark:text-violet-400"
-                  >
-                    {contextLoading ? 'Cargando…' : 'Actualizar columnas'}
-                  </button>
-                </div>
-
-                {contextError && (
-                  <p role="alert" className="mt-2 text-[11px] leading-relaxed text-rose-700 dark:text-rose-300">
-                    {contextError}
-                  </p>
-                )}
-
-                {columnContext && !columnContext.available && (
-                  <p className="mt-2 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
-                    {columnContext.reason || 'No hay columnas disponibles para este rol.'}
-                  </p>
-                )}
-
-                {columnContext?.available && (
-                  <>
-                    <div className="mt-2">
-                      <label
-                        htmlFor="projections-table-select"
-                        className="block text-[11px] font-medium text-app-muted"
-                      >
-                        Tabla
-                      </label>
-                      <select
-                        id="projections-table-select"
-                        value={tableOverride || 'auto'}
-                        onChange={(e) => selectTable(e.target.value)}
-                        className="mt-0.5 w-full cursor-pointer rounded-lg border border-app-border bg-app-card px-2 py-1 text-xs font-medium text-app-text focus:border-brand-500 focus:outline-none"
-                      >
-                        <option value="auto">Auto (según la pregunta)</option>
-                        {(columnContext.tables || []).map((table) => (
-                          <option key={table.name} value={table.name}>
-                            {table.name} ({table.row_count} filas)
-                            {table.friendly_name ? ` · ${table.friendly_name}` : ''}
-                          </option>
-                        ))}
-                      </select>
-                      {columnsLocked && (
-                        <p className="mt-1 text-[11px] leading-relaxed text-app-muted">
-                          Elegí una tabla para fijar métrica, eje y desglose. En Auto decide la pregunta.
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    <div>
-                      <label
-                        htmlFor="projections-metric-select"
-                        className="block text-[11px] font-medium text-app-muted"
-                      >
-                        Métrica
-                      </label>
-                      <select
-                        id="projections-metric-select"
-                        value={metricOverride}
-                        onChange={(e) => setMetricOverride(e.target.value)}
-                        disabled={columnsLocked}
-                        className="mt-0.5 w-full cursor-pointer rounded-lg border border-app-border bg-app-card px-2 py-1 text-xs font-medium text-app-text focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <option value="">Automático</option>
-                        {(columnContext.metric_options?.length
-                          ? columnContext.metric_options
-                          : columnContext.metric_columns.map((name) => ({
-                              column: name,
-                              label: name,
-                            }))
-                        ).map((option) => (
-                          <option key={option.column} value={option.column}>
-                            {option.label}
-                          </option>
-                        ))}
-                        {columnContext.count_option && (
-                          <option value={COUNT_METRIC}>
-                            {columnContext.count_option.label}
-                          </option>
-                        )}
-                        {(columnContext.identifier_options || []).map((option) => (
-                          <option
-                            key={`${COUNT_DISTINCT_PREFIX}${option.column}`}
-                            value={`${COUNT_DISTINCT_PREFIX}${option.column}`}
-                          >
-                            {option.label} (valores distintos)
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label
-                        htmlFor="projections-date-select"
-                        className="block text-[11px] font-medium text-app-muted"
-                      >
-                        Eje temporal
-                      </label>
-                      <select
-                        id="projections-date-select"
-                        value={dateOverride}
-                        onChange={(e) => setDateOverride(e.target.value)}
-                        disabled={columnsLocked}
-                        className="mt-0.5 w-full cursor-pointer rounded-lg border border-app-border bg-app-card px-2 py-1 text-xs font-medium text-app-text focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <option value="">Automático</option>
-                        {columnContext.date_columns.map((name) => (
-                          <option key={name} value={name}>{name}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label
-                        htmlFor="projections-dimension-select"
-                        className="block text-[11px] font-medium text-app-muted"
-                      >
-                        Desglose por
-                      </label>
-                      <select
-                        id="projections-dimension-select"
-                        value={dimensionOverride}
-                        onChange={(e) => setDimensionOverride(e.target.value)}
-                        disabled={columnsLocked}
-                        className="mt-0.5 w-full cursor-pointer rounded-lg border border-app-border bg-app-card px-2 py-1 text-xs font-medium text-app-text focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <option value="">Sin desglose</option>
-                        {columnContext.dimension_columns.map((name) => (
-                          <option key={name} value={name}>{name}</option>
-                        ))}
-                      </select>
-                    </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Pregunta */}
           <div className="mt-3">
             <label htmlFor="projections-question" className="sr-only">
               Pregunta de proyección
@@ -577,21 +283,27 @@ export const ProjectionsPage: React.FC = () => {
               placeholder="Ej: ¿cuánto voy a facturar en los próximos 6 meses si la tendencia sigue?"
               className="w-full resize-none rounded-xl border border-app-border bg-app-surface px-3.5 py-2.5 text-xs leading-relaxed text-app-text placeholder:text-app-muted transition-colors focus:border-brand-500 focus:outline-none disabled:opacity-60 sm:text-sm"
             />
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[11px] leading-relaxed text-app-muted">
-                Un Enter lanza el análisis y el cálculo. Con Auto, la IA puede ajustar el
-                horizonte según tu pregunta; con 3, 6 o 12, manda tu elección. El resultado
-                muestra siempre el horizonte publicado y su origen.
-              </span>
-              <button
-                type="button"
-                onClick={() => void runProjection()}
-                disabled={!canRun}
-                className="flex items-center gap-1.5 rounded-xl bg-violet-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-violet-500 disabled:pointer-events-none disabled:opacity-40"
-              >
-                {isRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
-                <span>{isRunning ? 'Proyectando…' : 'Proyectar ↵'}</span>
-              </button>
+            <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+              {isRunning ? (
+                <button
+                  type="button"
+                  onClick={cancelProjection}
+                  title="Dejar de esperar la respuesta. El cálculo puede continuar en el servidor."
+                  className="flex items-center gap-1.5 rounded-xl border border-app-border bg-app-surface px-3.5 py-1.5 text-xs font-semibold text-app-text transition-colors hover:border-rose-500/40 hover:text-rose-600 dark:hover:text-rose-400"
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden />
+                  <span>Detener</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void runProjection()}
+                  disabled={!canRun}
+                  className="flex items-center gap-1.5 rounded-xl bg-violet-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-violet-500 disabled:pointer-events-none disabled:opacity-40"
+                >
+                  <span>Proyectar</span>
+                </button>
+              )}
             </div>
           </div>
         </section>
@@ -614,11 +326,6 @@ export const ProjectionsPage: React.FC = () => {
               <p className="mx-auto max-w-lg truncate text-xs italic text-app-muted" title={runInfo?.question}>
                 «{runInfo?.question}»
               </p>
-              <p className="text-xs text-app-muted">
-                Horizonte: {runInfo && runInfo.horizon !== null
-                  ? `${runInfo.horizon} pasos`
-                  : 'Auto (la IA lo ajusta)'}
-              </p>
             </div>
 
             <div className="mx-auto max-w-lg space-y-2">
@@ -638,10 +345,10 @@ export const ProjectionsPage: React.FC = () => {
               </div>
               <p className="text-[11px] leading-relaxed text-app-muted">
                 {expected.source === 'medido'
-                  ? `Estimado: ~${Math.round(expected.seconds)} s (velocidad medida del modelo local).`
+                  ? `Tarda aproximadamente ${Math.round(expected.seconds)} segundos.`
                   : expected.source === 'fallback'
-                    ? `Estimación conservadora: ~${Math.round(expected.seconds)} s (sin medición reciente del modelo).`
-                    : 'Sin estimación todavía: referencia conservadora de 60 s.'}
+                    ? `Tarda aproximadamente ${Math.round(expected.seconds)} segundos (referencia conservadora).`
+                    : 'Calculando cuánto va a tardar…'}
               </p>
               {elapsed > expected.seconds && (
                 <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
@@ -655,6 +362,19 @@ export const ProjectionsPage: React.FC = () => {
               <Loader2 className="h-4 w-4 shrink-0 animate-spin text-violet-600 dark:text-violet-400" aria-hidden />
               <span>{GENERATION_PHASES[phaseIndex]}</span>
             </div>
+
+            <button
+              type="button"
+              onClick={cancelProjection}
+              title="Dejar de esperar la respuesta. El cálculo puede continuar en el servidor."
+              className="mx-auto flex items-center gap-1.5 rounded-xl border border-app-border bg-app-surface px-4 py-1.5 text-xs font-semibold text-app-text transition-colors hover:border-rose-500/40 hover:text-rose-600 dark:hover:text-rose-400"
+            >
+              <X className="h-3.5 w-3.5" aria-hidden />
+              <span>Detener</span>
+            </button>
+            <p className="mx-auto max-w-lg text-[10px] leading-relaxed text-app-muted">
+              Detener corta la espera en esta pantalla; el cálculo puede continuar en el servidor.
+            </p>
           </section>
         )}
 
@@ -667,7 +387,7 @@ export const ProjectionsPage: React.FC = () => {
             <p className="font-semibold">No se pudo ejecutar la proyección</p>
             <p className="mt-1 leading-relaxed">{error}</p>
             <p className="mt-2 text-xs opacity-80">
-              La pregunta quedó en el campo: corregí lo que haga falta y volvé a dar Enter.
+              La pregunta quedó en el campo: corregí lo que haga falta y volvé a intentar.
             </p>
           </section>
         )}

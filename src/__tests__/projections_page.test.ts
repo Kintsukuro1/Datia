@@ -177,6 +177,17 @@ describe('ProjectionsPage', () => {
       (b) => b.getAttribute('aria-label') === label
     ) ?? null;
 
+  const openTechnicalDetail = async () => {
+    const toggle = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Ver detalle técnico')
+    );
+    expect(toggle).toBeTruthy();
+    await act(async () => {
+      toggle!.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  };
+
   const pressEnter = async () => {
     await act(async () => {
       getTextarea().dispatchEvent(
@@ -231,34 +242,94 @@ describe('ProjectionsPage', () => {
     });
     await pressEnter();
 
-    expect(projectionService.estimate).toHaveBeenCalledWith(QUESTION, 6);
+    expect(projectionService.estimate).toHaveBeenCalledWith(QUESTION, null);
     expect(projectionService.run).toHaveBeenCalledWith(
-      QUESTION, 9, 6, undefined, expect.any(AbortSignal)
+      QUESTION, 9, null, undefined, expect.any(AbortSignal)
     );
 
     const text = container.textContent ?? '';
+    // El detalle técnico nace cerrado: no está en el texto hasta abrirlo.
+    expect(text).toContain('Ver detalle técnico');
+    expect(text).not.toContain('Error y evidencia por paso');
+    expect(text).not.toContain('Método y evidencia');
+    await openTechnicalDetail();
+
+    const detailed = container.textContent ?? '';
     // Metodo y honestidad del backtest.
-    expect(text).toContain('Naive (último valor)');
-    expect(text).toContain('No le ganó al naive');
+    expect(detailed).toContain('Repetir el último valor');
+    expect(detailed).toContain('No mejora a repetir el último valor');
     // Banda y pasos (formato es-CL: la misma convención que money()).
-    expect(text).toContain('±15,4%');
-    expect(text).toContain('2026-10');
+    expect(detailed).toContain('±15,4%');
+    expect(detailed).toContain('2026-10');
     // Paso sin backtest propio: marcado, y su punto/MAPE en "—", no en 0.
-    expect(text).toContain('sin backtest propio');
-    expect(text).toContain('—');
-    expect(text).not.toContain('$0');
+    expect(detailed).toContain('sin backtest propio');
+    expect(detailed).toContain('—');
+    expect(detailed).not.toContain('$0');
     // Narrativa con su origen.
-    expect(text).toContain('La serie sube de forma sostenida');
-    expect(text).toContain('Plantilla determinista');
+    expect(detailed).toContain('La serie sube de forma sostenida');
+    expect(detailed).toContain('plantilla del servidor');
     // Horizonte resuelto y su origen, no solo el numero.
-    expect(text).toContain('elegido en el pedido');
+    expect(detailed).toContain('elegido en el pedido');
     // Periodos descartados por el backend, con su motivo.
-    expect(text).toContain('Se excluyó');
-    expect(text).toContain('2026-10');
-    expect(text).toContain('2026-11');
+    expect(detailed).toContain('Se excluyó');
+    expect(detailed).toContain('2026-10');
+    expect(detailed).toContain('2026-11');
     // La banda ya no se presenta como un "80%" fijo.
-    expect(text).toContain('banda de error');
-    expect(text).not.toContain('80%');
+    expect(detailed).toContain('banda de error');
+    expect(detailed).not.toContain('80%');
+  });
+
+  it('muestra tabla, métrica y eje con nombres legibles y hasta dónde llegan los datos', async () => {
+    projectionService.run.mockResolvedValue(availableFixture);
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    // El encabezado de la página ya no habla de "Machine Learning".
+    expect(container.querySelector('h1')?.textContent).toBe('Proyecciones');
+    // Nombre legible a la vista, identificador crudo en el `title` (auditoría).
+    expect(container.querySelector('[title="movimientos"]')?.textContent).toBe('Movimientos');
+    expect(container.querySelector('[title="monto"]')?.textContent).toBe('Monto');
+    expect(container.querySelector('[title="fecha"]')?.textContent).toBe('Fecha');
+    const text = container.textContent ?? '';
+    expect(text).toContain('Datos hasta: 2026-09');
+  });
+
+  it('no inventa "Datos hasta" cuando la serie viene vacía', async () => {
+    projectionService.run.mockResolvedValue({ ...availableFixture, series: [] });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    expect(container.textContent ?? '').not.toContain('Datos hasta');
+  });
+
+  it('deja el detalle técnico cerrado y no lo renderiza hasta pedirlo', async () => {
+    projectionService.run.mockResolvedValue(availableFixture);
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const closed = container.textContent ?? '';
+    expect(closed).toContain('Ver detalle técnico');
+    expect(closed).not.toContain('Error y evidencia por paso');
+    expect(closed).not.toContain('Método y evidencia');
+    // Cerrado no queda en el DOM (no alcanza con CSS hidden).
+    expect(closed).not.toContain('Punto, banda, error y evidencia de cada paso proyectado');
+
+    await openTechnicalDetail();
+
+    const opened = container.textContent ?? '';
+    expect(opened).toContain('Ocultar detalle técnico');
+    expect(opened).toContain('Error y evidencia por paso');
+    expect(opened).toContain('Método y evidencia');
+    expect(opened).toContain('Punto, banda, error y evidencia de cada paso proyectado');
   });
 
   it('publica la lectura primero y deja el resto a un clic, no como muro de texto', async () => {
@@ -277,12 +348,12 @@ describe('ProjectionsPage', () => {
     const text = container.textContent ?? '';
     expect(text).toContain('La conclusión va primero');
     // La lectura se lee antes que el detalle técnico y el gráfico.
-    expect(text.indexOf('Lectura del resultado')).toBeLessThan(text.indexOf('Serie y proyección'));
+    expect(text.indexOf('Qué dicen los números')).toBeLessThan(text.indexOf('Serie y proyección'));
     // El segundo párrafo no se publica hasta pedirlo.
     expect(text).not.toContain('SEGUNDO_PARRAFO:');
 
     const expand = Array.from(container.querySelectorAll('button')).find((b) =>
-      b.textContent?.includes('Leer análisis completo')
+      b.textContent?.includes('Ver el resto del resumen')
     );
     expect(expand).toBeTruthy();
     await act(async () => {
@@ -295,188 +366,91 @@ describe('ProjectionsPage', () => {
     expect(expanded).toContain('Mostrar menos');
   });
 
-  it('la granularidad manual viaja en los overrides', async () => {
+  it('ya no ofrece horizonte, granularidad ni ajustes: la pregunta manda', async () => {
     projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
-    projectionService.run.mockResolvedValue({ ...availableFixture, granularity: 'day' });
+    projectionService.run.mockResolvedValue({
+      ...availableFixture, horizon: 12, horizon_source: 'pregunta',
+    });
 
     act(() => {
-      renderPage({ question: QUESTION });
+      renderPage({ question: 'proyecta un año' });
     });
-    const select = container.querySelector<HTMLSelectElement>(
-      '#projections-granularity-select'
-    )!;
-    act(() => {
-      select.value = 'day';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+
+    // Los selectores manuales ya no existen y la pantalla no pide contexto.
+    expect(container.querySelector('#projections-horizon-select')).toBeNull();
+    expect(container.querySelector('#projections-granularity-select')).toBeNull();
+    expect(container.querySelector('#projections-advanced-toggle')).toBeNull();
+    expect(projectionService.context).not.toHaveBeenCalled();
+
     await pressEnter();
 
+    expect(projectionService.estimate).toHaveBeenCalledWith('proyecta un año', null);
     expect(projectionService.run).toHaveBeenCalledWith(
-      QUESTION, 9, 6,
-      {
-        tableName: null,
-        metricColumn: null,
-        metricAgg: null,
-        dateColumn: null,
-        dimensionColumn: null,
-        granularity: 'day',
-      },
-      expect.any(AbortSignal)
+      'proyecta un año', 9, null, undefined, expect.any(AbortSignal)
     );
+    await openTechnicalDetail();
     const text = container.textContent ?? '';
-    expect(text).toContain('Granularidad');
-    expect(text).toContain('Día');
+    expect(text).toContain('Horizonte publicado: 12 meses');
+    expect(text).toContain('según tu pregunta');
   });
 
-  it('el selector de tabla fija la tabla y manda table_name', async () => {
-    projectionService.context.mockResolvedValue({
-      available: true,
-      connection_id: 9,
-      table: 'fact_ventas',
-      table_source: 'mayor',
-      tables: [
-        { name: 'fact_ventas', row_count: 52 },
-        { name: 'fact_ingresos_costos', row_count: 8 },
-      ],
-      metric_columns: ['monto_total'],
-      date_columns: ['fecha_venta'],
-      dimension_columns: [],
-    });
+  it('muestra un escenario de crecimiento sin semáforo de calidad ni backtest', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
     projectionService.run.mockResolvedValue({
       ...availableFixture,
-      table: 'fact_ingresos_costos',
-      table_source: 'manual',
-    });
-
-    act(() => {
-      renderPage({ question: QUESTION });
-    });
-    const toggle = container.querySelector<HTMLButtonElement>(
-      '#projections-advanced-toggle'
-    )!;
-    await act(async () => {
-      toggle.click();
-      await new Promise((r) => setTimeout(r, 0));
-    });
-    expect(projectionService.context).toHaveBeenCalledWith(9, undefined);
-
-    const tableSelect = container.querySelector<HTMLSelectElement>(
-      '#projections-table-select'
-    )!;
-    expect(tableSelect).not.toBeNull();
-    await act(async () => {
-      tableSelect.value = 'fact_ingresos_costos';
-      tableSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise((r) => setTimeout(r, 0));
-    });
-    expect(projectionService.context).toHaveBeenCalledWith(9, 'fact_ingresos_costos');
-
-    await pressEnter();
-    expect(projectionService.run).toHaveBeenCalledWith(
-      QUESTION, 9, 6,
-      {
-        tableName: 'fact_ingresos_costos',
-        metricColumn: null,
-        metricAgg: null,
-        dateColumn: null,
-        dimensionColumn: null,
-        granularity: 'month',
+      horizon: 120,
+      granularity: 'month',
+      method: 'scenario',
+      beats_naive: null,
+      mape: null,
+      mape_by_method: {},
+      quality: null,
+      total: {
+        point: 2_100,
+        lower: null,
+        upper: null,
+        band_pct: null,
+        mape: null,
+        n_backtests: 0,
+        reliable: false,
+        extrapolated: false,
+        measured_steps: null,
+        lower_clamped: false,
       },
-      expect.any(AbortSignal)
-    );
-  });
-
-  it('permite elegir COUNT(*) y manda metric_agg=count', async () => {
-    projectionService.context.mockResolvedValue({
-      available: true,
-      connection_id: 9,
-      table: 'datos',
-      table_source: 'manual',
-      tables: [{ name: 'datos', row_count: 100 }],
-      metric_columns: ['campo_7'],
-      date_columns: ['campo_2'],
-      dimension_columns: [],
-      metric_options: [
-        { column: 'campo_7', label: 'Peso / Valor', agg: 'sum' },
+      steps: [
+        { step: 1, period: '2026-10', point: 1_000, lower: null, upper: null, band_pct: null, mape: null, n_backtests: 0, reliable: false, extrapolated: false },
+        { step: 2, period: '2026-11', point: 1_100, lower: null, upper: null, band_pct: null, mape: null, n_backtests: 0, reliable: false, extrapolated: false },
       ],
-      count_option: { column: '*', label: 'Cantidad de registros', agg: 'count' },
-      identifier_options: [],
-    });
-    projectionService.run.mockResolvedValue({
-      ...availableFixture,
-      table: 'datos',
-      table_source: 'manual',
-      metric_agg: 'count',
-    });
-
-    act(() => {
-      renderPage({ question: QUESTION });
-    });
-    const toggle = container.querySelector<HTMLButtonElement>(
-      '#projections-advanced-toggle'
-    )!;
-    await act(async () => {
-      toggle.click();
-      await new Promise((r) => setTimeout(r, 0));
-    });
-    const tableSelect = container.querySelector<HTMLSelectElement>(
-      '#projections-table-select'
-    )!;
-    await act(async () => {
-      tableSelect.value = 'datos';
-      tableSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise((r) => setTimeout(r, 0));
-    });
-    const metricSelect = container.querySelector<HTMLSelectElement>(
-      '#projections-metric-select'
-    )!;
-    expect(metricSelect.disabled).toBe(false);
-    act(() => {
-      metricSelect.value = '__count__';
-      metricSelect.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-
-    await pressEnter();
-    expect(projectionService.run).toHaveBeenCalledWith(
-      QUESTION, 9, 6,
-      {
-        tableName: 'datos',
-        metricColumn: '*',
-        metricAgg: 'count',
-        dateColumn: null,
-        dimensionColumn: null,
-        granularity: 'month',
+      series: [{ periodo: '2026-09', valor: 1_000 }],
+      scenario: {
+        growth_pct: 10,
+        annual: true,
+        base_value: 1_000,
+        base_period: '2026-09',
+        final_value: 1_100,
+        gain: 100,
+        label: 'Escenario de crecimiento',
       },
-      expect.any(AbortSignal)
-    );
-  });
-
-  it('Auto manda horizon null y publica el horizonte ajustado por la IA', async () => {
-    projectionService.estimate.mockResolvedValue({
-      estimated_seconds: 25, source: 'medido', horizon_used: 12,
-    });
-    projectionService.run.mockResolvedValue({
-      ...availableFixture, horizon: 12, horizon_source: 'llm',
+      narration: 'Escenario: partiendo de 1.000 en 2026-09, con un crecimiento anual del 10%...',
+      narration_source: 'plantilla',
     });
 
     act(() => {
-      renderPage({ question: QUESTION });
-    });
-    const select = container.querySelector<HTMLSelectElement>('#projections-horizon-select')!;
-    act(() => {
-      select.value = 'auto';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
+      renderPage({ question: 'Proyectame una ganancia con el 10% de las bases en 10 años' });
     });
     await pressEnter();
 
-    expect(select.value).toBe('auto');
-    expect(projectionService.estimate).toHaveBeenCalledWith(QUESTION, null);
-    expect(projectionService.run).toHaveBeenCalledWith(
-      QUESTION, 9, null, undefined, expect.any(AbortSignal)
-    );
     const text = container.textContent ?? '';
-    expect(text).toContain('Horizonte publicado: 12 pasos');
-    expect(text).toContain('ajustado por la IA (Auto)');
+    expect(text).toContain('Escenario de crecimiento');
+    expect(text).toContain('10% anual');
+    expect(text).toContain('Ganancia vs. base');
+    expect(text).toContain('$1.000');
+    expect(text).toContain('$1.100');
+    expect(text).toContain('Escenario determinista');
+    // Sin semáforo de calidad, sin detalle técnico y sin leyenda de banda.
+    expect(text).not.toContain('Poco confiable');
+    expect(text).not.toContain('Ver detalle técnico');
+    expect(text).not.toContain('banda de error (backtest)');
   });
 
   it('publica el total del horizonte con su banda y su evidencia parcial', async () => {
@@ -497,8 +471,8 @@ describe('ProjectionsPage', () => {
     expect(text).toContain('Sin banda para el horizonte completo');
     expect(text).toContain('medición parcial');
     expect(text).toContain('Banda heredada del total de 1 paso');
-    // El MAPE del total no se inventa cuando la banda es de un prefijo.
-    expect(text).toContain('MAPE del total');
+    // El error del total no se inventa cuando la banda es de un prefijo.
+    expect(text).toContain('Error promedio del total');
     expect(text).not.toContain('$0');
   });
 
@@ -516,6 +490,7 @@ describe('ProjectionsPage', () => {
     });
     await pressEnter();
 
+    await openTechnicalDetail();
     const text = container.textContent ?? '';
     expect(text).toContain('Banda inferior acotada a 0');
     expect(text).toContain('no hay cantidades negativas');
@@ -531,8 +506,8 @@ describe('ProjectionsPage', () => {
         unreliable_threshold: 50,
         exploratory_threshold: 30,
         reasons: [
-          'MAPE 67,7% supera el 50%',
-          'la banda del total cubre 1 de 3 pasos',
+          'el error promedio (67,7%) supera el límite de 50%',
+          'el margen del total cubre 1 de 3 pasos',
         ],
       },
     });
@@ -543,16 +518,16 @@ describe('ProjectionsPage', () => {
     await pressEnter();
 
     const text = container.textContent ?? '';
-    expect(text).toContain('No confiable');
-    expect(text).toContain('MAPE 67,7% supera el 50%');
-    expect(text).toContain('la banda del total cubre 1 de 3 pasos');
+    expect(text).toContain('Poco confiable');
+    expect(text).toContain('el error promedio (67,7%) supera el límite de 50%');
+    expect(text).toContain('el margen del total cubre 1 de 3 pasos');
     expect(text).toContain('Sin banda para el horizonte completo');
 
     // El motivo también está en la nota que abre el badge (hover/foco).
     const tooltipText = Array.from(container.querySelectorAll('[role="tooltip"]'))
       .map((node) => node.textContent ?? '')
       .join(' ');
-    expect(tooltipText).toContain('MAPE 67,7% supera el 50%');
+    expect(tooltipText).toContain('el error promedio (67,7%) supera el límite de 50%');
   });
 
   it('explica en la nota por qué una proyección es confiable', async () => {
@@ -590,9 +565,9 @@ describe('ProjectionsPage', () => {
       .map((node) => node.textContent ?? '')
       .join(' ');
     expect(tooltipText).toContain('Las reglas de calidad no encontraron alertas');
-    expect(tooltipText).toContain('MAPE global 2,6%, por debajo del umbral exploratorio 30%');
-    expect(tooltipText).toContain('El paso con menos evidencia tiene 5 backtests');
-    expect(tooltipText).toContain('La serie no tiene periodos faltantes');
+    expect(tooltipText).toContain('Error promedio 2,6%, por debajo del umbral de referencia 30%');
+    expect(tooltipText).toContain('El paso con menos evidencia tiene 5 pruebas');
+    expect(tooltipText).toContain('La serie no tiene períodos faltantes');
   });
 
   it('muestra la calidad aunque no se pueda sumar el total', async () => {
@@ -604,7 +579,7 @@ describe('ProjectionsPage', () => {
         mape: 67.7,
         unreliable_threshold: 50,
         exploratory_threshold: 30,
-        reasons: ['no se pudo calcular el total del horizonte'],
+        reasons: ['no se pudo calcular el total del período'],
       },
     });
 
@@ -614,8 +589,8 @@ describe('ProjectionsPage', () => {
     await pressEnter();
 
     const text = container.textContent ?? '';
-    expect(text).toContain('No confiable');
-    expect(text).toContain('no se pudo calcular el total del horizonte');
+    expect(text).toContain('Poco confiable');
+    expect(text).toContain('no se pudo calcular el total del período');
   });
 
   it('el export manda el audit_log_id de la corrida y captura ESTE gráfico', async () => {

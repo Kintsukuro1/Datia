@@ -181,9 +181,12 @@ def build_series_sql(
         period_expr = f"TO_CHAR({date_sql}, 'IYYY-\"W\"IW')"
     elif granularity == "month":
         period_expr = f"TO_CHAR({date_sql}, 'YYYY-MM')"
+    elif granularity == "quarter":
+        # Misma etiqueta que `normalize_period`: '2026-Q3'.
+        period_expr = f"TO_CHAR({date_sql}, 'YYYY-\"Q\"Q')"
     else:
         raise ForecastUnavailable(
-            f"Granularidad no soportada: {granularity!r}; use day, week o month."
+            f"Granularidad no soportada: {granularity!r}; use day, week, month o quarter."
         )
 
     if agg == "count":
@@ -295,9 +298,12 @@ def build_group_series_sql(
         period_expr = f"TO_CHAR({date_sql}, 'IYYY-\"W\"IW')"
     elif granularity == "month":
         period_expr = f"TO_CHAR({date_sql}, 'YYYY-MM')"
+    elif granularity == "quarter":
+        # Misma etiqueta que `normalize_period`: '2026-Q3'.
+        period_expr = f"TO_CHAR({date_sql}, 'YYYY-\"Q\"Q')"
     else:
         raise ForecastUnavailable(
-            f"Granularidad no soportada: {granularity!r}; use day, week o month."
+            f"Granularidad no soportada: {granularity!r}; use day, week, month o quarter."
         )
     if agg == "count":
         aggregate, value_filter = "COUNT(*)", ""

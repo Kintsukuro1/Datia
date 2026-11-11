@@ -31,6 +31,7 @@ import math
 import re
 import statistics
 import time
+import unicodedata
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -75,8 +76,6 @@ from app.modules.chat_engine.forecast_service import (
 )
 from app.modules.chat_engine.llm_service import LLMService
 from app.modules.ml_forecast.ml_models import (
-    METHODS,
-    MIN_BACKTESTS_RELIABLE,
     build_projection,
     evaluate_quality,
 )
@@ -90,7 +89,8 @@ from app.modules.ml_forecast.resolver import (
 )
 from app.modules.ml_forecast.schemas import (
     DEFAULT_HORIZON,
-    SUPPORTED_HORIZONS,
+    MAX_HORIZON,
+    MIN_HORIZON,
     ProjectionResponse,
 )
 from app.modules.telemetry_audit.models import AuditLog
@@ -109,9 +109,9 @@ _MAX_PROMPT_COLUMNS = 120
 # que parece total y no lo es.
 BREAKDOWN_TOP_N = 5
 
-# Presupuesto de la respuesta del analisis: el JSON son tres claves cortas. Un
-# techo bajo evita que el modelo "explique" antes del JSON y gaste la latencia.
-_ANALYSIS_MAX_TOKENS = 120
+# Presupuesto de la respuesta del analisis: el JSON son cuatro claves cortas.
+# Un techo bajo evita que el modelo "explique" antes del JSON y gaste la latencia.
+_ANALYSIS_MAX_TOKENS = 160
 # 420 y no 300: con 300 el modelo cortaba la tercera frase a mitad ("...la
 # proyeccion" sin terminar) y ese texto truncado viaja a la UI y al Informe. El
 # costo son ~15 s mas en CPU; el presupuesto real lo acotan el system prompt y el
@@ -130,13 +130,17 @@ _ANALYSIS_SYSTEM_PROMPT = (
 # esten en el payload porque eso es exactamente lo que un 7B hace si se le pide
 # "explicar el forecast" sobre una tabla de numeros.
 _NARRATION_SYSTEM_PROMPT = (
-    "Eres el redactor de un informe de proyeccion. Recibes un JSON con numeros YA "
-    "calculados por el backend. Reglas: solo podes citar numeros que aparezcan en "
-    "el JSON; no inventes cifras ni prometas precision; explica las limitaciones "
-    "(historia corta, MAPE medido, huecos en la serie, pasos sin evidencia "
-    "suficiente); no contradigas el metodo publicado ni el hecho de que se "
-    "probaron todos los metodos candidatos. Responde en espanol, en 2 o 3 "
-    "parrafos."
+    "Eres el redactor de un informe de proyeccion para una persona de negocio, "
+    "no para un analista tecnico. Recibes un JSON con numeros YA calculados por "
+    "el backend. Reglas: empeza por la respuesta directa a la pregunta; solo "
+    "podes citar numeros que aparezcan en el JSON; no inventes cifras ni "
+    "prometas precision; explica las limitaciones en palabras simples (poca "
+    "historia, error promedio, huecos en la serie, pasos sin evidencia "
+    "suficiente); no uses las palabras MAPE, naive, backtest, walk-forward ni "
+    "banda; no contradigas el metodo publicado. El horizonte publicado esta en "
+    "el JSON (`horizon` y `granularity`): no lo cambies, no lo traduzcas a otra "
+    "unidad y no repitas la cifra que pidio el usuario si el backend la recorto. "
+    "Responde en espanol, en 2 o 3 parrafos."
 )
 
 # --- Estimacion de duracion ---------------------------------------------------
@@ -318,7 +322,7 @@ def projection_context(
             "dimension_columns": [
                 str(col["name"]) for col in candidates if _is_dimension_col(col)
             ],
-            "granularities": ["day", "week", "month"],
+            "granularities": ["day", "week", "month", "quarter"],
             "default_granularity": "month",
             "min_periods": MIN_PERIODS,
         }
@@ -391,15 +395,21 @@ def _validate_llm_choice(raw: Any, cols: List[Dict[str, Any]]) -> Optional[Dict[
         lambda c: _is_num_col(c) and looks_like_metric(c),
     )
     date = _canonical_column(raw.get("date_column"), by_lower, _is_date_col)
+    dimension = _canonical_column(raw.get("dimension_column"), by_lower, _is_dimension_col)
 
     # Si el modelo propone un 18, el pedido del usuario sigue siendo valido y se
     # usa ese. No se recorta a 12 ni se redondea: se ignora.
     horizon = raw.get("horizon")
     if isinstance(horizon, str) and horizon.strip().isdigit():
         horizon = int(horizon.strip())
-    if horizon not in SUPPORTED_HORIZONS:
+    if not isinstance(horizon, int) or not (MIN_HORIZON <= horizon <= MAX_HORIZON):
         horizon = None
-    return {"metric_column": metric, "date_column": date, "horizon": horizon}
+    return {
+        "metric_column": metric,
+        "date_column": date,
+        "dimension_column": dimension,
+        "horizon": horizon,
+    }
 
 
 def _parse_json_object(text: str) -> Optional[Dict[str, Any]]:
@@ -442,12 +452,18 @@ async def _ask_llm_for_columns(
         f"{listing}\n\n"
         "Elegi la columna numerica que representa la metrica que hay que proyectar "
         "y la columna de fecha que define el periodo. Si la pregunta pide contar "
-        "registros, podes elegir '*' como metrica. Si no podes decidir con esta "
-        "lista, usa null en ese campo (el backend decidira por su cuenta).\n"
-        f"Horizonte: cuantos periodos proyectar, 3, 6 o 12. Si la pregunta no pide "
-        f"otro, responde {horizon}.\n\n"
+        "registros, podes elegir '*' como metrica. Si la pregunta pide saber "
+        "CUAL o QUIEN (por ejemplo 'cual es el producto con mas ventas'), elegi "
+        "ademas una columna de tipo 'dimension' para desglosar. Si no podes "
+        "decidir con esta lista, usa null en ese campo (el backend decidira por "
+        "su cuenta).\n"
+        f"Horizonte: cuantos periodos proyectar, entre {MIN_HORIZON} y "
+        f"{MAX_HORIZON}. Si la pregunta no pide otro, responde {horizon}.\n\n"
         "Responde UNICAMENTE este objeto JSON:\n"
-        '{"metric_column": "<nombre exacto de la lista>", "date_column": "<nombre exacto de la lista>", "horizon": <3, 6 o 12>}'
+        '{"metric_column": "<nombre exacto de la lista>", "date_column": '
+        '"<nombre exacto de la lista>", "dimension_column": '
+        '"<nombre exacto de la lista o null>", "horizon": '
+        f"<{MIN_HORIZON}-{MAX_HORIZON}>}}"
     )
     text = await LLMService.generate_completion(
         prompt,
@@ -461,7 +477,7 @@ async def _ask_llm_for_columns(
 def _resolve_horizon(
     choice_horizon: Optional[int], requested_horizon: Optional[int]
 ) -> Tuple[int, str]:
-    """(horizonte que se publica, origen). Un 3/6/12 explicito no se negocia.
+    """(horizonte que se publica, origen). Un horizonte explicito no se negocia.
 
     `requested_horizon=None` es Auto: ahi si manda el LLM cuando propone un
     horizonte valido. Sin ninguna de las dos cosas queda el default 6, declarado
@@ -618,6 +634,12 @@ def _llm_options(resolution: Dict[str, Any]) -> List[Dict[str, Any]]:
             "type": "conteo",
             "label": count.get("label"),
         })
+    for column in resolution.get("dimension_columns") or []:
+        options.append({
+            "name": str(column),
+            "type": "dimension",
+            "label": None,
+        })
     return options
 
 
@@ -631,15 +653,23 @@ def _validate_llm_choice_resolved(
     date_option = find_option(
         resolution.get("date_options") or [], raw.get("date_column")
     )
+    allowed_dimensions = {
+        str(column).lower(): str(column)
+        for column in (resolution.get("dimension_columns") or [])
+    }
+    dimension = allowed_dimensions.get(
+        str(raw.get("dimension_column") or "").strip().lower()
+    )
     horizon = raw.get("horizon")
     if isinstance(horizon, str) and horizon.strip().isdigit():
         horizon = int(horizon.strip())
-    if horizon not in SUPPORTED_HORIZONS:
+    if not isinstance(horizon, int) or not (MIN_HORIZON <= horizon <= MAX_HORIZON):
         horizon = None
     return {
         "metric_column": metric["column"] if metric else None,
         "metric_agg": metric.get("agg") if metric else None,
         "date_column": date_option["column"] if date_option else None,
+        "dimension_column": dimension,
         "horizon": horizon,
     }
 
@@ -758,6 +788,7 @@ async def analyze_question(
         "table": table,
         "metric_column": manual.get("metric_column") or choice["metric_column"],
         "date_column": manual.get("date_column") or choice["date_column"],
+        "dimension_column": choice.get("dimension_column"),
         "horizon": horizon,
         "horizon_source": horizon_source,
         "source": "manual" if manual else "llm",
@@ -837,6 +868,7 @@ async def _analyze_with_resolution(
             or "sum"
         ),
         "date_column": manual.get("date_column") or choice["date_column"],
+        "dimension_column": choice.get("dimension_column"),
         "horizon": horizon,
         "horizon_source": horizon_source,
         "source": "manual" if manual else "llm",
@@ -905,6 +937,14 @@ def _period_bounds(day: date, granularity: str) -> Tuple[date, date]:
     if granularity == "week":
         start = day - timedelta(days=day.weekday())
         return start, start + timedelta(days=6)
+    if granularity == "quarter":
+        start_month = ((day.month - 1) // 3) * 3 + 1
+        end_month = start_month + 2
+        last_day = calendar.monthrange(day.year, end_month)[1]
+        return (
+            day.replace(month=start_month, day=1),
+            day.replace(month=end_month, day=last_day),
+        )
     last_day = calendar.monthrange(day.year, day.month)[1]
     return day.replace(day=1), day.replace(day=last_day)
 
@@ -1267,6 +1307,116 @@ def _projection_sql_parts(
     }
 
 
+_SCENARIO_STEPS_PER_YEAR = {
+    "day": 365.0,
+    "week": 52.0,
+    "month": 12.0,
+    "quarter": 4.0,
+}
+
+
+def _scenario_projection(
+    values: Sequence[Any],
+    normalized: Sequence[Optional[str]],
+    horizon: int,
+    granularity: str,
+    growth_pct: float,
+) -> Dict[str, Any]:
+    """Camino deterministico con crecimiento anual compuesto sobre la base.
+
+    No es un pronostico: no hay backtest, banda ni MAPE. La base es el ultimo
+    valor historico con numero finito; los pasos se generan con la tasa anual
+    convertida a la granularidad publicada (mensual: (1+g)^(1/12)).
+    """
+    pairs: List[Tuple[str, float]] = []
+    for period, value in zip(normalized, values):
+        if period is None:
+            continue
+        number = _number(value)
+        if number is not None:
+            pairs.append((period, number))
+    empty = {
+        "available": False,
+        "reason": (
+            "No hay una base historica con valores numericos para aplicar el "
+            "escenario de crecimiento."
+        ),
+        "steps": [],
+        "total": None,
+        "method": "scenario",
+        "beats_naive": None,
+        "mape": None,
+        "mape_by_method": {},
+        "quality": None,
+        "n_periods": 0,
+        "scenario": None,
+    }
+    if not pairs:
+        return empty
+
+    base_period, base_value = pairs[-1]
+    steps_per_year = _SCENARIO_STEPS_PER_YEAR.get(granularity)
+    if steps_per_year is None:
+        return empty
+    factor = (1.0 + growth_pct / 100.0) ** (1.0 / steps_per_year)
+
+    steps: List[Dict[str, Any]] = []
+    points: List[float] = []
+    period = base_period
+    for index in range(1, horizon + 1):
+        period = next_period(period, granularity)
+        point = base_value * (factor ** index)
+        points.append(point)
+        steps.append({
+            "step": index,
+            "period": period,
+            "point": point,
+            "lower": None,
+            "upper": None,
+            "band_pct": None,
+            "mape": None,
+            "n_backtests": 0,
+            "reliable": False,
+            "extrapolated": False,
+            "lower_clamped": False,
+        })
+
+    final_value = points[-1] if points else base_value
+    total = {
+        "point": sum(points),
+        "lower": None,
+        "upper": None,
+        "band_pct": None,
+        "mape": None,
+        "n_backtests": 0,
+        "reliable": False,
+        "extrapolated": False,
+        "measured_steps": None,
+        "lower_clamped": False,
+    }
+    return {
+        "available": True,
+        "reason": None,
+        "steps": steps,
+        "total": total,
+        "method": "scenario",
+        "beats_naive": None,
+        "mape": None,
+        "mape_by_method": {},
+        "quality": None,
+        "n_periods": len(pairs),
+        "scenario": {
+            "growth_pct": growth_pct,
+            "annual": True,
+            "base_value": base_value,
+            "base_period": base_period,
+            "final_value": final_value,
+            "gain": final_value - base_value,
+            "label": "Escenario de crecimiento",
+        },
+    }
+
+
 def run_projection(
     db: Session,
     connection_id: int,
@@ -1286,6 +1436,7 @@ def run_projection(
     resolution: Optional[Dict[str, Any]] = None,
     metric_agg: Optional[str] = None,
     granularity: str = "month",
+    scenario_growth_pct: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Serie real + proyeccion + metadatos. Sincrono: el router lo corre en un hilo.
 
@@ -1385,12 +1536,18 @@ def run_projection(
         normalize_period(str(row.get("periodo")), granularity) for row in rows
     ]
     has_gaps = _has_gaps(normalized, granularity)
-    projection = build_projection(values, horizon, has_gaps=has_gaps)
-    _clamp_count_bands(projection, metric_agg)
-    quality = evaluate_quality(projection, horizon=horizon, has_gaps=has_gaps)
+    if scenario_growth_pct is not None:
+        projection = _scenario_projection(
+            values, normalized, horizon, granularity, scenario_growth_pct
+        )
+        quality = None
+    else:
+        projection = build_projection(values, horizon, has_gaps=has_gaps)
+        _clamp_count_bands(projection, metric_agg)
+        quality = evaluate_quality(projection, horizon=horizon, has_gaps=has_gaps)
 
     breakdown: Optional[Dict[str, Any]] = None
-    if dimension_column:
+    if dimension_column and scenario_growth_pct is None:
         by_lower = {str(c.get("name", "")).lower(): c for c in allowed if c.get("name")}
         dim_col = by_lower.get(str(dimension_column).lower())
         if resolution is not None:
@@ -1438,11 +1595,14 @@ def run_projection(
         "available": projection["available"],
         "reason": projection["reason"],
         "horizon": horizon,
-        "steps": _with_periods(
-            projection["steps"], normalized, granularity
+        "steps": (
+            projection["steps"]
+            if scenario_growth_pct is not None
+            else _with_periods(projection["steps"], normalized, granularity)
         ),
         "total": projection["total"],
         "breakdown": breakdown,
+        "scenario": projection.get("scenario"),
         "method": projection["method"],
         "beats_naive": projection["beats_naive"],
         "mape": projection["mape"],
@@ -1840,44 +2000,75 @@ def _listar_pasos(steps: Sequence[Any]) -> str:
     return ", ".join(str(s.get("step")) for s in steps if isinstance(s, dict) and s.get("step") is not None)
 
 
+def _breakdown_top_group(payload: Dict[str, Any]) -> Optional[Tuple[str, float]]:
+    """(nombre, total proyectado) del grupo publicado con mayor proyeccion, o None.
+
+    Criterio del "mayor": el total del horizonte del grupo (`total.point`). Los
+    grupos sin total no participan: no se comparan contra un valor inventado, y
+    un grupo `available=False` no tiene total por construccion.
+
+    "Publicado" importa: `breakdown.groups` es el top-N elegido por volumen
+    historico, no todos los valores de la dimension. La frase que usa esto no
+    puede afirmar que es el mayor de toda la dimension, solo de los publicados.
+    """
+    breakdown = payload.get("breakdown")
+    if not isinstance(breakdown, dict) or not breakdown.get("available"):
+        return None
+    mejor: Optional[Tuple[str, float]] = None
+    for group in breakdown.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        total = group.get("total")
+        valor = _number(total.get("point")) if isinstance(total, dict) else None
+        nombre = group.get("value")
+        if valor is None or nombre is None:
+            continue
+        if mejor is None or valor > mejor[1]:
+            mejor = (str(nombre), valor)
+    return mejor
+
+
 def _template_narration(payload: Dict[str, Any]) -> str:
     """Narrativa determinista, hecha en codigo y SIN LLM.
 
-    Dice los mismos hechos que el LLM tiene permitido citar —metodo publicado, si
-    le gano al naive y que se probaron los tres candidatos, periodos, MAPE,
-    huecos y pasos sin evidencia—, asi que las dos narraciones son comparables
-    entre si. Existe porque la lectura no es el dato: si el modelo local no
-    responde, la respuesta se queda sin prosa pero nunca sin la lectura.
+    Dice los mismos hechos que el LLM tiene permitido citar —como se calculo,
+    error promedio, huecos, total y pasos sin evidencia— pero en lenguaje de
+    negocio. Las dos narraciones son comparables entre si. Existe porque la
+    lectura no es el dato: si el modelo local no responde, la respuesta se queda
+    sin prosa pero nunca sin la lectura.
     """
-    method = payload.get("method") or "naive"
-    probados = ", ".join(METHODS)
+    n_periodos = payload.get("n_periods") or 0
+    mape = payload.get("mape")
     partes: List[str] = []
 
     if payload.get("beats_naive"):
         partes.append(
-            f"Se probaron los tres metodos ({probados}) y el publicado es '{method}': le gano "
-            "estrictamente al naive en el backtest walk-forward."
+            "Probamos tres formas de calcular la proyección y elegimos la que mejor "
+            "se comportó al repetir la historia: le ganó a suponer que todo sigue "
+            "igual que en el último período."
         )
     else:
         partes.append(
-            f"Se probaron los tres metodos ({probados}) y ninguno le gano estrictamente al naive "
-            f"(el valor del ultimo periodo): el publicado es '{method}', el mas simple de los que empatan."
+            "Probamos tres formas de calcular la proyección y ninguna superó a "
+            "suponer que todo sigue igual que en el último período. Publicamos la "
+            "más simple de las que empataron."
         )
 
-    n_periodos = payload.get("n_periods") or 0
-    mape = payload.get("mape")
     if mape is None:
-        partes.append(f"El backtest camino sobre {n_periodos} periodos de historia y no dejo un MAPE medible.")
+        partes.append(
+            f"La comparación con la historia usó {n_periodos} períodos y no alcanzó "
+            "para medir un error promedio."
+        )
     else:
         partes.append(
-            f"El backtest camino sobre {n_periodos} periodos de historia con un MAPE de {mape}% "
-            "en el metodo publicado."
+            f"Al comparar la proyección con {n_periodos} períodos ya ocurridos, el "
+            f"error promedio fue de {mape}%."
         )
 
     if payload.get("has_gaps"):
         partes.append(
-            "La serie tiene huecos: falta al menos un mes entre el primero y el ultimo periodo, "
-            "asi que el eje no es regular."
+            "Faltan períodos en la serie: entre el primero y el último hay al menos "
+            "un mes sin datos, así que la línea de tiempo no es continua."
         )
 
     steps = payload.get("steps") or []
@@ -1888,18 +2079,28 @@ def _template_narration(payload: Dict[str, Any]) -> str:
             medidos = total.get("measured_steps")
             unidad = "paso" if medidos == 1 else "pasos"
             partes.append(
-                f"El total de los {len(steps)} pasos es {total_txt}; su banda se hereda del total "
-                f"de {medidos} {unidad}, asi que no es una medicion del horizonte completo."
+                f"El total de los {len(steps)} pasos es {total_txt}. Su margen de "
+                f"error se calculó con los primeros {medidos} {unidad}, así que no "
+                "cubre todo el período proyectado."
             )
         elif total.get("lower") is None:
             partes.append(
-                f"El total de los {len(steps)} pasos es {total_txt}, sin banda medida: "
-                "no hubo un prefijo completo que medir."
+                f"El total de los {len(steps)} pasos es {total_txt}, sin un margen "
+                "de error medido: no hubo un tramo completo para comparar."
             )
         else:
             partes.append(
-                f"El total de los {len(steps)} pasos es {total_txt}, con banda medida sobre el horizonte completo."
+                f"El total de los {len(steps)} pasos es {total_txt}, con un margen "
+                "de error calculado sobre todo el período proyectado."
             )
+    top_group = _breakdown_top_group(payload)
+    if top_group is not None:
+        nombre, valor = top_group
+        valor_txt = f"{valor:,.0f}".replace(",", ".")
+        partes.append(
+            f"Entre los grupos publicados, el de mayor proyección es {nombre}, "
+            f"con un total estimado de {valor_txt} en el período."
+        )
     extrapolados = [s for s in steps if isinstance(s, dict) and s.get("extrapolated")]
     flojos = [
         s for s in steps
@@ -1907,17 +2108,18 @@ def _template_narration(payload: Dict[str, Any]) -> str:
     ]
     if extrapolados:
         partes.append(
-            f"Los pasos {_listar_pasos(extrapolados)} no tienen backtest propio: heredan la banda "
-            "del ultimo paso medido, que no es una medicion de esos pasos."
+            f"Los pasos {_listar_pasos(extrapolados)} no se pudieron comparar con la "
+            "historia: toman el margen del último paso que sí se midió."
         )
     if flojos:
         partes.append(
-            f"Los pasos {_listar_pasos(flojos)} tienen menos de {MIN_BACKTESTS_RELIABLE} backtests: "
-            "la banda de esos pasos es evidencia escasa y no se marca como confiable."
+            f"Los pasos {_listar_pasos(flojos)} tienen pocas comparaciones: su margen "
+            "es una referencia, no una medición firme."
         )
 
     partes.append(
-        "La banda publicada sale del error que la serie ya mostro; no es una promesa de precision futura."
+        "El margen sale de cómo se equivocó la serie en el pasado; no es una promesa "
+        "de precisión futura."
     )
     return " ".join(partes)
 
@@ -1943,9 +2145,127 @@ def _narration_prompt(payload: Dict[str, Any]) -> str:
         "menor, y `beats_naive: true` es ese veredicto ya calculado. El campo "
         "`total` es la suma de los puntos publicados; si `extrapolated` es true, "
         "su banda se hereda de `measured_steps` pasos y NO es una medicion del "
-        "horizonte completo.\n\n"
-        "Redacta la lectura de esta proyeccion para el usuario, con su limitacion de "
-        "confianza explicita."
+        "horizonte completo. `breakdown.groups` es el top de categorias de "
+        "`dimension_column`, cada una proyectada con SU propia historia: si la "
+        "pregunta pide un ranking (\"cual\" o \"quien\" tiene mas), nombra el grupo "
+        "con mayor `total.point` y cita ese total; no sumes los grupos, no los "
+        "compares con el total general y no inventes grupos que no esten en la "
+        "lista.\n\n"
+        "Redacta la lectura de esta proyeccion para el usuario, en lenguaje simple, "
+        "empezando por la respuesta directa y con su limitacion de confianza explicita."
+    )
+
+
+_HORIZON_CLAIM_RE = re.compile(
+    r"(?:proxim[oa]s?|horizonte\s+de|periodo\s+de|durante(?:\s+el|\s+los)?)"
+    r"\s+(\d{1,3})\s+(dias?|semanas?|meses?|anos?|trimestres?)",
+    re.IGNORECASE,
+)
+
+# Palabras que el contrato prohibe en la prosa visible. El LLM local las ignora
+# con frecuencia ("naive", "backtests", "MAPE"), asi que la prosa se descarta y
+# se publica la plantilla, que ya habla de "repetir el último valor" y "pruebas".
+_FORBIDDEN_NARRATION_TERMS = (
+    "mape", "naive", "backtest", "walk-forward", "walk forward", "banda",
+)
+
+_UNIT_TO_MONTHS = {
+    "dia": 1 / 30.0, "dias": 1 / 30.0,
+    "semana": 1 / 4.345, "semanas": 1 / 4.345,
+    "mes": 1.0, "meses": 1.0,
+    "ano": 12.0, "anos": 12.0,
+    "trimestre": 3.0, "trimestres": 3.0,
+}
+
+_GRANULARITY_TO_MONTHS = {
+    "day": 1 / 30.0,
+    "week": 1 / 4.345,
+    "month": 1.0,
+    "quarter": 3.0,
+}
+
+
+def _normalize_for_narration(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or "").lower())
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+def _narration_contradicts_horizon(text: str, payload: Dict[str, Any]) -> bool:
+    """True si el LLM afirma un horizonte distinto al que publico el backend.
+
+    El caso real: la pregunta pedia 10 anos, el backend publico 36 meses por el
+    tope, y el LLM escribio "proximos 10 meses". La cifra del usuario y la del
+    payload no coinciden; publicar esa prosa es peor que publicar la plantilla.
+    Solo se revisan las frases "proximos N <unidad>": una mencion suelta de un
+    numero no alcanza para saber si habla del horizonte.
+    """
+    horizon = payload.get("horizon")
+    granularity = payload.get("granularity") or "month"
+    if not isinstance(horizon, int) or granularity not in _GRANULARITY_TO_MONTHS:
+        return False
+    expected_months = horizon * _GRANULARITY_TO_MONTHS[granularity]
+    normalized = _normalize_for_narration(text)
+    for match in _HORIZON_CLAIM_RE.finditer(normalized):
+        claimed_months = int(match.group(1)) * _UNIT_TO_MONTHS[match.group(2)]
+        if abs(claimed_months - expected_months) > 1.0:
+            return True
+    return False
+
+
+def _narration_has_jargon(text: str) -> bool:
+    normalized = _normalize_for_narration(text)
+    return any(term in normalized for term in _FORBIDDEN_NARRATION_TERMS)
+
+
+_PERCENT_RE = re.compile(r"\b\d{1,3}(?:[.,]\d+)?\s*%")
+_GAIN_WORDS_RE = re.compile(
+    r"\b(ganancia|ganancias|utilidad|utilidades|margen|rentabilidad|profit)\b",
+    re.IGNORECASE,
+)
+
+
+def _derived_metric_note(question: str, metric_column: Optional[str]) -> Optional[str]:
+    """Aviso cuando la pregunta pide una ganancia con un porcentaje que no se aplica.
+
+    El motor proyecta una columna fisica del catalogo; no deriva metricas ni
+    aplica supuestos ("ganancia = 10% de las ventas"). Si la pregunta mezcla una
+    palabra de ganancia con un porcentaje y la metrica elegida no es de margen,
+    la respuesta tiene que decirlo: publicar ventas como si fueran ganancias es
+    peor que no responder.
+    """
+    if not _GAIN_WORDS_RE.search(question) or not _PERCENT_RE.search(question):
+        return None
+    metric = str(metric_column or "").lower()
+    if any(word in metric for word in ("margen", "ganancia", "utilidad", "profit")):
+        return None
+    label = str(metric_column or "la métrica publicada").replace("_", " ")
+    return (
+        f"La pregunta pide una ganancia con un porcentaje; la serie publicada es "
+        f"«{label}». Dat.ia no aplica supuestos de porcentaje todavía."
+    )
+
+
+def _scenario_narration(payload: Dict[str, Any], scenario: Dict[str, Any]) -> str:
+    """Lectura determinista de un escenario: sin LLM y sin jerga estadistica."""
+    unit = {
+        "day": "días", "week": "semanas", "month": "meses", "quarter": "trimestres",
+    }.get(payload.get("granularity") or "month", "pasos")
+    def money(value: Any) -> str:
+        number = _number(value)
+        return f"{number:,.0f}".replace(",", ".") if number is not None else "—"
+    horizon = payload.get("horizon") or 0
+    growth = scenario.get("growth_pct")
+    growth_txt = f"{float(growth):g}" if growth is not None else "—"
+    base = money(scenario.get("base_value"))
+    final = money(scenario.get("final_value"))
+    gain = money(scenario.get("gain"))
+    base_period = scenario.get("base_period") or "el último período"
+    return (
+        f"Escenario: partiendo de {base} en {base_period}, con un crecimiento "
+        f"anual del {growth_txt}% durante {horizon} {unit}, el valor final estimado "
+        f"es {final} y la ganancia respecto de la base es {gain}. Es un escenario "
+        "determinista: no es un pronóstico estadístico y no tiene margen de error "
+        "calculado."
     )
 
 
@@ -1957,6 +2277,9 @@ async def narrate(payload: Dict[str, Any]) -> Tuple[str, str]:
     vacio o que un numero inventado por un modelo que no respondio.
     """
     plantilla = _template_narration(payload)
+    scenario = payload.get("scenario")
+    if isinstance(scenario, dict):
+        return _scenario_narration(payload, scenario), "plantilla"
     try:
         text = await LLMService.generate_completion(
             _narration_prompt(payload),
@@ -1970,6 +2293,19 @@ async def narrate(payload: Dict[str, Any]) -> Tuple[str, str]:
 
     text = (text or "").strip()
     if not text:
+        return plantilla, "plantilla"
+    if _narration_contradicts_horizon(text, payload):
+        logger.warning(
+            "La narrativa del LLM afirma un horizonte distinto al publicado "
+            "(%s %s); se publica la plantilla.",
+            payload.get("horizon"), payload.get("granularity"),
+        )
+        return plantilla, "plantilla"
+    if _narration_has_jargon(text):
+        logger.warning(
+            "La narrativa del LLM usa jerga prohibida (MAPE/naive/backtest/banda); "
+            "se publica la plantilla."
+        )
         return plantilla, "plantilla"
     return text, "llm"
 
@@ -2018,11 +2354,12 @@ def estimate_seconds(question: str, horizon: Optional[int] = None) -> Dict[str, 
     declara `fallback` con una espera conservadora en vez de un numero inventado
     con formato de medicion.
 
-    `horizon=None` es Auto: el LLM todavia no respondio, asi que se asume el
-    horizonte mas largo de la lista (12) para no subestimar la espera. El
-    horizonte asumido viaja en `horizon_used`.
+    `horizon=None` es Auto: la pregunta ya se parseo en el router; sin horizonte
+    en el texto se usa el default declarado, no el maximo, para no inflar la
+    espera de una corrida que no lo pidio. El horizonte asumido viaja en
+    `horizon_used`.
     """
-    assumed = horizon if horizon is not None else max(SUPPORTED_HORIZONS)
+    assumed = horizon if horizon is not None else DEFAULT_HORIZON
     tps = _measured_tokens_per_second()
     if tps is None:
         return {
