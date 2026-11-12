@@ -11,7 +11,7 @@ from app.modules.ml_forecast.ml_models import (
 
 
 def _projection(
-    *, mape=10.0, beats_naive=True, measured=6, backtests=5, has_steps=True
+    *, mape=10.0, beats_naive=True, measured=6, backtests=5, has_steps=True, method="mean"
 ):
     total = None if measured is None else {"measured_steps": measured}
     steps = (
@@ -19,6 +19,7 @@ def _projection(
         if has_steps else []
     )
     return {
+        "method": method,
         "mape": mape,
         "beats_naive": beats_naive,
         "total": total,
@@ -27,8 +28,13 @@ def _projection(
 
 
 class TestCalidadPorReglas(unittest.TestCase):
-    def _quality(self, projection, *, horizon=6, has_gaps=False):
-        return evaluate_quality(projection, horizon=horizon, has_gaps=has_gaps)
+    def _quality(self, projection, *, horizon=6, has_gaps=False, diagnosis=None):
+        return evaluate_quality(
+            projection,
+            horizon=horizon,
+            has_gaps=has_gaps,
+            diagnosis=diagnosis,
+        )
 
     def test_sin_medicion_si_no_hay_mape(self):
         out = self._quality(_projection(mape=None))
@@ -49,6 +55,13 @@ class TestCalidadPorReglas(unittest.TestCase):
         out = self._quality(_projection(mape=10, beats_naive=False))
         self.assertEqual(out["status"], "no_confiable")
         self.assertIn("no mejora a repetir el último valor", out["reasons"])
+
+    def test_naive_no_se_marca_no_confiable_por_no_ganarse_a_si_mismo(self):
+        out = self._quality(
+            _projection(mape=10, beats_naive=False, method="naive")
+        )
+        self.assertNotEqual(out["status"], "no_confiable")
+        self.assertNotIn("no mejora a repetir el último valor", out["reasons"])
 
     def test_no_confiable_si_no_hay_total(self):
         out = self._quality(_projection(mape=10, measured=None))
@@ -103,6 +116,67 @@ class TestCalidadPorReglas(unittest.TestCase):
         out = self._quality(_projection(mape=20))
         self.assertEqual(out["status"], "confiable")
         self.assertEqual(out["reasons"], [])
+
+    def test_exploratoria_si_el_ultimo_dato_se_aleja_de_la_media(self):
+        for valor, direccion in ((-15.3, "por debajo"), (15.3, "por encima")):
+            out = self._quality(
+                _projection(mape=10),
+                diagnosis={
+                    "last_vs_mean_pct": valor,
+                    "outlier_count": 0,
+                    "level_shift": False,
+                },
+            )
+            self.assertEqual(out["status"], "exploratoria", valor)
+            self.assertIn(
+                f"el último dato está 15,3% {direccion} de la media",
+                " ".join(out["reasons"]),
+                valor,
+            )
+
+    def test_exploratoria_por_cambio_de_nivel(self):
+        out = self._quality(
+            _projection(mape=10),
+            diagnosis={"level_shift": True, "outlier_count": 0},
+        )
+        self.assertEqual(out["status"], "exploratoria")
+        self.assertIn("cambió de nivel", " ".join(out["reasons"]))
+        self.assertIn("peor caso", " ".join(out["reasons"]))
+
+    def test_exploratoria_por_valores_atipicos(self):
+        out = self._quality(
+            _projection(mape=10),
+            diagnosis={"outlier_count": 2, "last_vs_mean_pct": 1.0},
+        )
+        self.assertEqual(out["status"], "exploratoria")
+        self.assertIn("2 valores atípicos", " ".join(out["reasons"]))
+
+    def test_sin_alertas_del_diagnostico_sigue_confiable(self):
+        out = self._quality(
+            _projection(mape=10),
+            diagnosis={
+                "last_vs_mean_pct": 2.0,
+                "outlier_count": 0,
+                "level_shift": False,
+            },
+        )
+        self.assertEqual(out["status"], "confiable")
+        self.assertEqual(out["reasons"], [])
+
+    def test_el_diagnostico_no_oculta_un_no_confiable(self):
+        out = self._quality(
+            _projection(mape=67.7),
+            diagnosis={
+                "last_vs_mean_pct": -15.3,
+                "outlier_count": 1,
+                "level_shift": True,
+            },
+        )
+        self.assertEqual(out["status"], "no_confiable")
+        reasons = " ".join(out["reasons"])
+        self.assertIn("error promedio", reasons)
+        self.assertNotIn("último dato", reasons)
+        self.assertNotIn("valor atípico", reasons)
 
     def test_el_estado_ganador_no_mezcla_razones_del_peor(self):
         out = self._quality(_projection(mape=67.7, backtests=1, measured=3))

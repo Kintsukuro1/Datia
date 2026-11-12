@@ -306,8 +306,14 @@ export const DataGridTable: React.FC<DataGridTableProps> = ({ columns, rows, que
       </div>
 
       {/* Table Container */}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-dark-border">
+      <div
+        role="region"
+        tabIndex={0}
+        aria-label="Tabla de datos subyacente"
+        className="overflow-x-auto rounded-xl border border-slate-200 dark:border-dark-border"
+      >
         <table className="w-full text-left border-collapse">
+          <caption className="sr-only">Tabla de datos subyacente de la consulta</caption>
           <thead>
             <tr className="bg-slate-50 dark:bg-dark-base/80 border-b border-slate-200 dark:border-dark-border text-xs text-slate-600 dark:text-gray-400 uppercase tracking-wider">
               {columns.map((col) => {
@@ -318,6 +324,14 @@ export const DataGridTable: React.FC<DataGridTableProps> = ({ columns, rows, que
                 return (
                   <th
                     key={col}
+                    scope="col"
+                    aria-sort={
+                      sortColumn === col
+                        ? sortDirection === 'asc'
+                          ? 'ascending'
+                          : 'descending'
+                        : undefined
+                    }
                     className={`px-4 py-3 font-semibold select-none ${
                       isNumeric ? 'text-right' : isDate ? 'text-center' : 'text-left'
                     }`}
@@ -328,7 +342,6 @@ export const DataGridTable: React.FC<DataGridTableProps> = ({ columns, rows, que
                       className={`inline-flex items-center space-x-1.5 text-slate-600 hover:text-slate-900 dark:text-gray-400 dark:hover:text-white transition-colors cursor-pointer focus:outline-none ${
                         isNumeric ? 'ml-auto' : isDate ? 'mx-auto' : ''
                       }`}
-                      aria-label={`Ordenar por ${col}`}
                     >
                       {renderColumnIcon(colType)}
                       <span>{col}</span>

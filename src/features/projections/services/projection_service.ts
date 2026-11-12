@@ -10,13 +10,18 @@ import { apiClient } from '../../../shared/api/api_client';
  * muestran "—" y "sin evidencia" a partir del `null`, nunca un cero.
  */
 
-interface ProjectionStep {
-  step: number;
-  period: string | null;
+interface ProjectionEvidence {
   point: number | null;
   lower: number | null;
   upper: number | null;
   band_pct: number | null;
+  worst_case_pct?: number | null;
+  band_method?: string | null;
+  interval_lower_pct?: number | null;
+  interval_upper_pct?: number | null;
+  interval_coverage?: number | null;
+  interval_coverage_n?: number;
+  interval_target?: number | null;
   mape: number | null;
   n_backtests: number;
   reliable: boolean;
@@ -25,19 +30,14 @@ interface ProjectionStep {
   lower_clamped?: boolean;
 }
 
-export interface ProjectionTotal {
-  point: number | null;
-  lower: number | null;
-  upper: number | null;
-  band_pct: number | null;
-  mape: number | null;
-  n_backtests: number;
-  reliable: boolean;
-  extrapolated: boolean;
+interface ProjectionStep extends ProjectionEvidence {
+  step: number;
+  period: string | null;
+}
+
+export interface ProjectionTotal extends ProjectionEvidence {
   /** Pasos del total que se midieron de verdad; null = no hubo prefijo medible. */
   measured_steps: number | null;
-  /** La banda inferior se acotó a 0 (métrica de conteo). */
-  lower_clamped?: boolean;
 }
 
 export interface ProjectionGroupSummary {
@@ -64,6 +64,10 @@ export interface ProjectionQuality {
   mape?: number | null;
   unreliable_threshold?: number | null;
   exploratory_threshold?: number | null;
+  interval_target?: number | null;
+  interval_coverage?: number | null;
+  interval_coverage_n?: number;
+  band_method?: string | null;
   /** Por qué se llegó a ese estado; se muestran, no se esconden. */
   reasons: string[];
 }
@@ -76,6 +80,94 @@ export interface ProjectionScenario {
   final_value: number;
   gain: number;
   label?: string;
+}
+
+/** Un escenario de crecimiento dentro de la comparacion base vs. supuestos. */
+export interface ProjectionComparisonScenario {
+  growth_pct: number;
+  label?: string | null;
+  total: number | null;
+  final_value: number | null;
+  gain_vs_base: number | null;
+  gain_vs_base_pct?: number | null;
+}
+
+/**
+ * Comparacion base vs. escenarios: la decision se lee de una sola tabla.
+ * Los montos son nullable en el contrato: `null` se pinta "—", nunca 0.
+ */
+export interface ProjectionComparison {
+  base_total: number | null;
+  base_final: number | null;
+  scenarios: ProjectionComparisonScenario[];
+}
+
+/**
+ * Politica que el backend publica con la corrida. Es la fuente de los limites
+ * (horizonte maximo, minimo de historia, umbrales); la UI no los repite.
+ * Opcional: las respuestas viejas no la traen y se cae a los defaults locales.
+ */
+export interface ProjectionPolicy {
+  min_horizon?: number;
+  max_horizon?: number;
+  max_scenario_horizon?: number;
+  default_horizon?: number;
+  default_scenario_growth_pct?: number;
+  min_periods?: number;
+  min_diagnosable?: number;
+  reliable_backtests?: number;
+  min_recommended_horizon?: number;
+  exploratory_mape?: number | null;
+  unreliable_mape?: number | null;
+  breakdown_top_n?: number;
+  scenario_growth_min_pct?: number;
+  scenario_growth_max_pct?: number;
+  /** Cobertura objetivo de la banda (0–1) y residuos mínimos para calibrarla. */
+  interval_coverage?: number;
+  interval_min_residuals?: number;
+}
+
+/** Metricas de backtest de un metodo; `null` = no hubo residuos que medir. */
+export interface ProjectionMethodMetrics {
+  mape?: number | null;
+  mae?: number | null;
+  rmse?: number | null;
+  mase?: number | null;
+}
+
+/** Un metodo probado en el backtest; `selected` marca el que se publica. */
+export interface ProjectionModelComparison extends ProjectionMethodMetrics {
+  method: string;
+  /** Etiqueta legible; el codigo `method` queda para auditar. */
+  label?: string | null;
+  selected?: boolean;
+}
+
+/** Lectura automatica de la forma de la serie; `warnings` son las salvedades. */
+export interface ProjectionDiagnosis {
+  summary: string;
+  trend: 'creciente' | 'estable' | 'decreciente';
+  cv_pct?: number | null;
+  last_vs_mean_pct?: number | null;
+  seasonality?: string | null;
+  warnings: string[];
+  max_recommended_horizon?: number | null;
+  /** Ciclo estacional medido segun la granularidad (7, 12 o 4). */
+  season_length?: number | null;
+  /** Fuerza de la estacionalidad (eta cuadrado); null = no se pudo medir. */
+  seasonality_strength?: number | null;
+  /** Pendiente de tendencia como % del nivel por paso. */
+  trend_pct_per_step?: number | null;
+  /** Cambio de nivel: `true`/`false` por significancia o la magnitud medida. */
+  level_shift?: boolean | number | null;
+  level_shift_pct?: number | null;
+  /** Valores atipicos robustos (MAD); 0 es un resultado, no un faltante. */
+  outlier_count?: number | null;
+  /** Periodos faltantes y usables: 0 huecos es un resultado medido. */
+  missing_periods?: number | null;
+  usable_periods?: number | null;
+  /** Pasos con backtests suficientes; no recorta el horizonte publicado. */
+  reliable_horizon?: number | null;
 }
 
 export interface ProjectionResult {
@@ -94,11 +186,38 @@ export interface ProjectionResult {
   breakdown?: ProjectionBreakdown | null;
   /** Escenario de crecimiento (supuesto), separado de la proyeccion estadistica. */
   scenario?: ProjectionScenario | null;
+  /** Base vs. escenarios; solo existe cuando el backend los calculó. */
+  comparison?: ProjectionComparison | null;
+  /** Lectura de la forma de la serie (tendencia y salvedades). */
+  diagnosis?: ProjectionDiagnosis | null;
+  /** Si la pregunta apunta a un total o a una dimension: cambia el orden. */
+  answer_focus?: 'total' | 'dimension';
   method?: string | null;
+  /** Etiqueta y mecanica que publica el backend; evitan duplicar el mapa. */
+  method_label?: string | null;
+  method_description?: string | null;
   beats_naive?: boolean | null;
   mape?: number | null;
+  /** Error del metodo publicado; `null` = sin medicion, nunca 0. */
+  mae?: number | null;
+  rmse?: number | null;
+  mase?: number | null;
   mape_by_method: Record<string, number | null>;
+  /** Mismas metricas por metodo, en el formato nuevo del contrato. */
+  metrics_by_method?: Record<string, ProjectionMethodMetrics> | null;
+  /** Comparacion completa del backtest: solo viaja si el backend la calculo. */
+  model_comparison?: ProjectionModelComparison[] | null;
   quality?: ProjectionQuality | null;
+  /** Politica con la que se resolvio esta corrida (opcional por compatibilidad). */
+  policy?: ProjectionPolicy | null;
+  /** Limites de la corrida segun la politica; `max_horizon` no se repite en la UI. */
+  max_horizon?: number | null;
+  min_periods?: number | null;
+  reliable_horizon?: number | null;
+  can_forecast?: boolean | null;
+  /** Que hacer cuando no hay pronostico estadistico, en lenguaje simple. */
+  guidance?: string | null;
+  interval_target?: number | null;
   n_periods: number;
   has_gaps: boolean;
   /** Periodo en curso excluido por incompleto; null si no se excluyo ninguno. */
@@ -230,6 +349,12 @@ export interface ProjectionOverrides {
   dimensionColumn?: string | null;
   /** Unidad manual del eje; el default del backend es mes. */
   granularity?: 'day' | 'week' | 'month' | 'quarter' | null;
+  /**
+   * Supuesto de crecimiento explicito del cliente, en % anual. Manda sobre la
+   * tasa que se pudiera leer de la pregunta; el backend lo valida contra su
+   * politica (`scenario_growth_min_pct`..`scenario_growth_max_pct`).
+   */
+  scenarioGrowthPct?: number | null;
 }
 
 export const projectionService = {
@@ -276,6 +401,11 @@ export const projectionService = {
     if (overrides?.dateColumn) payload.date_column = overrides.dateColumn;
     if (overrides?.dimensionColumn) payload.dimension_column = overrides.dimensionColumn;
     if (overrides?.granularity) payload.granularity = overrides.granularity;
+    // `!= null` a proposito: 0% es un supuesto explicito valido y no debe
+    // confundirse con "no se mando nada".
+    if (overrides?.scenarioGrowthPct != null) {
+      payload.scenario_growth_pct = overrides.scenarioGrowthPct;
+    }
     // El backtest puede tardar más que el timeout genérico de 30 s. La UI
     // muestra una referencia de 60 s; el request debe poder esperar eso.
     const res = await apiClient.post<ProjectionResult>('/ml/projections/run', payload, {

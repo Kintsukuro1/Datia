@@ -39,7 +39,7 @@ export const ChoiceStep: React.FC<ChoiceStepProps> = ({
         </div>
         <h4 className="text-sm font-bold text-app-text">Evaluación de la fuente y modo de creación</h4>
         <p className="text-xs text-app-muted leading-relaxed max-w-lg">
-          Verificá el resumen de la conexión y elegí cómo construir el diccionario y catálogo de datos.
+          Verifica el resumen de la conexión y elige cómo construir el diccionario y catálogo de datos.
         </p>
       </div>
 

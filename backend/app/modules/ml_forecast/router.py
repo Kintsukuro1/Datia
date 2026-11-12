@@ -21,6 +21,7 @@ es "esta pregunta necesita una columna que tu perfil no puede leer".
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any, Dict, Optional
 
@@ -46,6 +47,8 @@ from app.modules.chat_engine.governance_guard import GovernanceGuard
 from app.modules.chat_engine.router import _resolve_target_database
 from app.modules.catalog.services.schema_inspector import SchemaInspector
 from app.modules.ml_forecast import ml_service
+from app.modules.ml_forecast.lexicon import DIMENSION_QUESTION_PATTERN
+from app.modules.ml_forecast.policy import POLICY
 from app.modules.ml_forecast.schemas import (
     DEFAULT_HORIZON,
     ProjectionContextResponse,
@@ -157,7 +160,13 @@ async def estimate_ml_projection(
     progreso no asuma un valor que nadie pidio. El parseo es el mismo del run.
     """
     timeframe = parse_question_timeframe(payload.question)
-    scenario_growth = parse_growth_scenario(payload.question)
+    # El escenario explicito manda sobre el texto: el cliente ya decidio la tasa,
+    # y el parseo de la pregunta queda como respaldo de los clientes viejos.
+    scenario_growth = (
+        payload.scenario_growth_pct
+        if payload.scenario_growth_pct is not None
+        else parse_growth_scenario(payload.question)
+    )
     if payload.horizon is not None:
         horizon = payload.horizon
     elif scenario_growth is not None and timeframe.requested_steps is not None:
@@ -173,6 +182,26 @@ _UNIT_LABEL = {
     "month": "meses",
     "quarter": "trimestres",
 }
+
+# La pregunta pide un grupo (un producto, una categoria) y no el total. Es una
+# lista corta a proposito: cada palabra de mas convierte en "ranking" preguntas
+# que solo querian un numero.
+_DIMENSION_QUESTION_RE = re.compile(
+    DIMENSION_QUESTION_PATTERN,
+    re.IGNORECASE,
+)
+
+
+def _answer_focus(question: str, dimension_column: Optional[str]) -> str:
+    """"dimension" solo si la pregunta la pide Y hay desglose que la responda.
+
+    Una pregunta por el "producto que mas vende" sin `dimension_column` se
+    contesta con el total: marcar `dimension` ahi promete un desglose que la
+    respuesta no publico.
+    """
+    if dimension_column and _DIMENSION_QUESTION_RE.search(question or ""):
+        return "dimension"
+    return "total"
 
 
 def _truncation_note(
@@ -225,12 +254,23 @@ async def run_ml_projection(
     started_at = time.perf_counter()
     context: Dict[str, Any] = {}
     analysis: Optional[Dict[str, Any]] = None
+    # Se inicializa aca y no dentro del `try`: el camino de `available=False`
+    # tambien publica `answer_focus`, y una variable sin asignar seria un 500 en
+    # el unico camino que tiene que explicar un motivo.
+    dimension_column: Optional[str] = None
 
     # La pregunta manda: "un año" = 12 pasos mensuales, "6 semanas" = 6
     # semanales. El payload explicito sigue ganando (compatibilidad), pero la UI
     # nueva manda null y deja que el texto decida.
     timeframe = parse_question_timeframe(payload.question)
-    scenario_growth = parse_growth_scenario(payload.question)
+    # El escenario explicito del cliente manda sobre el texto. Con escenario, el
+    # horizonte pedido puede superar `MAX_HORIZON` y se respeta tal cual (hasta
+    # `max_scenario_horizon`): los pasos del supuesto no tienen banda que recortar.
+    scenario_growth = (
+        payload.scenario_growth_pct
+        if payload.scenario_growth_pct is not None
+        else parse_growth_scenario(payload.question)
+    )
     requested_horizon = (
         payload.horizon
         if payload.horizon is not None
@@ -285,6 +325,7 @@ async def run_ml_projection(
             metric_agg=analysis.get("metric_agg"),
             granularity=granularity,
             scenario_growth_pct=scenario_growth,
+            connection=context.get("connection"),
         )
     except (ForecastUnavailable, ASTValidationError) as exc:
         # "No se puede calcular" no es un error del servidor: es una respuesta con
@@ -315,6 +356,7 @@ async def run_ml_projection(
             date_column=(analysis or {}).get("date_column"),
             connection_id=conn_id,
             analysis_source=(analysis or {}).get("source"),
+            answer_focus=_answer_focus(payload.question, dimension_column),
             # Si el validador rechazo el SQL, el SQL intentado viaja: negar sin
             # decir QUE se intento leer deja la auditoria de compliance sin el
             # unico registro de lo que la gobernanza corto.
@@ -367,17 +409,19 @@ async def run_ml_projection(
         # la misma razon: Auto puede haberlo cambiado.
         analysis_source=analysis.get("source"),
         horizon_source=horizon_origin or analysis.get("horizon_source"),
+        answer_focus=_answer_focus(payload.question, dimension_column),
         connection_id=conn_id,
         table_source=context.get("table_source"),
     )
 
     if data["available"]:
-        # La narrativa se pide SOLO cuando hay numeros que explicar. Sobre un
-        # `available=False` el texto del LLM seria una opinion sobre una
-        # proyeccion que no existe; el motivo ya lo dice `reason`.
+        # La narrativa se arma SOLO cuando hay numeros que explicar. Sobre un
+        # `available=False` seria una lectura de una proyeccion que no existe;
+        # el motivo ya lo dice `reason`.
         #
-        # Un fallo de la plantilla/LLM no puede tirar una proyeccion valida:
-        # los numeros ya estan calculados y auditados. Se publica sin prosa.
+        # La plantilla es determinista: un fallo suyo no puede tirar una
+        # proyeccion valida. Los numeros ya estan calculados y auditados; se
+        # publica sin prosa antes que devolver un 500.
         try:
             narration, narration_source = await ml_service.narrate(data)
             notes = [] if data.get("scenario") else [
@@ -452,12 +496,35 @@ async def projection_context(
 
 @router.get("/projections/history", response_model=ProjectionHistoryResponse)
 async def projection_history(
-    limit: int = Query(10, ge=1, le=20),
+    limit: int = Query(
+        POLICY.history_default_limit, ge=1, le=POLICY.history_max_limit
+    ),
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """Ultimas proyecciones del usuario autenticado, solo las propias."""
     items = await _in_thread(ml_service.list_projection_history, current_user.id, limit)
     return ProjectionHistoryResponse(items=items)
+
+
+def _owned_projection_audit(
+    db: Session, audit_log_id: int, user_id: int
+) -> AuditLog:
+    """Fila de auditoria de una proyeccion del usuario, o 404."""
+    audit = (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.id == audit_log_id,
+            AuditLog.user_id == user_id,
+            AuditLog.validation_status == "PROYECCION_ML",
+        )
+        .first()
+    )
+    if audit is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No existe una proyeccion auditada tuya con ese id.",
+        )
+    return audit
 
 
 @router.get(
@@ -471,20 +538,7 @@ async def verify_ml_projection(
 ) -> Any:
     """Compara una proyeccion auditada contra el dato actual de periodos cerrados."""
     started_at = time.perf_counter()
-    audit = (
-        db.query(AuditLog)
-        .filter(
-            AuditLog.id == audit_log_id,
-            AuditLog.user_id == current_user.id,
-            AuditLog.validation_status == "PROYECCION_ML",
-        )
-        .first()
-    )
-    if audit is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No existe una proyeccion auditada tuya con ese id.",
-        )
+    audit = _owned_projection_audit(db, audit_log_id, current_user.id)
 
     snapshot = ml_service.parse_projection_snapshot(audit.result_snapshot)
     question = f"Verificacion de proyeccion #{audit_log_id}"
@@ -566,20 +620,7 @@ async def get_ml_projection(
     Solo el dueño del registro puede leerlo; el snapshot no se recalcula ni se
     completa con datos actuales (para eso esta `/verification`).
     """
-    audit = (
-        db.query(AuditLog)
-        .filter(
-            AuditLog.id == audit_log_id,
-            AuditLog.user_id == current_user.id,
-            AuditLog.validation_status == "PROYECCION_ML",
-        )
-        .first()
-    )
-    if audit is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No existe una proyeccion auditada tuya con ese id.",
-        )
+    audit = _owned_projection_audit(db, audit_log_id, current_user.id)
 
     snapshot = ml_service.parse_projection_snapshot(audit.result_snapshot)
     if snapshot is None:

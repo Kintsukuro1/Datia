@@ -1,6 +1,6 @@
 import unittest
 import uuid
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from main import app
@@ -9,6 +9,7 @@ from app.core.constants import ROLE_USUARIO
 from app.db.init_db import init_db
 from app.modules.auth.models import User
 from app.core.config import settings
+from app.modules.chat_engine.engine import QueryEngine
 
 from conftest import make_auth_headers
 
@@ -89,6 +90,29 @@ class TestChatSecurity(unittest.TestCase):
         self.assertIsNotNone(allowed_tables)
         self.assertGreaterEqual(len(allowed_tables), 1)
         self.assertTrue(any(t.lower() in ["fact_ventas", "question", "survey", "answer"] for t in allowed_tables))
+
+    def test_suggestions_builder_only_no_espera_al_llm(self):
+        """El constructor guiado no depende del LLM: pide solo el esquema.
+
+        Antes el endpoint esperaba la generacion de sugerencias narrativas antes
+        de devolver `builder`; con el LLM lento, la UI mostraba "no hay columnas"
+        durante decenas de segundos. `builder_only=true` corta antes del LLM.
+        """
+        with patch.object(
+            QueryEngine,
+            "get_dynamic_suggestions_with_llm",
+            new=AsyncMock(side_effect=AssertionError("builder_only no debe llamar al LLM")),
+        ):
+            resp = self.client.get(
+                "/api/v1/chat/suggestions?connection_id=1&builder_only=true",
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data.get("suggestions"), [])
+        self.assertIsNotNone(data.get("builder"))
+        self.assertGreaterEqual(len(data["builder"].get("tables", [])), 1)
 
     def test_chat_query_with_missing_connection_returns_404(self):
         """Un `connection_id` que no existe es 404 y NO se consulta otra base.

@@ -215,7 +215,7 @@ export function useAdminCatalog() {
   const handleAddItem = async (newItem: CatalogRuleDraft): Promise<boolean> => {
     const connectionId = newItem.connection_id ?? selectedConnectionId;
     if (!connectionId) {
-      setCatalogErrorMsg('Seleccioná una fuente de datos antes de crear la regla.');
+      setCatalogErrorMsg('Selecciona una fuente de datos antes de crear la regla.');
       return false;
     }
     setCatalogErrorMsg(null);

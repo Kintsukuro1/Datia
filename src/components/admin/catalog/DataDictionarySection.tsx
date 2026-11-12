@@ -129,15 +129,23 @@ export const DataDictionarySection: React.FC<DataDictionarySectionProps> = ({
 
                 {/* Columns Detail Table */}
                 {isExpanded && (
-                  <div className="overflow-x-auto p-2 bg-slate-50/50 dark:bg-dark-base/40">
+                  <div
+                    role="region"
+                    tabIndex={0}
+                    aria-label={`Columnas de la tabla ${tbl.table_name}`}
+                    className="overflow-x-auto p-2 bg-slate-50/50 dark:bg-dark-base/40"
+                  >
                     <table className="w-full text-left text-xs min-w-[700px]">
+                      <caption className="sr-only">
+                        Columnas de la tabla {tbl.table_name}
+                      </caption>
                       <thead className="text-[10px] text-slate-600 dark:text-gray-400 uppercase tracking-wider border-b border-slate-200 dark:border-dark-border">
                         <tr>
-                          <th className="px-3 py-2">Columna</th>
-                          <th className="px-3 py-2">Tipo SQL</th>
-                          <th className="px-3 py-2">Restricciones</th>
-                          <th className="px-3 py-2">Muestra de Datos Reales</th>
-                          <th className="px-3 py-2">Definición de Negocio (IA)</th>
+                          <th scope="col" className="px-3 py-2">Columna</th>
+                          <th scope="col" className="px-3 py-2">Tipo SQL</th>
+                          <th scope="col" className="px-3 py-2">Restricciones</th>
+                          <th scope="col" className="px-3 py-2">Muestra de Datos Reales</th>
+                          <th scope="col" className="px-3 py-2">Definición de Negocio (IA)</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-200 dark:divide-dark-border/50 text-slate-800 dark:text-gray-300">

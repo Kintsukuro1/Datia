@@ -619,13 +619,53 @@ estadístico sigue con tope 36 y aviso de recorte.
 **Verificación:** pytest **1035 passed, 264 subtests**; vitest **157**; e2e
 **8 passed** (incluye la pregunta real del escenario).
 
+### Módulo Proyecciones funcional (11/11/2026)
+
+Se completó el MVP que convierte Proyecciones en un laboratorio de futuro, no
+en un chat descriptivo:
+
+- **Escenarios data-driven:** la tabla de comparación ya no usa 5/10/15 fijos.
+  `_growth_scenarios` calcula el ritmo histórico (mediana del crecimiento
+  interanual; si no hay 13 períodos, período contra período), conservador
+  (P25), optimista (P75), "Sin crecimiento" y el supuesto del usuario. Cada
+  fila lleva su `label`, así que la misma pantalla sobre otra conexión muestra
+  otros números.
+- **Diagnóstico de la serie:** `diagnosis.py` (puro) resume tendencia,
+  variación, estacionalidad, último dato vs. media y horizonte recomendado, sin
+  MAPE/backtest/naive. Se publica siempre, también cuando no se pudo proyectar.
+- **UI de decisión:** "Diagnóstico de la serie", "Comparación de escenarios"
+  (base vs. supuestos, diferencia y %), y el ranking como respuesta principal
+  cuando la pregunta apunta a una dimensión. En el ranking primario se
+  ocultaron MAPE/Períodos/Evidencia; quedan Grupo, Total y Rango.
+- **Copy:** bajada simple, ejemplos y diferencia pronóstico/escenario en la
+  pantalla y la ayuda. Todo el texto visible quedó en español neutro (sin
+  voseo): "Proyecta", "Si pides", "Escribe", "Selecciona", "Ingresa", etc.
+- **Ejemplos clicables:** las tres preguntas de ejemplo dejaron de ser texto
+  muerto. Son botones que cargan la pregunta en el campo y devuelven el foco,
+  sin lanzar la corrida: el usuario revisa y proyecta cuando quiere.
+- **Bug de carrera corregido:** el efecto de `ProjectionsPage` trataba la
+  primera resolución de la conexión (`null -> id`) como un cambio de fuente y
+  abortaba en silencio una corrida lanzada en esa ventana. Ahora la primera
+  resolución no resetea; solo un cambio real de fuente lo hace. Lo detectó el
+  e2e.
+- **Verificación:** pytest **1047 passed, 264 subtests**; vitest **159**; e2e
+  **11 passed** (incluye escenario, ausencia de jerga visible, ranking y el
+  ejemplo que se carga sin correr).
+
+**Pendiente:** estacionalidad cuando la historia la sostenga; factores externos
+(precio/marketing) si están en los datos; pronóstico vs. real y alertas; y
+proyección de escenarios por dimensión.
+
 ### Próximos frentes (del informe del investigador)
 
 | Frente | Esfuerzo | Dependencia |
 |---|---|---|
-| Cancelación real/cooperativa de proyecciones | M (cooperativa) / L (real) | Decisión de producto y estado de auditoría nuevo |
+| Estacionalidad (seasonal naïve/Holt-Winters) | M | ≥24 períodos y que el backtest la elija; no es prioridad para la serie actual (CV 3,6%) |
+| Factores externos (precio, marketing) | L | Que esas columnas existan en la fuente |
+| Pronóstico vs. real y alertas | S/M | Exponer `verify_projection` en el flujo |
+| Escenario aplicado a una dimensión | M | Proyectar cada grupo con el supuesto y reconciliar |
 | Footer global y tema claro | S/M | Asset transparente de marca |
-| Verificar la dimensión con el modelo local real | S | Ollama encendido en la máquina del cliente |
+| Verificar la dimensión con el modelo real | S | Ollama encendido en la máquina del cliente |
 
 ---
 

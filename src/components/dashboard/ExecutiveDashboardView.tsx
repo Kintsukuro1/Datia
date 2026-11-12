@@ -1,12 +1,17 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, Suspense } from 'react';
 import { QueryResult } from '../../types';
 import { DataGridTable } from '../datagrid/DataGridTable';
 import { ExecutiveReportView } from './ExecutiveReportView';
 import { ExecutiveAssistantView } from './ExecutiveAssistantView';
 import { KPISection } from '../../features/dashboard/components/KPISection';
-import { ChartSection } from '../../features/dashboard/components/ChartSection';
 import { OfflineAlertView } from '../../features/dashboard/components/OfflineAlertView';
 import { FileText, Table as TableIcon, Sparkles, BarChart3 } from 'lucide-react';
+
+// ChartSection arrastra ECharts (~1 MB). Se carga solo al abrir la pestaña
+// "Detalles" de una respuesta: la vista "Respuesta" no dibuja gráficos.
+const ChartSection = React.lazy(() =>
+  import('../../features/dashboard/components/ChartSection').then((m) => ({ default: m.ChartSection }))
+);
 
 interface ExecutiveDashboardViewProps {
   result: QueryResult;
@@ -142,11 +147,20 @@ export const ExecutiveDashboardView: React.FC<ExecutiveDashboardViewProps> = ({
       {viewMode === 'studio' && (
         <div className="space-y-5">
           <KPISection kpis={result.kpis} />
-          <ChartSection
-            result={result}
-            onDrillDown={(cat) => onFollowUp?.(`Detalla en profundidad los registros para: ${cat}`)}
-            onTimeFilter={(label) => onFollowUp?.(`Filtra los datos de la consulta anterior para el periodo: ${label}`)}
-          />
+          <Suspense
+            fallback={
+              <div
+                aria-hidden="true"
+                className="h-80 sm:h-96 rounded-3xl bg-app-card/60 border border-app-border animate-pulse"
+              />
+            }
+          >
+            <ChartSection
+              result={result}
+              onDrillDown={(cat) => onFollowUp?.(`Detalla en profundidad los registros para: ${cat}`)}
+              onTimeFilter={(label) => onFollowUp?.(`Filtra los datos de la consulta anterior para el periodo: ${label}`)}
+            />
+          </Suspense>
         </div>
       )}
 

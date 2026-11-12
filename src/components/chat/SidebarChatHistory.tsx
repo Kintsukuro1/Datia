@@ -172,7 +172,7 @@ export const SidebarChatHistory: React.FC<SidebarChatHistoryProps> = ({
                     type="button"
                     onClick={(e) => onDeleteThread(t.id, e)}
                     aria-label={`Eliminar conversación ${t.title}`}
-                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 text-app-muted hover:text-rose-600 dark:hover:text-rose-400 transition-opacity absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer"
+                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 inline-flex items-center justify-center w-6 h-6 rounded-lg text-app-muted hover:text-rose-600 dark:hover:text-rose-400 transition-opacity absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer"
                     title="Eliminar conversación"
                   >
                     <Trash2 className="w-3.5 h-3.5" />

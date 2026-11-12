@@ -300,7 +300,7 @@ async def process_chat_query_stream(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 "No hay ninguna conexión de datos activa. "
-                "Activá una fuente desde Administración antes de consultar."
+                "Activa una fuente desde Administración antes de consultar."
             ),
         )
     conn_id = conn_record.id
@@ -658,11 +658,17 @@ async def run_prediction(
 @router.get("/suggestions", response_model=SuggestionsResponse)
 async def get_dynamic_suggestions(
     connection_id: Optional[int] = Query(None),
+    builder_only: bool = Query(False),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional)
 ) -> SuggestionsResponse:
     """
     Returns role and table-specific question suggestions dynamically via LLM with fallback.
+
+    `builder_only=true` devuelve solo las tablas/columnas del constructor guiado,
+    sin esperar al LLM. El esquema ya se resolvio arriba; las sugerencias
+    narrativas son lo unico que necesita el modelo y no deben bloquear el
+    constructor.
     """
     if current_user is None:
         generic_suggestions = [
@@ -735,16 +741,27 @@ async def get_dynamic_suggestions(
         # best-effort. La sesion, en cambio, tiene que quedar limpia.
         discard_failed_transaction(db)
 
+    builder_tables = (
+        QueryEngine.build_builder_options(table_columns, table_labels)
+        if table_columns else []
+    )
+
+    # Camino rapido del constructor: no espera al LLM. Las sugerencias
+    # narrativas se piden en la llamada normal, sin bloquear el esquema.
+    if builder_only:
+        return SuggestionsResponse(
+            user_role=role_name,
+            allowed_tables=list(allowed_tables),
+            suggestions=[],
+            builder={"tables": builder_tables} if builder_tables else None
+        )
+
     suggestions = await QueryEngine.get_dynamic_suggestions_with_llm(
         user_role=role_name,
         allowed_tables=allowed_tables,
         schema_prompt=schema_prompt,
         table_columns=table_columns,
         table_labels=table_labels,
-    )
-    builder_tables = (
-        QueryEngine.build_builder_options(table_columns, table_labels)
-        if table_columns else []
     )
 
     return SuggestionsResponse(
@@ -753,7 +770,6 @@ async def get_dynamic_suggestions(
         suggestions=suggestions,
         builder={"tables": builder_tables} if builder_tables else None
     )
-
 # =========================================================================
 # CHAT THREADS PERSISTENCE & HISTORY ENDPOINTS
 # =========================================================================

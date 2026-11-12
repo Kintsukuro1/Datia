@@ -1,4 +1,4 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../features/auth/context/AuthContext';
 import { hasPendingPasswordChange } from '../../features/auth/temp_password';
@@ -27,6 +27,29 @@ const RouteFallback: React.FC = () => (
     </div>
   </div>
 );
+
+// Sin esto todas las pantallas comparten el titulo "Dat.ia" en la pestana, el
+// historial y el nombre accesible de la ventana: no se distingue una de otra.
+const ROUTE_TITLES: Record<string, string> = {
+  '/': 'Consultar',
+  '/chat': 'Consultar',
+  '/projections': 'Proyecciones',
+  '/admin': 'Administración',
+  '/settings': 'Opciones',
+  '/login': 'Iniciar sesión',
+  '/change-password': 'Cambiar contraseña',
+};
+
+const RouteTitle: React.FC = () => {
+  const { pathname } = useLocation();
+
+  useEffect(() => {
+    const label = ROUTE_TITLES[pathname];
+    document.title = label ? `${label} — Dat.ia` : 'Dat.ia';
+  }, [pathname]);
+
+  return null;
+};
 
 const ProtectedLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, isLoading } = useAuth();
@@ -65,9 +88,21 @@ const ProtectedLayout: React.FC<{ children: React.ReactNode }> = ({ children }) 
 
   return (
     <div className="flex flex-col h-screen bg-[var(--app-bg)] text-[var(--app-text)] overflow-hidden font-sans">
+      {/* Skip link: con HashRouter un `href="#main-content"` haria que el router
+          interprete "main-content" como ruta, asi que el foco se mueve a mano. */}
+      <a
+        href="#main-content"
+        onClick={(e) => {
+          e.preventDefault();
+          document.getElementById('main-content')?.focus();
+        }}
+        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-lg focus:bg-brand-600 focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-white"
+      >
+        Saltar al contenido
+      </a>
       <Header />
       <TemporaryPasswordBanner />
-      <main className="flex-1 overflow-hidden relative flex flex-col min-h-0">
+      <main id="main-content" tabIndex={-1} className="flex-1 overflow-hidden relative flex flex-col min-h-0">
         <ChatEngineProvider>{children}</ChatEngineProvider>
       </main>
       <ToastContainer />
@@ -119,6 +154,7 @@ export const AppRouter: React.FC = () => {
 
   return (
     <HashRouter>
+      <RouteTitle />
       <Routes>
         <Route path="/change-password" element={<MandatoryPasswordChangeRoute />} />
         <Route

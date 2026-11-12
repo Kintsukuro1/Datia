@@ -276,7 +276,7 @@ export const AdminColumnPermissionsPanel: React.FC<AdminColumnPermissionsPanelPr
 
       {connectionId === null && (
         <p className="text-[11px] text-slate-500 dark:text-gray-400">
-          Elegí una fuente de datos para ver sus columnas.
+          Elige una fuente de datos para ver sus columnas.
         </p>
       )}
 

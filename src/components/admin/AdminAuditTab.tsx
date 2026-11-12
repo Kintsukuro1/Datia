@@ -104,17 +104,25 @@ export const AdminAuditTab: React.FC = () => {
       )}
 
       {/* Logs Table */}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-dark-border">
+      <div
+        role="region"
+        tabIndex={0}
+        aria-label="Registro de auditoría"
+        className="overflow-x-auto rounded-xl border border-slate-200 dark:border-dark-border"
+      >
         <table className="w-full text-left text-xs">
+          <caption className="sr-only">
+            Registro de auditoría y trazabilidad de consultas
+          </caption>
           <thead className="bg-slate-50 dark:bg-dark-base border-b border-slate-200 dark:border-dark-border text-slate-600 dark:text-gray-400 uppercase tracking-wider">
             <tr>
-              <th className="px-4 py-3">Fecha (UTC)</th>
-              <th className="px-4 py-3">Usuario & Rol</th>
-              <th className="px-4 py-3">Pregunta / Prompt</th>
-              <th className="px-4 py-3">Evento</th>
-              <th className="px-4 py-3">Base de Datos</th>
-              <th className="px-4 py-3">Latencia</th>
-              <th className="px-4 py-3 text-right">Detalles</th>
+              <th scope="col" className="px-4 py-3">Fecha (UTC)</th>
+              <th scope="col" className="px-4 py-3">Usuario & Rol</th>
+              <th scope="col" className="px-4 py-3">Pregunta / Prompt</th>
+              <th scope="col" className="px-4 py-3">Evento</th>
+              <th scope="col" className="px-4 py-3">Base de Datos</th>
+              <th scope="col" className="px-4 py-3">Latencia</th>
+              <th scope="col" className="px-4 py-3 text-right">Detalles</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-dark-border text-slate-800 dark:text-gray-200 bg-white dark:bg-transparent">

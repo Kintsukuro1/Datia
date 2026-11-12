@@ -89,6 +89,10 @@ def test_el_escenario_de_crecimiento_se_reconoce():
     ) == 10.0
     assert parse_growth_scenario("crecimiento anual del 8% en 5 años") == 8.0
     assert parse_growth_scenario("un 12% anual durante 3 años") == 12.0
+    # El tope es el de la politica, no un 100 hardcodeado.
+    assert parse_growth_scenario("crecimiento anual del 150% en 5 años") == 150.0
+    assert parse_growth_scenario("crecimiento anual del 1000% en 5 años") == 1000.0
+    assert parse_growth_scenario("crecimiento anual del 1001% en 5 años") is None
 
 
 def test_sin_crecimiento_no_hay_escenario():

@@ -6,9 +6,10 @@ Ese archivo fija series concretas y afirma numeros concretos. Este deja que el
 generador busque el contraejemplo de las reglas que el modulo promete en su
 docstring:
 
-  - BANDA: el intervalo contiene su propio punto, y el ancho nunca es mas
-    ajustado que el peor residuo observado de ESE paso. Es lo que convierte el
-    numero en una banda en vez de en una cifra con decimales.
+  - BANDA: el intervalo contiene su propio punto, el ancho calibrado nunca
+    supera el peor residuo observado de ESE paso, y el peor caso publicado
+    cubre el error realmente observado. Es lo que convierte el numero en una
+    banda en vez de en una cifra con decimales.
   - DETERMINISMO: la misma serie da el mismo punto. Una proyeccion que cambia
     sola entre dos llamadas identicas no es una medicion, y no se puede auditar.
   - SIN NAN: ningun float de la salida es NaN ni inf. `json.dumps` los emitiria
@@ -16,8 +17,8 @@ docstring:
     en vez de en el que calculo.
   - AVAILABLE: `available: False` es una afirmacion ("no se"), y no puede salir
     junto a un paso publicado que la contradiga.
-  - TOTAL: la suma de los puntos publicados, y su banda no es mas ajustada que
-    el peor error acumulado del prefijo que declara haber medido.
+  - TOTAL: la suma de los puntos publicados, y su peor caso no es mas ajustado
+    que el peor error acumulado del prefijo que declara haber medido.
 
 `deadline=None` porque el backtest sobre una serie patologica puede tardar mas
 que el plazo por defecto, y ese flake termina con el test borrado. Los ejemplos
@@ -38,6 +39,7 @@ from app.modules.ml_forecast.ml_models import (
     build_projection,
     walk_forward,
 )
+from app.modules.ml_forecast.policy import POLICY
 
 # Series de positivos finitos, de 0 a 24 elementos: el dominio real (montos de
 # periodos observados) y el piso de `MIN_PERIODS`. El 1e-9 no es decorativo: las
@@ -101,12 +103,14 @@ class TestBandasDeLaProyeccion:
 
     @given(series, horizontes)
     @settings(max_examples=POCOS, deadline=None)
-    def test_la_banda_no_es_mas_ajustada_que_el_peor_residuo_del_paso(self, valores, horizonte):
-        """La banda de un paso cubre el peor error que ESE paso mostro.
+    def test_la_banda_calibrada_se_acota_por_el_peor_residuo_del_paso(self, valores, horizonte):
+        """La banda calibrada no puede superar el peor residuo de ESE paso.
 
-        Es la regla del docstring: el ancho no es un parametro elegido, es el
-        error observado. Si fuera mas ajustado, se estaria prometiendo una
-        precision que la serie ya rompio una vez — y en el mismo paso.
+        El intervalo puede ser mas angosto que el peor error (esa es la
+        calibracion), pero el peor caso se publica aparte y no puede quedar por
+        debajo del error realmente observado. Si la banda fuera mas ancha que el
+        peor caso, el cuantil estaria mal elegido. Con pocos residuos la banda
+        ES el peor caso y se declara `max_residual`.
         """
         out = build_projection(valores, horizonte)
         if not out["available"]:
@@ -124,9 +128,18 @@ class TestBandasDeLaProyeccion:
             # 0.05 es medio paso del redondeo con que se publica la banda (y con
             # el que se eligio el metodo): contra el valor crudo, redondear
             # hacia abajo haria fallar la regla por 0.04.
-            assert step["band_pct"] >= max(propios) - 0.05, (step, max(propios))
+            assert step["band_pct"] <= step["worst_case_pct"] + 0.05, step
+            assert step["worst_case_pct"] >= max(propios) - 0.05, (step, max(propios))
             assert step["extrapolated"] is False, step
-            assert step["reliable"] == (len(propios) >= MIN_BACKTESTS_RELIABLE), step
+            if len(propios) < POLICY.interval_min_residuals:
+                assert step["band_method"] == "max_residual", step
+                assert step["band_pct"] == step["worst_case_pct"], step
+            if step["reliable"]:
+                assert len(propios) >= MIN_BACKTESTS_RELIABLE, step
+                cobertura = step["interval_coverage"]
+                assert cobertura is None or cobertura >= (
+                    POLICY.interval_coverage - POLICY.interval_coverage_tolerance
+                ), step
 
     @given(series, horizontes)
     @settings(max_examples=POCOS, deadline=None)
@@ -148,9 +161,9 @@ class TestBandasDeLaProyeccion:
         """La banda del total es el peor error ACUMULADO del prefijo medido.
 
         No es la suma de las bandas por paso: si el total dice
-        `measured_steps=j`, su ancho tiene que cubrir el error del total de 1..j
-        que el backtest observo. Y si j < horizonte, no puede publicar MAPE del
-        total ni presentarse como medido.
+        `measured_steps=j`, su peor caso tiene que cubrir el error del total de
+        1..j que el backtest observo. Y si j < horizonte, no puede publicar MAPE
+        del total ni presentarse como medido.
         """
         out = build_projection(valores, horizonte)
         total = out["total"]
@@ -161,7 +174,9 @@ class TestBandasDeLaProyeccion:
         assert medidos is not None and 1 <= medidos <= horizonte, total
         propios = acumulados[out["method"]][medidos - 1]
         assert propios, total
-        assert total["band_pct"] >= max(propios) - 0.05, (total, max(propios))
+        assert total["worst_case_pct"] is not None, total
+        assert total["worst_case_pct"] >= max(propios) - 0.05, (total, max(propios))
+        assert total["band_pct"] <= total["worst_case_pct"] + 0.05, total
         assert total["n_backtests"] == len(propios), total
         if medidos < horizonte:
             assert total["extrapolated"] is True and total["mape"] is None, total

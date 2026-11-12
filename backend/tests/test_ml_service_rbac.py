@@ -514,6 +514,42 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
         self.assertIn("Escenario", data["narration"])
         self.assertIn("crecimiento anual del 10%", data["narration"])
 
+        # La tabla de escenarios sale de la historia de la serie (ritmo
+        # historico, conservador, optimista, sin crecimiento) y agrega el pedido
+        # del usuario. No es una lista fija 5/10/15.
+        comparison = data["comparison"]
+        self.assertIsNotNone(comparison, "el escenario publicado compara contra la base")
+        growths = [item["growth_pct"] for item in comparison["scenarios"]]
+        self.assertIn(10.0, growths, "el supuesto pedido tiene que estar en la tabla")
+        self.assertTrue(all(item.get("label") for item in comparison["scenarios"]))
+        requested = next(item for item in comparison["scenarios"] if item["growth_pct"] == 10.0)
+        self.assertEqual(requested["label"], "Tu supuesto")
+        self.assertIsNotNone(comparison["base_total"])
+        self.assertIsNotNone(comparison["base_final"])
+        ordered = sorted(comparison["scenarios"], key=lambda item: item["growth_pct"])
+        totales = [item["total"] for item in ordered]
+        self.assertEqual(totales, sorted(totales), "a mas crecimiento, mas total")
+        for item in comparison["scenarios"]:
+            self.assertIsNotNone(item["final_value"])
+            self.assertIsNotNone(item["gain_vs_base"])
+            self.assertIsNotNone(item["gain_vs_base_pct"])
+            self.assertAlmostEqual(
+                item["gain_vs_base"], item["total"] - comparison["base_total"]
+            )
+        # Misma tasa pedida, mismos numeros: la tabla no recalcula distinto que
+        # el escenario publicado.
+        pedido = next(
+            item for item in comparison["scenarios"] if item["growth_pct"] == 10.0
+        )
+        self.assertAlmostEqual(pedido["final_value"], data["scenario"]["final_value"])
+        self.assertAlmostEqual(pedido["total"], data["total"]["point"])
+
+        # El diagnostico describe la historia, tambien en modo escenario.
+        self.assertIsNotNone(data["diagnosis"])
+        self.assertIn(
+            data["diagnosis"]["trend"], {"creciente", "estable", "decreciente"}
+        )
+
     def test_sin_token_los_dos_endpoints_son_401(self):
         conn = self._tabla(SERIE)
 
@@ -560,6 +596,15 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
         self.assertIsNone(body["total"]["mape"])
         self.assertIsNone(body["partial_period_excluded"])
         self.assertEqual(body["future_periods_excluded"], [])
+        # Sin supuesto pedido no hay tabla de escenarios: publicarla sugeriria
+        # que 5/10/15% son la conclusion y no tres hipotesis.
+        self.assertIsNone(body["comparison"])
+        self.assertIsNotNone(body["diagnosis"], "la historia se lee aunque haya proyeccion")
+        self.assertIn(
+            body["diagnosis"]["trend"], {"creciente", "estable", "decreciente"}
+        )
+        self.assertIsInstance(body["diagnosis"]["warnings"], list)
+        self.assertEqual(body["answer_focus"], "total")
         # El LLM esta apagado en estos tests: la narrativa publicada es la
         # plantilla determinista, y no queda vacia.
         self.assertEqual(body["narration_source"], "plantilla")
@@ -582,6 +627,10 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
         self.assertIsNone(body["total"])
         self.assertEqual(body["horizon_source"], "pedido")
         self.assertEqual(set(body["series"][0]), {"periodo", "valor"})
+        # El diagnostico viaja aunque no se pueda proyectar: es justamente el
+        # que explica que le falta a la serie.
+        self.assertIsNotNone(body["diagnosis"])
+        self.assertIsNone(body["comparison"])
 
     # --- 6. Selector manual y desglose ---------------------------------------
 
@@ -692,6 +741,25 @@ class TestProjectionRbacEndToEnd(unittest.TestCase):
         self.assertEqual(body["steps"], [])
         self.assertEqual(body["series"], [])
         self.assertIsNone(body["sql"])
+
+    def test_el_foco_de_la_respuesta_sigue_a_la_pregunta_y_al_desglose(self):
+        conn = self._tabla(SERIE_24, dimension=True)
+        role = self._rol(conn)
+        _, headers = self._cuenta(role)
+
+        con_dim = self._correr(
+            headers, conn, dimension_column="complemento",
+            question="¿cuál es la proyección por categoría?",
+        )
+
+        self.assertEqual(con_dim.status_code, 200, con_dim.text)
+        self.assertEqual(con_dim.json()["answer_focus"], "dimension")
+
+        # La misma pregunta sin desglose se contesta con el total: marcar
+        # "dimension" ahi prometeria un desglose que la respuesta no publico.
+        sin_dim = self._correr(headers, conn, question="¿cuál es la proyección?")
+        self.assertEqual(sin_dim.status_code, 200, sin_dim.text)
+        self.assertEqual(sin_dim.json()["answer_focus"], "total")
 
     def test_desglose_proyecta_los_grupos_del_top(self):
         conn = self._tabla(SERIE_24, dimension=True)

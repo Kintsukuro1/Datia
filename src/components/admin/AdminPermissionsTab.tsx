@@ -283,7 +283,7 @@ export const AdminPermissionsTab: React.FC = () => {
             <p className="text-[11px] leading-relaxed">
               Se detectaron {selectedConnector?.detected_tables?.length ?? 0} tabla(s) y ninguna tiene permiso
               concedido. Mientras las casillas estén sin marcar, los usuarios de esos roles no ven estas tablas en el
-              chat. Marca las que correspondan y guardá.
+              chat. Marca las que correspondan y guarda.
             </p>
           </div>
         </div>

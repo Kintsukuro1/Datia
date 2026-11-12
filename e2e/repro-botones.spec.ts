@@ -25,6 +25,10 @@ test('admin: los controles del chat responden', async ({ page }) => {
   await page.getByRole('button', { name: 'Ingresar' }).click();
   await expect(page).toHaveURL(/#\/chat/, { timeout: 20_000 });
 
+  // El selector de fuente activa vuelve a estar en el subheader del chat: sin
+  // él, cambiar de base obligaba a salir de la pantalla.
+  await expect(page.locator('#chat-active-db-select')).toBeVisible({ timeout: 20_000 });
+
   // "Nueva consulta" limpia el campo y devuelve el foco.
   const prompt = page.getByLabel('Pregunta analítica sobre datos corporativos');
   await prompt.fill('texto que debe limpiarse');
@@ -50,7 +54,7 @@ test('admin: los controles del chat responden', async ({ page }) => {
   // Ayuda: abre, se lee y se cierra.
   await page.getByRole('button', { name: 'Ayuda', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Ayuda de Dat.ia' })).toBeVisible();
-  await expect(page.getByText('Preguntá con tus palabras')).toBeVisible();
+  await expect(page.getByText('Pregunta con tus palabras')).toBeVisible();
   await page.getByRole('button', { name: 'Entendido' }).click();
   await expect(page.getByRole('dialog', { name: 'Ayuda de Dat.ia' })).toHaveCount(0);
 
@@ -104,7 +108,7 @@ test('admin: la página de administración tiene un solo alta de fuente', async 
   await expect(page).toHaveURL(/#\/chat/, { timeout: 20_000 });
 
   await page.goto('/#/admin');
-  await expect(page.getByText('Fuentes de Datos Corporativas')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText('Fuentes de Datos Corporativas', { exact: true })).toBeVisible({ timeout: 20_000 });
 
   await expect(page.getByRole('button', { name: 'Agregar fuente de datos' })).toHaveCount(1);
   await expect(page.getByRole('button', { name: /Importar Archivo/ })).toHaveCount(0);

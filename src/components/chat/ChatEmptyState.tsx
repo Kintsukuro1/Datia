@@ -17,8 +17,22 @@ export const ChatEmptyState: React.FC<ChatEmptyStateProps> = ({ onOpenHelp }) =>
       {/* Datia Brand Avatar */}
       <div className="relative flex items-center justify-center">
         <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-app-card flex items-center justify-center shadow-md border border-app-border overflow-hidden p-2">
-          <img src={logoDatiaLight} alt="Logo de Dat.ia" className="block dark:hidden w-full h-full object-contain" />
-          <img src={logoDatiaDark} alt="Logo de Dat.ia" className="hidden dark:block w-full h-full object-contain" />
+          <img
+            src={logoDatiaLight}
+            alt="Logo de Dat.ia"
+            width={557}
+            height={448}
+            decoding="async"
+            className="block dark:hidden w-full h-full object-contain"
+          />
+          <img
+            src={logoDatiaDark}
+            alt="Logo de Dat.ia"
+            width={528}
+            height={442}
+            decoding="async"
+            className="hidden dark:block w-full h-full object-contain"
+          />
         </div>
       </div>
 
@@ -28,7 +42,7 @@ export const ChatEmptyState: React.FC<ChatEmptyStateProps> = ({ onOpenHelp }) =>
           ¿Qué datos deseas analizar hoy?
         </h2>
         <p className="text-xs sm:text-sm text-app-muted leading-relaxed">
-          Escribí tu pregunta como se la harías a un compañero. Dat.ia busca la respuesta en tus
+          Escribe tu pregunta como se la harías a un compañero. Dat.ia busca la respuesta en tus
           datos y te la muestra en tablas y gráficos.
         </p>
         <button
@@ -36,7 +50,7 @@ export const ChatEmptyState: React.FC<ChatEmptyStateProps> = ({ onOpenHelp }) =>
           onClick={onOpenHelp}
           className="text-[11px] text-app-muted hover:text-brand-500 dark:hover:text-brand-400 underline underline-offset-2 transition-colors"
         >
-          ¿No sabés cómo preguntar? Mirá la ayuda
+          ¿No sabes cómo preguntar? Mira la ayuda
         </button>
       </div>
     </div>

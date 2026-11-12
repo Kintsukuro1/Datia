@@ -14,6 +14,7 @@ interface ChatPromptInputProps {
   isGenerating: boolean;
   activeDatabaseName?: string;
   builderOptions?: BuilderOptions | null;
+  builderLoading?: boolean;
   textareaRef?: React.RefObject<HTMLTextAreaElement>;
   onSubmit: (promptText?: string) => void;
 }
@@ -29,6 +30,7 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
   isGenerating,
   activeDatabaseName = 'Sin fuente de datos',
   builderOptions = null,
+  builderLoading = false,
   textareaRef: externalTextareaRef,
   onSubmit,
 }) => {
@@ -103,6 +105,10 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      // Entrada segura para IME: el Enter que confirma una composición
+      // (chino, japonés, coreano, o teclados con composición) no es un envío.
+      // `keyCode === 229` es el aviso de algunos navegadores durante la composición.
+      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
       if (promptInput.trim() && !isGenerating) {
         onSubmit(promptInput);
       }
@@ -162,7 +168,11 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
             </button>
           </div>
 
-          {builderTables.length === 0 || !currentTable ? (
+          {builderLoading && builderTables.length === 0 ? (
+            <p className="text-xs text-app-muted leading-relaxed py-1">
+              Cargando las columnas de la fuente activa…
+            </p>
+          ) : builderTables.length === 0 || !currentTable ? (
             <p className="text-xs text-app-muted leading-relaxed py-1">
               No hay columnas disponibles en el esquema de la fuente activa para armar una consulta guiada.
               Verifica la conexión o los permisos de tu perfil.
@@ -315,7 +325,7 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
           onKeyDown={handleKeyDown}
           disabled={isGenerating}
           aria-label="Pregunta analítica sobre datos corporativos"
-          className="w-full bg-app-card/70 text-xs sm:text-sm text-app-text placeholder:text-app-muted rounded-xl px-3.5 py-2.5 resize-none focus:outline-none border border-app-border transition-colors scrollbar-thin font-sans leading-relaxed"
+          className="w-full bg-app-card/70 text-xs sm:text-sm text-app-text placeholder:text-app-muted rounded-xl px-3.5 py-2.5 resize-none focus:outline-none border border-app-border transition-colors font-sans leading-relaxed"
         />
       </div>
 
@@ -328,7 +338,7 @@ export const ChatPromptInput: React.FC<ChatPromptInputProps> = ({
           onClick={() => setShowBuilder(true)}
           className="text-[11px] text-app-muted hover:text-brand-500 dark:hover:text-brand-400 transition-colors text-left"
         >
-          ¿No sabés cómo pedirlo? Armá la consulta paso a paso
+          ¿No sabes cómo pedirlo? Arma la consulta paso a paso
         </button>
       )}
 

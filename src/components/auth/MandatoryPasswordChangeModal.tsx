@@ -156,14 +156,14 @@ export const MandatoryPasswordChangeModal: React.FC<MandatoryPasswordChangeModal
                 </h1>
                 <p className="text-xs leading-relaxed text-app-muted">
                   {voluntary
-                    ? 'Estás usando una contraseña temporal. Definí una nueva cuando quieras; si no lo hacés, el sistema te la exigirá al vencer.'
-                    : 'Tu clave es temporal o un administrador solicitó el cambio. Definí una nueva para continuar en la plataforma.'}
+                    ? 'Estás usando una contraseña temporal. Define una nueva cuando quieras; si no lo haces, el sistema te la exigirá al vencer.'
+                    : 'Tu clave es temporal o un administrador solicitó el cambio. Define una nueva para continuar en la plataforma.'}
                 </p>
               </div>
             </div>
 
             {error && (
-              <div className="flex items-start gap-2.5 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-400">
+              <div role="alert" className="flex items-start gap-2.5 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-400">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>{error}</span>
               </div>

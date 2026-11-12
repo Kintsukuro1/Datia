@@ -132,7 +132,7 @@ export const catalogService = {
     if (!item.connection_id) {
       // El backend no tiene un default honesto: `|| 1` escribía la regla en
       // la conexión demo cuando el admin no había elegido fuente.
-      throw new Error('Seleccioná una fuente de datos antes de crear la regla.');
+      throw new Error('Selecciona una fuente de datos antes de crear la regla.');
     }
     const res = await apiClient.post<CatalogItem>('/catalog', {
       connection_id: item.connection_id,

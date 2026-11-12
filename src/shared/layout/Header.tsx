@@ -32,7 +32,11 @@ export const Header: React.FC = () => {
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window === 'undefined') return 'light';
-    return (localStorage.getItem('datia-theme') as 'light' | 'dark') || 'light';
+    const stored = localStorage.getItem('datia-theme');
+    if (stored === 'light' || stored === 'dark') return stored;
+    // Sin preferencia guardada manda el sistema. Misma regla que el script
+    // inline de index.html, que pinta el tema antes del primer frame.
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
   const mobileMenuRef = useRef<HTMLDivElement>(null);
   const accountMenuRef = useRef<HTMLDivElement>(null);

@@ -281,17 +281,23 @@ export const AdminConnectorsTab: React.FC<AdminConnectorsTabProps> = ({
       ) : (
         /* Dense connectors table */
         <div className="w-full overflow-hidden rounded-xl border border-app-border bg-app-surface shadow-sm">
-          <div className="w-full overflow-x-auto">
+          <div
+            role="region"
+            tabIndex={0}
+            aria-label="Fuentes de datos corporativas"
+            className="w-full overflow-x-auto"
+          >
             <table className="w-full text-left border-collapse min-w-[900px]">
+              <caption className="sr-only">Fuentes de datos corporativas registradas</caption>
               <thead>
                 <tr className="bg-app-bg text-app-muted text-[10px] uppercase tracking-wider select-none">
-                  <th className="px-4 py-2.5 font-semibold">Nombre</th>
-                  <th className="px-4 py-2.5 font-semibold">Motor</th>
-                  <th className="px-4 py-2.5 font-semibold">Host &amp; puerto</th>
-                  <th className="px-4 py-2.5 font-semibold">Base de datos</th>
-                  <th className="px-4 py-2.5 font-semibold">Estado</th>
-                  <th className="px-4 py-2.5 font-semibold">Último test</th>
-                  <th className="px-4 py-2.5 font-semibold text-right">Acciones</th>
+                  <th scope="col" className="px-4 py-2.5 font-semibold">Nombre</th>
+                  <th scope="col" className="px-4 py-2.5 font-semibold">Motor</th>
+                  <th scope="col" className="px-4 py-2.5 font-semibold">Host &amp; puerto</th>
+                  <th scope="col" className="px-4 py-2.5 font-semibold">Base de datos</th>
+                  <th scope="col" className="px-4 py-2.5 font-semibold">Estado</th>
+                  <th scope="col" className="px-4 py-2.5 font-semibold">Último test</th>
+                  <th scope="col" className="px-4 py-2.5 font-semibold text-right">Acciones</th>
                 </tr>
               </thead>
               <tbody>

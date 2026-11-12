@@ -457,7 +457,7 @@ export const DatabaseWizardModal: React.FC<DatabaseWizardModalProps> = ({
         // Acá solo puede caer `getDataDictionary`: `autoEnrich` ya se manejó
         // arriba. Antes esta rama reintentaba la carga; ahora el único fallo
         // posible es la introspección, así que se reporta de una.
-        setErrorMessage('No se pudo introspeccionar la base de datos. Revisá la conexión y volvé a intentar.');
+        setErrorMessage('No se pudo introspeccionar la base de datos. Revisa la conexión y vuelve a intentar.');
         setCurrentStep('choice');
       }
     } else {

@@ -115,7 +115,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
     } catch (err: any) {
       // Sin fallback optimista: si el POST fallo la conexion sigue apagada en
       // el servidor, y decir que quedo activa seria falso.
-      setActivateError(err?.message || 'No se pudo activar la conexión. Revisá que tu sesión siga siendo de administrador.');
+      setActivateError(err?.message || 'No se pudo activar la conexión. Revisa que tu sesión siga siendo de administrador.');
     } finally {
       setIsActivating(false);
     }
@@ -237,8 +237,9 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
               <button
                 type="button"
                 onClick={() => onEditPrompt(result.question)}
-                className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity flex items-center space-x-1 text-[10px] text-brand-700 dark:text-brand-300 hover:text-brand-900 dark:hover:text-white bg-brand-500/15 hover:bg-brand-500/25 px-2 py-0.5 rounded-md border border-brand-500/30"
+                className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity flex items-center justify-center space-x-1 min-h-6 text-[10px] text-brand-700 dark:text-brand-300 hover:text-brand-900 dark:hover:text-white bg-brand-500/15 hover:bg-brand-500/25 px-2 py-0.5 rounded-md border border-brand-500/30"
                 title="Cargar esta pregunta en el editor para reintentar"
+                aria-label="Editar pregunta: cargarla en el editor para reintentar"
               >
                 <Edit3 className="w-3 h-3" />
                 <span>Editar</span>
@@ -309,7 +310,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
               {isActivated ? (
                 <span className="flex items-center gap-1.5 font-semibold text-emerald-700 dark:text-emerald-400">
                   <Check className="w-3.5 h-3.5" />
-                  Conexión activada. Volvé a hacer la pregunta para consultar sus datos.
+                  Conexión activada. Vuelve a hacer la pregunta para consultar sus datos.
                 </span>
               ) : (
                 <>

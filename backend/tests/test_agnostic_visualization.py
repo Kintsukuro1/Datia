@@ -48,6 +48,32 @@ class TestAgnosticVisualization(unittest.TestCase):
         self.assertIn("180", kpis[1].value)  # Valor Máximo
         self.assertIn("2026-03", kpis[1].subtitle)
 
+    def test_metrica_mencionada_en_la_pregunta_gana_a_la_primera_numerica(self):
+        """Una pregunta por monto_total no debe graficar cantidad_registros.
+
+        El SELECT del modelo puede traer COUNT(*) antes del SUM; el primer
+        numérico no es necesariamente la métrica que pidió el usuario.
+        """
+        columns = ["tipo_filamento", "cantidad_registros", "monto_total"]
+        rows = [
+            {"tipo_filamento": "Carbon Fiber", "cantidad_registros": 14963, "monto_total": 3068127964},
+            {"tipo_filamento": "TPU", "cantidad_registros": 14753, "monto_total": 2265418187},
+        ]
+
+        kpis, _chart_type, chart_option, _summary, _exec_rep = QueryEngine._build_dynamic_visualization(
+            question="suma de monto_total por tipo_filamento",
+            columns=columns,
+            rows=rows,
+            user_role="Administrador de Plataforma",
+        )
+
+        self.assertIn("Monto Total", kpis[0].title)
+        self.assertEqual(chart_option["series"][0]["name"], "Monto Total")
+        self.assertEqual(
+            sum(item["value"] for item in chart_option["series"][0]["data"]),
+            3068127964 + 2265418187,
+        )
+
     def test_kpi_sanitization_and_units(self):
         """Verifica que los KPIs limpien frases de relleno de IA y garanticen unidades.
 

@@ -333,7 +333,7 @@ export function useAdminPermissions() {
       setSaveError(
         getApiErrorMessage(
           err,
-          'El servidor no confirmó todos los cambios. La matriz muestra solo los permisos que el servidor confirmó; revisá las casillas antes de reintentar.'
+          'El servidor no confirmó todos los cambios. La matriz muestra solo los permisos que el servidor confirmó; revisa las casillas antes de reintentar.'
         )
       );
     } finally {

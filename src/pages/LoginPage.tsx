@@ -145,7 +145,7 @@ export const LoginPage: React.FC = () => {
 
               <h1 className="text-3xl font-bold tracking-tight lg:text-4xl">Democratización de Datos</h1>
               <p className="max-w-md text-sm leading-relaxed text-app-muted lg:text-base">
-                Hacé preguntas en lenguaje natural y obtené respuestas, gráficos e informes de tus
+                Pregunta en lenguaje natural y obtén respuestas, gráficos e informes de tus
                 datos. Cada persona ve solo lo que su perfil permite.
               </p>
 
@@ -155,9 +155,9 @@ export const LoginPage: React.FC = () => {
                     <Sparkles className="h-4 w-4" />
                   </div>
                   <div>
-                    <h2 className="text-sm font-semibold">Preguntá como hablás</h2>
+                    <h2 className="text-sm font-semibold">Pregunta como hablas</h2>
                     <p className="mt-0.5 text-xs leading-relaxed text-app-muted">
-                      Escribí lo que necesitás saber y Dat.ia busca la respuesta en tus datos.
+                      Escribe lo que necesitas saber y Dat.ia busca la respuesta en tus datos.
                     </p>
                   </div>
                 </div>
@@ -199,13 +199,13 @@ export const LoginPage: React.FC = () => {
                   <ShieldCheck className="h-5 w-5 text-brand-400" />
                 </div>
                 <p className="text-xs text-app-muted">
-                  Ingresá con tu usuario y contraseña.
+                  Ingresa con tu usuario y contraseña.
                 </p>
               </div>
 
               {/* Alert Message */}
               {activeError && (
-                <div className="animate-fadeIn flex items-start gap-2.5 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3.5 text-xs text-rose-400">
+                <div role="alert" className="animate-fadeIn flex items-start gap-2.5 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3.5 text-xs text-rose-400">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>{activeError}</span>
                 </div>
@@ -218,7 +218,13 @@ export const LoginPage: React.FC = () => {
                   <div className="relative">
                     <input
                       id="login-username-input"
+                      name="username"
                       type="text"
+                      autoComplete="username"
+                      spellCheck={false}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      enterKeyHint="next"
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       placeholder="tu usuario"
@@ -237,6 +243,7 @@ export const LoginPage: React.FC = () => {
                       name="password"
                       type={showPasswords ? 'text' : 'password'}
                       autoComplete="current-password"
+                      enterKeyHint="done"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="••••••••"
@@ -283,7 +290,7 @@ export const LoginPage: React.FC = () => {
                     htmlFor="login-demo-perfil"
                     className="mb-2 block text-[11px] font-medium text-app-muted"
                   >
-                    O elegí un perfil de prueba
+                    O elige un perfil de prueba
                   </label>
                   <div className="relative">
                     <select
@@ -302,7 +309,7 @@ export const LoginPage: React.FC = () => {
                     <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-muted" />
                   </div>
                   <p className="mt-1.5 text-center text-[10px] text-app-muted/80">
-                    Completa el formulario; ingresás al pulsar «Ingresar».
+                    Completa el formulario; ingresas al pulsar «Ingresar».
                   </p>
                 </div>
               )}
@@ -312,7 +319,7 @@ export const LoginPage: React.FC = () => {
                   link a una pantalla que no existe. */}
               <div className="flex items-center justify-center gap-2 rounded-lg border border-app-border bg-app-bg/50 px-3 py-2.5 text-xs text-app-muted">
                 <Headset className="h-4 w-4 shrink-0" />
-                <span>¿Problemas para acceder? Contactá al administrador.</span>
+                <span>¿Problemas para acceder? Contacta al administrador.</span>
               </div>
             </div>
 

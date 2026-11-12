@@ -100,16 +100,24 @@ export const AdminLearnedTab: React.FC = () => {
       )}
 
       {items.length > 0 && (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-app-border">
+        <div
+          role="region"
+          tabIndex={0}
+          aria-label="Memoria de aprendizaje de la IA"
+          className="overflow-x-auto rounded-xl border border-slate-200 dark:border-app-border"
+        >
           <table className="w-full text-left text-xs">
+            <caption className="sr-only">
+              Consultas aprendidas que el motor reutiliza como ejemplo en el prompt
+            </caption>
             <thead className="bg-slate-50 dark:bg-app-bg border-b border-slate-200 dark:border-app-border text-slate-600 dark:text-gray-400 uppercase tracking-wider">
               <tr>
-                <th className="px-4 py-3 whitespace-nowrap">Patrón de pregunta</th>
-                <th className="px-4 py-3 whitespace-nowrap">SQL aprendido</th>
-                <th className="px-3 py-3 whitespace-nowrap">Rol</th>
-                <th className="px-3 py-3 whitespace-nowrap text-center">Veces usada</th>
-                <th className="px-3 py-3 whitespace-nowrap text-center">Dorada</th>
-                <th className="px-3 py-3 text-right whitespace-nowrap">Acciones</th>
+                <th scope="col" className="px-4 py-3 whitespace-nowrap">Patrón de pregunta</th>
+                <th scope="col" className="px-4 py-3 whitespace-nowrap">SQL aprendido</th>
+                <th scope="col" className="px-3 py-3 whitespace-nowrap">Rol</th>
+                <th scope="col" className="px-3 py-3 whitespace-nowrap text-center">Veces usada</th>
+                <th scope="col" className="px-3 py-3 whitespace-nowrap text-center">Dorada</th>
+                <th scope="col" className="px-3 py-3 text-right whitespace-nowrap">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-app-border text-slate-800 dark:text-gray-200 bg-white dark:bg-transparent">

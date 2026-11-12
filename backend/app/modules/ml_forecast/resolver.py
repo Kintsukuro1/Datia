@@ -33,6 +33,11 @@ from app.modules.chat_engine.forecast_service import (
     _is_dimension_col,
     _is_num_col,
 )
+from app.modules.ml_forecast.lexicon import (
+    IDENTIFIER_NAME_TOKENS,
+    METRIC_NAME_TOKENS,
+)
+from app.modules.ml_forecast.policy import POLICY
 
 # Tipos físicos de texto. Se usan solo para decidir si un perfil numérico puede
 # convertirse en métrica con cast seguro.
@@ -42,20 +47,6 @@ _TEXT_TYPES = ("char", "text", "string", "enum")
 # Un ID suele ser entero (BIGINT/INT) o texto; un decimal con 100% de valores
 # distintos sigue siendo una medición (el caso SAP `WRBTR NUMERIC`).
 _DECIMAL_TYPES = ("numeric", "decimal", "money", "float", "double", "real")
-
-# Nombres que, sin catálogo, hacen que una numérica sea una MÉTRICA y no un ID.
-# La cardinalidad alta sola no alcanza: una serie corta puede tener un valor
-# distinto por fila y seguir siendo una métrica (`valor`, `monto_total`).
-_METRIC_NAME_TOKENS = (
-    "monto", "total", "ingreso", "venta", "importe", "amount", "revenue",
-    "value", "valor", "cantidad", "saldo", "precio", "costo", "gasto",
-    "utilidad", "margen", "conteo", "count", "suma", "promedio", "peso",
-)
-
-# Nombres que identifican una fila o un documento, no una cantidad.
-_IDENTIFIER_NAME_TOKENS = (
-    "folio", "codigo", "cod_", "documento", "clave", "numero",
-)
 
 _NUMERIC_TEXT_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
 _NUMERIC_TEXT_SQL_RE = r"'^[+-]?[0-9]+(\.[0-9]+)?$'"
@@ -296,18 +287,20 @@ def _table_score(
     score = 0
     name_phrase = _normalize_text(table_name.replace("_", " "))
     if name_phrase and f" {name_phrase} " in normalized_question:
-        score += 100
+        score += POLICY.table_score_name_phrase
     friendly_phrase = _normalize_text(str(entry.get("friendly_name") or ""))
     if friendly_phrase and f" {friendly_phrase} " in normalized_question:
-        score += 90
-    score += 20 * len(name_tokens & question_tokens)
-    score += 15 * len((catalog_tokens - name_tokens) & question_tokens)
+        score += POLICY.table_score_friendly_phrase
+    score += POLICY.table_score_name_token * len(name_tokens & question_tokens)
+    score += POLICY.table_score_catalog_token * len(
+        (catalog_tokens - name_tokens) & question_tokens
+    )
     return score
 
 
 def _is_dimension_table(table_name: str) -> bool:
     lowered = str(table_name).lower()
-    return lowered.startswith("dim") or lowered.startswith("dwh_dim")
+    return lowered.startswith(POLICY.dimension_table_prefixes)
 
 
 def pick_table(
@@ -425,7 +418,7 @@ def _int(value: Any) -> int:
 
 def _looks_like_metric_name(name: str) -> bool:
     lowered = str(name).lower()
-    return any(token in lowered for token in _METRIC_NAME_TOKENS)
+    return any(token in lowered for token in METRIC_NAME_TOKENS)
 
 
 def _looks_like_identifier_name(name: str) -> bool:
@@ -434,7 +427,7 @@ def _looks_like_identifier_name(name: str) -> bool:
         lowered == "id"
         or lowered.startswith("id_")
         or lowered.endswith("_id")
-        or any(token in lowered for token in _IDENTIFIER_NAME_TOKENS)
+        or any(token in lowered for token in IDENTIFIER_NAME_TOKENS)
     )
 
 
@@ -493,13 +486,13 @@ def _valid_range(first: Optional[date], last: Optional[date]) -> bool:
     return bool(
         first and last
         and first <= last
-        and 1900 <= first.year <= 2100
-        and 1900 <= last.year <= 2100
+        and POLICY.min_year <= first.year <= POLICY.max_year
+        and POLICY.min_year <= last.year <= POLICY.max_year
     )
 
 
 def _date_expression(
-    name: str, col: Dict[str, Any], profile: Dict[str, Any]
+    name: str, profile: Dict[str, Any]
 ) -> Optional[Tuple[str, str]]:
     """Expresión SQL de fecha detectada por perfil, o None.
 
@@ -583,7 +576,7 @@ def _identifier_evidence(
     # tenga un valor distinto. El ID suele ser entero o texto.
     if _is_decimal_type(str(col.get("type") or "")):
         return False
-    return row_count > 0 and (distinct / row_count) >= 0.95
+    return row_count > 0 and (distinct / row_count) >= POLICY.identifier_ratio
 
 
 # ----------------------------------------------------------------------------
@@ -693,7 +686,7 @@ def _profile_option(
     ratio = (distinct / row_count) if row_count > 0 else 0.0
     quoted = quote_sql_identifier(name)
 
-    date_expression = _date_expression(name, col, profile)
+    date_expression = _date_expression(name, profile)
     if date_expression is not None:
         expression, pattern = date_expression
         return _option(
@@ -706,7 +699,7 @@ def _profile_option(
     if _identifier_evidence(name, col, distinct, row_count):
         evidence = (
             f"{distinct} valores distintos sobre {row_count} filas"
-            if row_count and distinct / row_count >= 0.95
+            if row_count and distinct / row_count >= POLICY.identifier_ratio
             else "tipo y nombre de identificador"
         )
         return _option(
@@ -715,37 +708,34 @@ def _profile_option(
             sql_agg="count_distinct",
         )
 
-    if _looks_like_metric_name(name):
-        if _is_num_col(col):
-            return _option(
-                name, "metric", label, "perfil", "media",
-                f"tipo {col_type}", agg="sum", expression=quoted, sql_agg="sum",
-            )
-        if _is_text_type(col_type) and _numeric_ratio(profile) >= 0.95:
-            return _option(
-                name, "metric", label, "perfil", "media",
-                "mayoría de las muestras son numéricas",
-                agg="sum", expression=_numeric_cast(name), sql_agg="sum",
-            )
-
-    if _is_num_col(col) and distinct <= 100 and ratio < 0.01:
+    def metric_option(
+        expression: str, evidence: str, confidence: str = "media"
+    ) -> Dict[str, Any]:
         return _option(
-            name, "metric", label, "perfil", "baja",
+            name, "metric", label, "perfil", confidence,
+            evidence, agg="sum", expression=expression, sql_agg="sum",
+        )
+
+    if _looks_like_metric_name(name) and _is_num_col(col):
+        return metric_option(quoted, f"tipo {col_type}")
+
+    if (
+        _is_num_col(col)
+        and distinct <= POLICY.code_max_distinct
+        and ratio < POLICY.code_max_ratio
+    ):
+        return metric_option(
+            quoted,
             f"{distinct} valores distintos; puede ser un código, no una cantidad",
-            agg="sum", expression=quoted, sql_agg="sum",
+            "baja",
         )
 
     if _is_num_col(col):
-        return _option(
-            name, "metric", label, "perfil", "media",
-            f"tipo {col_type}", agg="sum", expression=quoted, sql_agg="sum",
-        )
+        return metric_option(quoted, f"tipo {col_type}")
 
-    if _is_text_type(col_type) and _numeric_ratio(profile) >= 0.95:
-        return _option(
-            name, "metric", label, "perfil", "media",
-            "mayoría de las muestras son numéricas",
-            agg="sum", expression=_numeric_cast(name), sql_agg="sum",
+    if _is_text_type(col_type) and _numeric_ratio(profile) >= POLICY.numeric_text_ratio:
+        return metric_option(
+            _numeric_cast(name), "mayoría de las muestras son numéricas"
         )
 
     if _is_dimension_col(col):

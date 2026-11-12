@@ -10,6 +10,7 @@ const spies = vi.hoisted(() => ({
   notify: vi.fn(),
   getThreads: vi.fn(async () => []),
   getSuggestions: vi.fn(async () => ({ suggestions: [], builder: null })),
+  getBuilderOptions: vi.fn(async () => null),
   getConnectors: vi.fn(async (): Promise<any[]> => []),
 }));
 
@@ -43,6 +44,7 @@ vi.mock('../features/chat/services/query_service', async (importOriginal) => {
       ...actual.queryService,
       getThreads: spies.getThreads,
       getSuggestions: spies.getSuggestions,
+      getBuilderOptions: spies.getBuilderOptions,
     },
   };
 });

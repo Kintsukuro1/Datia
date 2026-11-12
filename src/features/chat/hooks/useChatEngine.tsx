@@ -16,9 +16,12 @@ import { resolveRoleLabel } from '../../../constants';
 // espera no se percibe como colgado.
 const LONG_WAIT_NOTICE_SECONDS = 8;
 
-// Corta la espera del cliente a los 90 s. El servidor puede seguir trabajando:
+// Corta la espera del cliente a los 180 s. El servidor puede seguir trabajando:
 // el AbortController corta la espera, no deshace el trabajo del backend.
-const REQUEST_TIMEOUT_MS = 90_000;
+// Tiempo máximo de espera de una consulta. El modelo local puede tardar ~90 s
+// en una consulta con SQL + gráfico + narrativa; 90 s dejaba la respuesta justo
+// en el límite y la UI la descartaba. 180 s da margen sin esperar para siempre.
+const REQUEST_TIMEOUT_MS = 180_000;
 
 // Cuantos hilos caben en la COPIA LOCAL del historial. Es un tope de
 // persistencia, no de pantalla: `threads` en memoria nunca se poda, asi que
@@ -111,10 +114,12 @@ function useChatEngineInternal() {
   const attemptStartedAtRef = useRef<number | null>(null);
 
   const userRole = resolveRoleLabel(user);
-  const [promptSuggestions, setPromptSuggestions] = useState<string[]>([]);
-  // Opciones reales del esquema activo para el Smart Builder. Se piden junto con
-  // las sugerencias para no duplicar la introspeccion del backend.
+  // Opciones reales del esquema activo para el Smart Builder. Se piden por el
+  // camino rapido del backend, sin esperar al LLM.
   const [builderOptions, setBuilderOptions] = useState<BuilderOptions | null>(null);
+  // El endpoint de sugerencias puede tardar (espera al LLM). Sin este estado la
+  // UI mostraba "no hay columnas" mientras la respuesta seguía en vuelo.
+  const [builderLoading, setBuilderLoading] = useState(false);
   const [connectors, setConnectors] = useState<CorporateConnection[]>([]);
 
   // Local storage storage key
@@ -127,18 +132,21 @@ function useChatEngineInternal() {
 
   const loadSuggestions = useCallback((connectionId?: number) => {
     const seq = ++suggestionsSeqRef.current;
-    queryService.getSuggestions(connectionId).then((payload) => {
+    setBuilderLoading(true);
+    setBuilderOptions(null);
+
+    // Solo se pide el esquema del constructor (camino rapido, sin LLM). Las
+    // sugerencias narrativas se sacaron: no se renderizaban en ninguna pantalla
+    // y competian con la consulta del usuario por el mismo motor local.
+    queryService.getBuilderOptions(connectionId).then((builder) => {
       if (seq === suggestionsSeqRef.current) {
-        setPromptSuggestions(payload.suggestions);
-        setBuilderOptions(payload.builder);
+        setBuilderOptions(builder);
+        setBuilderLoading(false);
       }
     }).catch(() => {
-      // La lista vacia es el estado por defecto (no hay chips), no una
-      // afirmacion sobre el servidor: `ChatEmptyState` solo pinta el bloque si
-      // `length > 0`.
       if (seq === suggestionsSeqRef.current) {
-        setPromptSuggestions([]);
         setBuilderOptions(null);
+        setBuilderLoading(false);
       }
     });
   }, []);
@@ -170,7 +178,9 @@ function useChatEngineInternal() {
       });
     };
 
-    loadSuggestions();
+    // La carga inicial de sugerencias la dispara `applyConnectors` con el id de
+    // la fuente activa. Llamar acá sin id lanzaba una segunda peticion lenta al
+    // LLM que competia con la real y dejaba el builder vacio mientras esperaba.
     load();
     window.addEventListener(CONNECTORS_CHANGED_EVENT, load);
     return () => {
@@ -685,7 +695,7 @@ function useChatEngineInternal() {
         // nada, y el backend pudo haber generado y ejecutado la consulta igual.
         notify(
           'warning',
-          `Se cortó la espera a los ${REQUEST_TIMEOUT_MS / 1000} s. El modelo local no llegó a responder a tiempo: la pregunta ya se había enviado y el servidor pudo seguir trabajándola hasta terminar, pero su resultado se descartó. Podés reintentarla; para consultas más pesadas conviene una pregunta más acotada.`
+          `Se cortó la espera a los ${REQUEST_TIMEOUT_MS / 1000} s. El modelo local no llegó a responder a tiempo: la pregunta ya se había enviado y el servidor pudo seguir trabajándola hasta terminar, pero su resultado se descartó. Puedes reintentarla; para consultas más pesadas conviene una pregunta más acotada.`
         );
       }
     }, REQUEST_TIMEOUT_MS);
@@ -810,7 +820,7 @@ function useChatEngineInternal() {
         // Timeout: el aviso ya lo dio el temporizador; la pregunta NO se tira.
         // `attemptError` hace que el `finally` la conserve en pantalla con el
         // motivo y el boton de reintentar.
-        attemptError = `El motor local no respondió en ${REQUEST_TIMEOUT_MS / 1000} s. Podés reintentar la misma pregunta o reformularla.`;
+        attemptError = `El motor local no respondió en ${REQUEST_TIMEOUT_MS / 1000} s. Puedes reintentar la misma pregunta o reformularla.`;
         return;
       }
       const errorMessage = err.message || 'Error al conectar con la base de datos o el motor LLM local.';
@@ -890,7 +900,7 @@ function useChatEngineInternal() {
       Math.round((Date.now() - (attemptStartedAtRef.current ?? Date.now())) / 1000)
     );
     setPendingError(
-      `Cancelaste la consulta a los ${seconds} s. La espera en este navegador se cortó, pero la petición ya había llegado al servidor y el motor local puede seguir trabajándola hasta terminar. La pregunta quedó acá: podés reintentarla.`
+      `Cancelaste la consulta a los ${seconds} s. La espera en este navegador se cortó, pero la petición ya había llegado al servidor y el motor local puede seguir trabajándola hasta terminar. La pregunta quedó aquí: puedes reintentarla.`
     );
     setPendingErrorKind('cancel');
     setIsGenerating(false);
@@ -949,8 +959,8 @@ function useChatEngineInternal() {
     activeDatabaseName,
     activeConnectionId,
     connectors,
-    promptSuggestions,
     builderOptions,
+    builderLoading,
     threads,
     threadsLoaded,
     threadsError,
@@ -988,8 +998,8 @@ function useChatEngineInternal() {
     activeDatabaseName,
     activeConnectionId,
     connectors,
-    promptSuggestions,
     builderOptions,
+    builderLoading,
     threads,
     threadsLoaded,
     threadsError,

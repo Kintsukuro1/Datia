@@ -10,6 +10,7 @@ import {
   truncateAxisLabel,
 } from '../../dashboard/components/charts/theme';
 import type { ProjectionResult } from '../services/projection_service';
+import { pct } from '../services/projection_format';
 
 /**
  * Historica + proyectada + banda por paso.
@@ -31,9 +32,6 @@ const BAND_FILL = 'rgba(124, 58, 237, 0.16)';
 const BAND_NAME = 'Banda de error';
 
 const moneyOrDash = (n: number | null): string => (n === null ? '—' : formatMetricNumber(n, true));
-
-const fmtPct = (n: number): string =>
-  `${Number(n).toLocaleString('es-CL', { maximumFractionDigits: 1 })}%`;
 
 const tooltipRow = (label: string, value: string, color: string): string =>
   `<div style="display:flex;justify-content:space-between;gap:14px;margin-top:4px;">` +
@@ -118,13 +116,13 @@ function buildOption(result: ProjectionResult) {
           html += tooltipRow('Proyección', moneyOrDash(step.point), PROJECTED_COLOR);
           if (step.lower !== null && step.upper !== null) {
             html += tooltipRow(
-              step.band_pct === null ? 'Margen' : `Margen ±${fmtPct(step.band_pct)}`,
+              step.band_pct === null ? 'Margen' : `Margen ±${pct(step.band_pct)}`,
               `${formatMetricNumber(step.lower, true)} – ${formatMetricNumber(step.upper, true)}`,
               PROJECTED_COLOR
             );
           }
           if (step.mape !== null) {
-            html += tooltipRow('Error del paso', fmtPct(step.mape), '#F59E0B');
+            html += tooltipRow('Error del paso', pct(step.mape), '#F59E0B');
           }
           html += tooltipRow('Pruebas', String(step.n_backtests), '#64748B');
           if (step.extrapolated) {

@@ -73,16 +73,24 @@ export const SemanticCatalogSection: React.FC<SemanticCatalogSectionProps> = ({
       </div>
 
       {/* Catalog Table */}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-dark-border">
+      <div
+        role="region"
+        tabIndex={0}
+        aria-label="Catálogo semántico"
+        className="overflow-x-auto rounded-xl border border-slate-200 dark:border-dark-border"
+      >
         <table className="w-full text-left text-xs min-w-[700px]">
+          <caption className="sr-only">
+            Reglas del catálogo semántico por tabla y columna
+          </caption>
           <thead className="bg-slate-50 dark:bg-dark-base border-b border-slate-200 dark:border-dark-border text-slate-600 dark:text-gray-400 uppercase tracking-wider">
             <tr>
-              <th className="px-4 py-3">Tabla BD</th>
-              <th className="px-4 py-3">Campo / Columna</th>
-              <th className="px-4 py-3">Descripción Semántica (Contexto IA)</th>
-              <th className="px-4 py-3">Fórmula / Regla</th>
-              <th className="px-4 py-3">Origen</th>
-              <th className="px-4 py-3 text-right">Acciones</th>
+              <th scope="col" className="px-4 py-3">Tabla BD</th>
+              <th scope="col" className="px-4 py-3">Campo / Columna</th>
+              <th scope="col" className="px-4 py-3">Descripción Semántica (Contexto IA)</th>
+              <th scope="col" className="px-4 py-3">Fórmula / Regla</th>
+              <th scope="col" className="px-4 py-3">Origen</th>
+              <th scope="col" className="px-4 py-3 text-right">Acciones</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-dark-border text-slate-800 dark:text-gray-200 bg-white dark:bg-transparent">

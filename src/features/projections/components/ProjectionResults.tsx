@@ -1,8 +1,15 @@
 import React, { useId, useRef, useState } from 'react';
 import { AlertTriangle, ChevronDown, FileSpreadsheet, FileText, Info, Loader2, Sparkles, TrendingUp } from 'lucide-react';
 import { ProjectionChart } from './ProjectionChart';
-import type { ProjectionGroupSummary, ProjectionResult } from '../services/projection_service';
+import type {
+  ProjectionDiagnosis,
+  ProjectionGroupSummary,
+  ProjectionModelComparison,
+  ProjectionPolicy,
+  ProjectionResult,
+} from '../services/projection_service';
 import { sumLastPeriods, variationPct } from '../services/projection_metrics';
+import { money, pct } from '../services/projection_format';
 import { humanizeLabel } from '../../chat/utils/query_builder';
 import { reportService } from '../../dashboard/services/report_service';
 import { useNotifications } from '../../../context/NotificationContext';
@@ -18,13 +25,34 @@ import { useNotifications } from '../../../context/NotificationContext';
  *    escondidos tras un "ver detalle".
  */
 
-const money = (n: number | null | undefined): string =>
+const signedMoney = (n: number | null | undefined): string =>
+  n === null || n === undefined ? '—' : `${n > 0 ? '+' : n < 0 ? '-' : ''}${money(Math.abs(n))}`;
+
+/** `(+5%)` para acompañar una diferencia; vacío si el backend no la publicó. */
+const signedPctSuffix = (n: number | null | undefined): string =>
+  n === null || n === undefined ? '' : ` (${n > 0 ? '+' : ''}${pct(n)})`;
+
+/**
+ * Numero en la unidad de la metrica (MAE, RMSE, cambio de nivel): sin `$` ni
+ * `%` porque la metrica puede ser un monto o un conteo. `null` sigue siendo "—".
+ */
+const amount = (n: number | null | undefined): string =>
   n === null || n === undefined
     ? '—'
-    : `$${Math.round(n).toLocaleString('es-CL', { maximumFractionDigits: 0 })}`;
+    : Number(n).toLocaleString('es-CL', { maximumFractionDigits: 1 });
 
-const pct = (n: number | null | undefined): string =>
-  n === null || n === undefined ? '—' : `${Number(n).toLocaleString('es-CL', { maximumFractionDigits: 1 })}%`;
+/** MASE es adimensional: sin simbolo, con dos decimales para ver diferencias. */
+const ratio = (n: number | null | undefined): string =>
+  n === null || n === undefined
+    ? '—'
+    : Number(n).toLocaleString('es-CL', { maximumFractionDigits: 2 });
+
+/**
+ * `0` es un resultado medido (sin huecos, sin atipicos) y se muestra; `null` es
+ * "no se midio" y se omite. Por eso el chequeo es por tipo y no por truthiness.
+ */
+const isNumber = (value: number | null | undefined): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
 
 const METHOD_LABELS: Record<string, string> = {
   naive: 'Repetir el último valor',
@@ -32,7 +60,8 @@ const METHOD_LABELS: Record<string, string> = {
   ols_trend: 'Tendencia lineal (OLS)',
 };
 
-const methodLabel = (m?: string | null): string => (m ? METHOD_LABELS[m] ?? m : '—');
+const methodLabel = (m?: string | null, label?: string | null): string =>
+  label ?? (m ? METHOD_LABELS[m] ?? m : '—');
 
 const GRANULARITY_LABELS: Record<string, string> = {
   day: 'Día',
@@ -86,7 +115,7 @@ const QUALITY_EXPLANATIONS: Record<string, string> = {
   confiable:
     'Las reglas de calidad no encontraron alertas con la evidencia publicada.',
   exploratoria:
-    'La proyección se puede leer, pero hay señales que reducen la confianza: error medio, poca evidencia en algún paso o huecos en la serie.',
+    'La proyección se puede leer, pero hay señales que reducen la confianza: error medio, poca evidencia en algún paso, huecos en la serie o alertas en los datos (último dato, cambio de nivel o valores atípicos).',
   no_confiable:
     'El error medido o el margen del total no permiten tratar estas cifras como una estimación confiable.',
   sin_medicion:
@@ -189,7 +218,7 @@ const QualityBadge: React.FC<{ result: ProjectionResult; compact?: boolean }> = 
 
         {hasThresholds && status !== 'confiable' && (
           <span className="mt-2 block border-t border-app-border/70 pt-1.5 text-[10px] text-app-muted">
-            Umbrales del servidor: exploratoria si el error promedio supera{' '}
+            Umbrales de error del servidor: exploratoria si el error promedio supera{' '}
             {pct(quality.exploratory_threshold)}; no confiable si supera{' '}
             {pct(quality.unreliable_threshold)}.
           </span>
@@ -199,10 +228,23 @@ const QualityBadge: React.FC<{ result: ProjectionResult; compact?: boolean }> = 
   );
 };
 
-const horizonSourceLabel = (source?: string | null): string | null => {
+/**
+ * Tope de horizonte para respuestas viejas que no publican `policy`. NO es la
+ * fuente de verdad: cuando viene `policy.max_horizon`, ese valor manda.
+ */
+const horizonSourceLabel = (
+  source?: string | null,
+  policy?: ProjectionPolicy | null,
+  maxHorizon?: number | null
+): string | null => {
   if (source === 'pedido') return 'elegido en el pedido';
   if (source === 'pregunta') return 'según tu pregunta';
-  if (source === 'pregunta_recortada') return 'según tu pregunta (máximo 36 pasos)';
+  if (source === 'pregunta_recortada') {
+    const limit = policy?.max_horizon ?? maxHorizon;
+    return limit !== null && limit !== undefined
+      ? `según tu pregunta (máximo ${limit} pasos)`
+      : 'según tu pregunta (recortada al máximo de la política)';
+  }
   if (source === 'llm') return 'ajustado por la IA (Auto)';
   if (source === 'default') return 'valor por defecto de Auto';
   return null;
@@ -341,6 +383,19 @@ const UnavailableBlock: React.FC<{ result: ProjectionResult }> = ({ result }) =>
     <p className="mt-2 text-sm leading-relaxed text-amber-900 dark:text-amber-100">
       {result.reason || 'El servidor no pudo calcular una proyección para esta pregunta.'}
     </p>
+
+    {result.guidance && (
+      <div className="mt-3 rounded-xl border border-amber-400/60 bg-amber-100/70 p-3 dark:border-amber-800/70 dark:bg-amber-900/30">
+        <p className="text-sm leading-relaxed text-amber-900 dark:text-amber-100">
+          {result.guidance}
+        </p>
+        <p className="mt-1.5 text-xs leading-relaxed text-amber-800 dark:text-amber-300">
+          Si igual quieres una referencia, escribe un escenario en la pregunta —por ejemplo,
+          «crecimiento del 10% anual»— y vuelve a proyectar. Un escenario es un supuesto, no un
+          pronóstico estadístico.
+        </p>
+      </div>
+    )}
 
     {(result.table || result.metric_column || result.date_column) && (
       <dl className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
@@ -576,6 +631,23 @@ const TotalCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
         <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
         {evidencia}
       </p>
+      {total.band_method === 'conformal_quantile' && total.interval_coverage !== null && total.interval_coverage !== undefined && (
+        <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-app-muted">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+          Banda calibrada al{' '}
+          {pct((total.interval_target ?? result.interval_target ?? 0.8) * 100)}: en la
+          prueba hacia atrás, {pct(total.interval_coverage * 100)} de los casos quedaron
+          dentro ({total.interval_coverage_n ?? 0} comparaciones). El peor error observado
+          fue ±{pct(total.worst_case_pct)}.
+        </p>
+      )}
+      {total.band_method === 'max_residual' && (
+        <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-app-muted">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+          Banda conservadora: se usa el peor error observado (poca evidencia o cambio de
+          nivel reciente).
+        </p>
+      )}
       {total.lower_clamped && (
         <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-app-muted">
           <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
@@ -637,7 +709,10 @@ const GroupEvidence: React.FC<{ group: ProjectionGroupSummary }> = ({ group }) =
   );
 };
 
-const BreakdownCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
+const BreakdownCard: React.FC<{ result: ProjectionResult; primary?: boolean }> = ({
+  result,
+  primary = false,
+}) => {
   const breakdown = result.breakdown;
   if (!breakdown) return null;
 
@@ -653,42 +728,78 @@ const BreakdownCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
     );
   }
 
+  // Como respuesta principal el ranking se ordena por total proyectado: el
+  // título afirma cuál es el mayor y la tabla tiene que respaldarlo.
+  const projected = (group: ProjectionGroupSummary): number =>
+    group.total?.point ?? Number.NEGATIVE_INFINITY;
+  const groups = primary
+    ? [...breakdown.groups].sort((a, b) => projected(b) - projected(a))
+    : breakdown.groups;
+
   return (
     <section className="overflow-hidden rounded-2xl border border-app-border bg-app-card shadow-xs">
       <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-app-border/80 px-4 py-3">
-        <h3 className="text-sm font-bold text-app-text">
-          Desglose por{' '}
-          <span title={breakdown.dimension_column ?? undefined}>
-            {breakdown.dimension_column ? legibleColumn(breakdown.dimension_column) : 'dimensión'}
+        <div>
+          <h3 className="text-sm font-bold text-app-text">
+            {primary ? (
+              'Producto con mayor proyección'
+            ) : (
+              <>
+                Desglose por{' '}
+                <span title={breakdown.dimension_column ?? undefined}>
+                  {breakdown.dimension_column
+                    ? legibleColumn(breakdown.dimension_column)
+                    : 'dimensión'}
+                </span>
+              </>
+            )}
+          </h3>
+          {primary && <p className="mt-0.5 text-xs text-app-muted">Ranking proyectado</p>}
+        </div>
+        {!primary && (
+          <span className="text-[11px] text-app-muted">
+            Top {breakdown.top_n} por volumen histórico
           </span>
-        </h3>
-        <span className="text-[11px] text-app-muted">
-          Top {breakdown.top_n} por volumen histórico
-        </span>
+        )}
       </header>
 
-      {breakdown.groups.length === 0 ? (
+      {groups.length === 0 ? (
         <p className="px-4 py-4 text-xs text-app-muted">
           No hay grupos con historia suficiente para desglosar.
         </p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-xs">
+        <div
+          role="region"
+          tabIndex={0}
+          aria-label={
+            primary
+              ? 'Ranking de grupos por total proyectado'
+              : 'Total proyectado por grupo'
+          }
+          className="overflow-x-auto"
+        >
+          <table className={`w-full ${primary ? 'min-w-[420px]' : 'min-w-[760px]'} text-xs`}>
             <caption className="sr-only">
-              Total proyectado por grupo, con su evidencia y sus periodos históricos
+              {primary
+                ? 'Ranking de grupos por total proyectado'
+                : 'Total proyectado por grupo, con su evidencia y sus periodos históricos'}
             </caption>
             <thead>
               <tr className="border-b border-app-border text-left text-app-muted">
                 <th scope="col" className="px-4 py-2 font-medium">Grupo</th>
                 <th scope="col" className="px-4 py-2 text-right font-medium">Total proyectado</th>
                 <th scope="col" className="px-4 py-2 text-right font-medium">Rango</th>
-                <th scope="col" className="px-4 py-2 text-right font-medium">MAPE</th>
-                <th scope="col" className="px-4 py-2 text-right font-medium">Periodos</th>
-                <th scope="col" className="px-4 py-2 font-medium">Evidencia</th>
+                {!primary && (
+                  <>
+                    <th scope="col" className="px-4 py-2 text-right font-medium">MAPE</th>
+                    <th scope="col" className="px-4 py-2 text-right font-medium">Periodos</th>
+                    <th scope="col" className="px-4 py-2 font-medium">Evidencia</th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
-              {breakdown.groups.map((group) => {
+              {groups.map((group) => {
                 const total = group.total;
                 const rango =
                   total && total.lower !== null && total.upper !== null
@@ -703,18 +814,22 @@ const BreakdownCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
                           {money(total?.point)}
                         </td>
                         <td className="px-4 py-2 text-right tabular-nums text-app-text">{rango}</td>
-                        <td className="px-4 py-2 text-right tabular-nums text-app-text">
-                          {pct(group.mape)}
-                        </td>
-                        <td className="px-4 py-2 text-right tabular-nums text-app-muted">
-                          {group.n_periods}
-                        </td>
-                        <td className="px-4 py-2">
-                          <GroupEvidence group={group} />
-                        </td>
+                        {!primary && (
+                          <>
+                            <td className="px-4 py-2 text-right tabular-nums text-app-text">
+                              {pct(group.mape)}
+                            </td>
+                            <td className="px-4 py-2 text-right tabular-nums text-app-muted">
+                              {group.n_periods}
+                            </td>
+                            <td className="px-4 py-2">
+                              <GroupEvidence group={group} />
+                            </td>
+                          </>
+                        )}
                       </>
                     ) : (
-                      <td colSpan={5} className="px-4 py-2 text-xs text-app-muted">
+                      <td colSpan={primary ? 2 : 5} className="px-4 py-2 text-xs text-app-muted">
                         {group.reason || 'Sin proyección publicable para este grupo.'}
                       </td>
                     )}
@@ -727,26 +842,37 @@ const BreakdownCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
       )}
 
       <p className="border-t border-app-border/60 px-4 py-2.5 text-[11px] leading-relaxed text-app-muted">
-        Cada grupo se proyecta con su propia serie histórica. El top se eligió por volumen
-        observado, no por el resultado del modelo; no incluye una categoría «Otros» y no
-        reemplaza el total general.
+        {primary
+          ? 'Cada producto se proyecta con su propia serie histórica. El ranking se ordena por el total proyectado y no reemplaza el total general.'
+          : 'Cada grupo se proyecta con su propia serie histórica. El top se eligió por volumen observado, no por el resultado del modelo; no incluye una categoría «Otros» y no reemplaza el total general.'}
       </p>
     </section>
   );
 };
 
-const StepsTable: React.FC<{ result: ProjectionResult }> = ({ result }) => (
+const StepsTable: React.FC<{ result: ProjectionResult }> = ({ result }) => {
+  const sourceLabel = horizonSourceLabel(
+    result.horizon_source,
+    result.policy,
+    result.max_horizon
+  );
+  const calibratedTarget =
+    result.interval_target ?? result.policy?.interval_coverage ?? null;
+  return (
   <section className="overflow-hidden rounded-2xl border border-app-border bg-app-card shadow-xs">
     <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-app-border/80 px-4 py-3">
       <h3 className="text-sm font-bold text-app-text">Error y evidencia por paso</h3>
       <span className="text-[11px] text-app-muted">
         Horizonte publicado: {result.horizon} {horizonUnit(result.granularity)}
-        {horizonSourceLabel(result.horizon_source)
-          ? ` · ${horizonSourceLabel(result.horizon_source)}`
-          : ''}
+        {sourceLabel ? ` · ${sourceLabel}` : ''}
       </span>
     </header>
-    <div className="overflow-x-auto">
+    <div
+      role="region"
+      tabIndex={0}
+      aria-label="Error y evidencia por paso"
+      className="overflow-x-auto"
+    >
       <table className="w-full min-w-[760px] text-xs">
         <caption className="sr-only">
           Punto, banda, error y evidencia de cada paso proyectado
@@ -780,6 +906,9 @@ const StepsTable: React.FC<{ result: ProjectionResult }> = ({ result }) => (
                     </span>
                     <span className="block text-[10px] text-app-muted">
                       {s.band_pct === null ? '±—' : `±${pct(s.band_pct)}`}
+                      {s.interval_coverage !== null && s.interval_coverage !== undefined
+                        ? ` · cob. ${pct(s.interval_coverage * 100)}`
+                        : ''}
                     </span>
                   </>
                 )}
@@ -798,11 +927,75 @@ const StepsTable: React.FC<{ result: ProjectionResult }> = ({ result }) => (
       «Sin backtest propio»: el paso no llegó a medirse y hereda la banda del último paso
       medido (el más cercano, no el más ancho). «Poca evidencia»: menos de 4 backtests. El
       MAPE se calcula por replay real sobre esa serie; «—» significa que ese paso no dejó
-      ningún residuo que medir.
+      ningún residuo que medir. «cob.» es la cobertura walk-forward del intervalo.
+      {result.steps.some((step) => step.band_method === 'conformal_quantile') && (
+        <span className="mt-1 block">
+          {calibratedTarget !== null
+            ? `La banda se calibró al ${pct(calibratedTarget * 100)}.`
+            : 'La banda se calibró por cobertura observada.'}
+        </span>
+      )}
       {result.steps.some((step) => step.lower_clamped) &&
         ' En los conteos, la banda inferior se acota a 0: no hay cantidades negativas.'}
     </p>
   </section>
+  );
+};
+
+/** Comparacion de los metodos probados: la evidencia de por que se publica uno. */
+const ModelComparisonTable: React.FC<{ rows: ProjectionModelComparison[] }> = ({ rows }) => (
+  <div className="mt-3">
+    <div
+      role="region"
+      tabIndex={0}
+      aria-label="Comparación de métodos de pronóstico"
+      className="overflow-x-auto"
+    >
+      <table className="w-full min-w-[540px] text-xs">
+        <caption className="sr-only">
+          Métodos probados en el backtest, con su error medido; el marcado es el que
+          sostiene la proyección publicada
+        </caption>
+        <thead>
+          <tr className="border-b border-app-border text-left text-app-muted">
+            <th scope="col" className="px-3 py-1.5 font-medium">Método</th>
+            <th scope="col" className="px-3 py-1.5 text-right font-medium">MAPE</th>
+            <th scope="col" className="px-3 py-1.5 text-right font-medium">MAE</th>
+            <th scope="col" className="px-3 py-1.5 text-right font-medium">RMSE</th>
+            <th scope="col" className="px-3 py-1.5 text-right font-medium">MASE</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr
+              key={row.method}
+              className={`border-b border-app-border/50 last:border-0 ${
+                row.selected ? 'bg-violet-500/10' : ''
+              }`}
+            >
+              <td className="px-3 py-1.5 font-medium text-app-text">
+                {methodLabel(row.method, row.label)}
+                {row.selected && (
+                  <span className="ml-1.5 rounded-md border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:text-violet-300">
+                    seleccionado
+                  </span>
+                )}
+              </td>
+              <td className="px-3 py-1.5 text-right tabular-nums text-app-text">{pct(row.mape)}</td>
+              <td className="px-3 py-1.5 text-right tabular-nums text-app-text">{amount(row.mae)}</td>
+              <td className="px-3 py-1.5 text-right tabular-nums text-app-text">{amount(row.rmse)}</td>
+              <td className="px-3 py-1.5 text-right tabular-nums text-app-text">{ratio(row.mase)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+    <p className="mt-1.5 text-[11px] leading-relaxed text-app-muted">
+      Error medido por backtest sobre la misma serie. MAPE en %; MAE y RMSE en la unidad de la
+      métrica; MASE bajo 1 es mejor que repetir el último valor. «—» significa que ese método no
+      dejó residuos que medir.
+    </p>
+  </div>
 );
 
 const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
@@ -823,6 +1016,7 @@ const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
     );
 
   const candidates = Object.entries(result.mape_by_method ?? {});
+  const comparison = result.model_comparison ?? [];
 
   return (
     <section className="rounded-2xl border border-app-border bg-app-card p-4 shadow-xs">
@@ -830,7 +1024,7 @@ const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
       <dl className="mt-3 grid grid-cols-2 gap-3 text-xs lg:grid-cols-4">
         <div>
           <dt className="text-app-muted">Método publicado</dt>
-          <dd className="mt-0.5 text-sm font-semibold text-app-text">{methodLabel(result.method)}</dd>
+          <dd className="mt-0.5 text-sm font-semibold text-app-text">{methodLabel(result.method, result.method_label)}</dd>
         </div>
         <div>
           <dt className="text-app-muted">¿Mejor que repetir el último valor?</dt>
@@ -862,17 +1056,21 @@ const MethodCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
         </div>
       </dl>
 
-      {candidates.length > 0 && (
-        <p className="mt-3 text-[11px] leading-relaxed text-app-muted">
-          Error de cada método probado:{' '}
-          {candidates.map(([m, v], i) => (
-            <span key={m}>
-              {i > 0 && ' · '}
-              {methodLabel(m)} {pct(v)}
-            </span>
-          ))}
-          . Gana el menor; el desempate favorece al más simple.
-        </p>
+      {comparison.length > 0 ? (
+        <ModelComparisonTable rows={comparison} />
+      ) : (
+        candidates.length > 0 && (
+          <p className="mt-3 text-[11px] leading-relaxed text-app-muted">
+            Error de cada método probado:{' '}
+            {candidates.map(([m, v], i) => (
+              <span key={m}>
+                {i > 0 && ' · '}
+                {methodLabel(m)} {pct(v)}
+              </span>
+            ))}
+            . Gana el menor; el desempate favorece al más simple.
+          </p>
+        )
       )}
 
       <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-app-muted">
@@ -976,7 +1174,184 @@ const NarrationCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
           ? 'Escenario determinista; no es un pronóstico estadístico.'
           : result.narration_source === 'llm'
             ? 'Resumen automático a partir de los números ya calculados; no calcula nada por su cuenta.'
-            : 'El resumen se generó con la plantilla del servidor porque el asistente no respondió; la lectura se publica igual.'}
+            : result.narration_source === 'plantilla'
+              ? 'La lectura se generó con la plantilla determinista del servidor a partir de los números ya calculados.'
+              : 'No se pudo generar una lectura; los números y su evidencia siguen publicados.'}
+      </p>
+    </section>
+  );
+};
+
+/**
+ * Calidad medida de la serie para el diagnostico: huecos, atipicos, cambio de
+ * nivel y horizonte confiable. Solo aparece si el backend publico alguno; un 0
+ * cuenta como medicion ("sin huecos") y un null se omite, no se pinta como 0.
+ */
+const diagnosisQualityItems = (
+  diagnosis: ProjectionDiagnosis
+): Array<{ label: string; value: string }> => {
+  const items: Array<{ label: string; value: string }> = [];
+
+  if (isNumber(diagnosis.usable_periods)) {
+    items.push({ label: 'Periodos usables', value: String(diagnosis.usable_periods) });
+  }
+  if (isNumber(diagnosis.missing_periods)) {
+    items.push({
+      label: 'Periodos faltantes',
+      value: diagnosis.missing_periods === 0 ? 'Sin huecos' : String(diagnosis.missing_periods),
+    });
+  }
+  if (isNumber(diagnosis.outlier_count)) {
+    items.push({
+      label: 'Valores atípicos',
+      value: diagnosis.outlier_count === 0 ? 'Sin atípicos' : String(diagnosis.outlier_count),
+    });
+  }
+  if (diagnosis.level_shift === true || (typeof diagnosis.level_shift === 'number' && diagnosis.level_shift !== 0)) {
+    const parts: string[] = [];
+    if (typeof diagnosis.level_shift === 'number' && diagnosis.level_shift !== 0) {
+      parts.push(`${diagnosis.level_shift > 0 ? '+' : ''}${amount(diagnosis.level_shift)}`);
+    }
+    if (isNumber(diagnosis.level_shift_pct) && diagnosis.level_shift_pct !== 0) {
+      parts.push(`(${diagnosis.level_shift_pct > 0 ? '+' : ''}${pct(diagnosis.level_shift_pct)})`);
+    }
+    items.push({
+      label: 'Cambio de nivel',
+      value: parts.length > 0 ? parts.join(' ') : 'Sí',
+    });
+  }
+  if (isNumber(diagnosis.reliable_horizon)) {
+    items.push({
+      label: 'Horizonte confiable',
+      value:
+        diagnosis.reliable_horizon === 0
+          ? 'Sin pasos con evidencia suficiente'
+          : `${diagnosis.reliable_horizon} pasos`,
+    });
+  }
+
+  return items;
+};
+
+/**
+ * Lectura de la forma de la serie: si crece, se mantiene o baja, y qué limita
+ * esa lectura. Sin MAPE, backtest ni banda: eso vive en el detalle tecnico.
+ */
+const DiagnosisCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
+  const diagnosis = result.diagnosis;
+  if (!diagnosis) return null;
+  const warnings = diagnosis.warnings ?? [];
+  const qualityItems = diagnosisQualityItems(diagnosis);
+
+  return (
+    <section className="rounded-2xl border border-app-border bg-app-card p-4 shadow-xs">
+      <h3 className="text-sm font-bold text-app-text">Diagnóstico de la serie</h3>
+      <p className="mt-2 max-w-3xl text-sm leading-relaxed text-app-text">{diagnosis.summary}</p>
+      {warnings.length > 0 && (
+        <ul className="mt-2.5 space-y-1 text-xs leading-relaxed text-app-muted">
+          {warnings.map((warning) => (
+            <li key={warning} className="flex items-start gap-1.5">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-amber-500" aria-hidden />
+              {warning}
+            </li>
+          ))}
+        </ul>
+      )}
+      {qualityItems.length > 0 && (
+        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-app-border/60 pt-2.5 text-xs sm:grid-cols-3">
+          {qualityItems.map((item) => (
+            <div key={item.label}>
+              <dt className="text-app-muted">{item.label}</dt>
+              <dd className="mt-0.5 font-semibold tabular-nums text-app-text">{item.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {isNumber(diagnosis.reliable_horizon) && (
+        <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-app-muted">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+          «Horizonte confiable»: pasos con evidencia suficiente para medir su error; no recorta el
+          horizonte publicado.
+        </p>
+      )}
+    </section>
+  );
+};
+
+/**
+ * Base vs. escenarios en una sola tabla: la decision se lee comparando, no
+ * sumando mentalmente dos tarjetas. El escenario elegido queda resaltado.
+ */
+const ComparisonCard: React.FC<{ result: ProjectionResult }> = ({ result }) => {
+  const comparison = result.comparison;
+  if (!comparison) return null;
+  const selectedGrowth = result.scenario?.growth_pct ?? null;
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-app-border bg-app-card shadow-xs">
+      <header className="border-b border-app-border/80 px-4 py-3">
+        <h3 className="text-sm font-bold text-app-text">Comparación de escenarios</h3>
+      </header>
+      <div
+        role="region"
+        tabIndex={0}
+        aria-label="Comparación de escenarios"
+        className="overflow-x-auto"
+      >
+        <table className="w-full min-w-[520px] text-xs">
+          <caption className="sr-only">
+            Total proyectado del pronóstico base y de cada escenario de crecimiento
+          </caption>
+          <thead>
+            <tr className="border-b border-app-border text-left text-app-muted">
+              <th scope="col" className="px-4 py-2 font-medium">Escenario</th>
+              <th scope="col" className="px-4 py-2 text-right font-medium">Total proyectado</th>
+              <th scope="col" className="px-4 py-2 text-right font-medium">Diferencia vs. base</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-b border-app-border/50">
+              <td className="px-4 py-2 font-medium text-app-text">Pronóstico base</td>
+              <td className="px-4 py-2 text-right font-semibold tabular-nums text-app-text">
+                {money(comparison.base_total)}
+              </td>
+              <td className="px-4 py-2 text-right text-app-muted">—</td>
+            </tr>
+            {comparison.scenarios.map((scenario, index) => {
+              const selected =
+                selectedGrowth !== null && Number(scenario.growth_pct) === Number(selectedGrowth);
+              return (
+                <tr
+                  key={`${scenario.growth_pct}-${index}`}
+                  className={`border-b border-app-border/50 last:border-0 ${
+                    selected ? 'bg-violet-500/10' : ''
+                  }`}
+                >
+                  <td className="px-4 py-2 font-medium text-app-text">
+                    {scenario.label
+                      ? `${scenario.label} (${pct(scenario.growth_pct)})`
+                      : `Si crece ${pct(scenario.growth_pct)} anual`}
+                    {selected && (
+                      <span className="ml-1.5 rounded-md border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:text-violet-300">
+                        elegido
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-right font-semibold tabular-nums text-app-text">
+                    {money(scenario.total)}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-app-text">
+                    {signedMoney(scenario.gain_vs_base)}
+                    {signedPctSuffix(scenario.gain_vs_base_pct)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="border-t border-app-border/60 px-4 py-2.5 text-[11px] leading-relaxed text-app-muted">
+        El escenario es un supuesto, no un pronóstico.
       </p>
     </section>
   );
@@ -1022,6 +1397,10 @@ export const ProjectionResults: React.FC<{ result: ProjectionResult }> = ({ resu
   const lastSeries = result.series[result.series.length - 1];
   const lastPeriod =
     result.series.length > 0 && lastSeries?.periodo ? String(lastSeries.periodo) : null;
+  // Si la pregunta apunta a una dimension, el ranking ES la respuesta y sube
+  // arriba del total. Sin grupos no hay ranking que mostrar: se queda abajo.
+  const rankingFirst =
+    result.answer_focus === 'dimension' && (result.breakdown?.groups?.length ?? 0) > 0;
 
   return (
     <div className="animate-slideUp space-y-5">
@@ -1057,7 +1436,16 @@ export const ProjectionResults: React.FC<{ result: ProjectionResult }> = ({ resu
       {/* La lectura va primero: es la conclusion, no un anexo al final. */}
       <NarrationCard result={result} />
 
+      {/* El diagnostico de la serie explica la forma antes de dar cifras. */}
+      <DiagnosisCard result={result} />
+
+      {/* Con la pregunta enfocada en una dimension, el ranking va primero. */}
+      {rankingFirst && <BreakdownCard result={result} primary />}
+
       {result.scenario ? <ScenarioCard result={result} /> : <TotalCard result={result} />}
+
+      {/* Base vs. escenarios: la decision se lee comparando, no sumando. */}
+      <ComparisonCard result={result} />
 
       <section className="rounded-2xl border border-app-border bg-app-card p-4 shadow-xs">
         <header className="flex flex-wrap items-baseline justify-between gap-2">
@@ -1074,7 +1462,7 @@ export const ProjectionResults: React.FC<{ result: ProjectionResult }> = ({ resu
         <ChartLegend scenario={Boolean(result.scenario)} />
       </section>
 
-      <BreakdownCard result={result} />
+      {!rankingFirst && <BreakdownCard result={result} />}
 
       {!result.scenario && (
         <>

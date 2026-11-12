@@ -14,7 +14,7 @@ import { useNotifications } from '../context/NotificationContext';
 
 /**
  * Seccion "Proyecciones": pregunta -> Enter -> estimacion de duracion ->
- * walk-forward con narrativa -> resultados.
+ * calculo con explicacion -> resultados.
  *
  * Decisiones del plan que se ven en este archivo:
  * - Un solo Enter lanza estimate -> run; mientras corre, Enter no re-dispara.
@@ -33,6 +33,14 @@ const GENERATION_PHASES = [
   'Leyendo tus datos…',
   'Calculando la proyección…',
   'Preparando el resumen…',
+];
+
+// Ejemplos de pedido: al hacer clic cargan la pregunta en el campo, sin
+// lanzarla. El usuario la revisa y la envía cuando quiere.
+const EXAMPLE_QUESTIONS = [
+  '¿Cuánto voy a vender el próximo año?',
+  'Proyecta un crecimiento del 10% anual a 5 años',
+  '¿Cuál es el producto con más ventas proyectadas?',
 ];
 
 export const ProjectionsPage: React.FC = () => {
@@ -66,6 +74,13 @@ export const ProjectionsPage: React.FC = () => {
   const startedAtRef = useRef<number | null>(null);
   const runIdRef = useRef(0);
   const runControllerRef = useRef<AbortController | null>(null);
+  // La conexion activa arranca en null mientras `useChatEngine` resuelve. El
+  // primer paso null -> id NO es un cambio de fuente: si se trata como tal, una
+  // corrida lanzada en esa ventana se aborta en silencio. Solo se resetea
+  // cuando la fuente cambia DESPUES de haberse resuelto la primera vez.
+  const connectionResolvedRef = useRef(false);
+  const lastConnectionRef = useRef<number | null>(null);
+  const questionRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => () => {
     runIdRef.current += 1;
@@ -83,8 +98,17 @@ export const ProjectionsPage: React.FC = () => {
   }, [phase]);
 
   // Cambiar de conexion invalida el resultado: los números de A no se pueden
-  // leer como si fueran de B. También aborta la corrida en vuelo.
+  // leer como si fueran de B. También aborta la corrida en vuelo. La primera
+  // resolucion (null -> id) no cuenta como cambio.
   useEffect(() => {
+    if (!connectionResolvedRef.current) {
+      if (activeConnectionId === null) return;
+      connectionResolvedRef.current = true;
+      lastConnectionRef.current = activeConnectionId;
+      return;
+    }
+    if (lastConnectionRef.current === activeConnectionId) return;
+    lastConnectionRef.current = activeConnectionId;
     runIdRef.current += 1;
     runControllerRef.current?.abort();
     runControllerRef.current = null;
@@ -229,8 +253,8 @@ export const ProjectionsPage: React.FC = () => {
                 Proyecciones
               </h1>
               <p className="text-xs leading-relaxed text-app-muted">
-                Escribí qué querés proyectar y Dat.ia calcula la estimación sobre tus datos,
-                con su margen de error a la vista.
+                Qué puede pasar con tus datos: un pronóstico base o un escenario con tus propios
+                supuestos.
               </p>
             </div>
           </div>
@@ -270,12 +294,16 @@ export const ProjectionsPage: React.FC = () => {
             </label>
             <textarea
               id="projections-question"
+              ref={questionRef}
               rows={3}
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
+                  // Entrada segura para IME: el Enter que confirma una composición
+                  // no lanza la proyección.
+                  if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                   if (canRun) void runProjection();
                 }
               }}
@@ -283,6 +311,27 @@ export const ProjectionsPage: React.FC = () => {
               placeholder="Ej: ¿cuánto voy a facturar en los próximos 6 meses si la tendencia sigue?"
               className="w-full resize-none rounded-xl border border-app-border bg-app-surface px-3.5 py-2.5 text-xs leading-relaxed text-app-text placeholder:text-app-muted transition-colors focus:border-brand-500 focus:outline-none disabled:opacity-60 sm:text-sm"
             />
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {EXAMPLE_QUESTIONS.map((example) => (
+                <button
+                  key={example}
+                  type="button"
+                  disabled={isRunning}
+                  onClick={() => {
+                    setQuestion(example);
+                    questionRef.current?.focus();
+                  }}
+                  title="Cargar este ejemplo en el campo"
+                  className="cursor-pointer rounded-full border border-app-border bg-app-bg px-2.5 py-1 text-left text-[11px] text-app-muted transition-colors hover:border-brand-500/50 hover:text-app-text focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {example}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-app-muted">
+              Si pides un crecimiento («10% anual»), Dat.ia lo trata como escenario; no es un
+              pronóstico estadístico.
+            </p>
             <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
               {isRunning ? (
                 <button
@@ -387,7 +436,7 @@ export const ProjectionsPage: React.FC = () => {
             <p className="font-semibold">No se pudo ejecutar la proyección</p>
             <p className="mt-1 leading-relaxed">{error}</p>
             <p className="mt-2 text-xs opacity-80">
-              La pregunta quedó en el campo: corregí lo que haga falta y volvé a intentar.
+              La pregunta quedó en el campo: corrige lo que haga falta y vuelve a intentar.
             </p>
           </section>
         )}
@@ -404,7 +453,7 @@ export const ProjectionsPage: React.FC = () => {
               </p>
               <p className="mt-0.5 text-[11px] leading-relaxed text-violet-700 dark:text-violet-300">
                 Es el resultado publicado en esa fecha. Los datos actuales pueden haber cambiado;
-                usá «Verificar» en el historial para compararlo con los periodos ya cerrados.
+                usa «Verificar» en el historial para compararlo con los periodos ya cerrados.
               </p>
             </div>
             <button
@@ -432,7 +481,7 @@ export const ProjectionsPage: React.FC = () => {
           <section className="rounded-2xl border border-dashed border-app-border/80 bg-app-card/50 p-6 text-center">
             <p className="text-sm font-medium text-app-text">Todavía no hay ninguna proyección</p>
             <p className="mx-auto mt-1 max-w-xl text-xs leading-relaxed text-app-muted">
-              Escribí una pregunta con período explícito («los próximos 6 meses», «el próximo
+              Escribe una pregunta con período explícito («los próximos 6 meses», «el próximo
               trimestre») y das Enter. Si la serie no alcanza o tu rol bloquea alguna columna,
               vas a ver el motivo exacto en vez de números inventados.
             </p>

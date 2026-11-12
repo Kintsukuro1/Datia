@@ -200,8 +200,9 @@ const CatalogSection: React.FC<CatalogSectionProps> = ({
         </button>
       </form>
 
-      <div className="overflow-x-auto">
+      <div role="region" tabIndex={0} aria-label={title} className="overflow-x-auto">
         <table className="w-full text-xs">
+          <caption className="sr-only">{title}</caption>
           <thead>
             <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 dark:text-gray-500 border-b border-slate-200 dark:border-dark-border">
               <th scope="col" className="py-2 pr-3 font-bold">Nombre</th>

@@ -13,6 +13,7 @@ import {
   type ProjectionVerification,
 } from '../services/projection_service';
 import { getApiErrorMessage } from '../../../shared/api/api_client';
+import { money, pct } from '../services/projection_format';
 
 /**
  * Historial de proyecciones del usuario y verificacion contra el dato actual.
@@ -21,16 +22,6 @@ import { getApiErrorMessage } from '../../../shared/api/api_client';
  * periodos ya cerrados. Un periodo futuro se muestra "pendiente", no como un
  * error; un periodo sin dato se muestra "sin dato", no como cero.
  */
-
-const money = (n: number | null | undefined): string =>
-  n === null || n === undefined
-    ? '—'
-    : `$${Math.round(n).toLocaleString('es-CL', { maximumFractionDigits: 0 })}`;
-
-const pct = (n: number | null | undefined): string =>
-  n === null || n === undefined
-    ? '—'
-    : `${Number(n).toLocaleString('es-CL', { maximumFractionDigits: 1 })}%`;
 
 const dateLabel = (value: string): string => {
   const date = new Date(value);
@@ -42,7 +33,7 @@ const dateLabel = (value: string): string => {
 };
 
 const STATUS_LABEL: Record<string, string> = {
-  medido: 'Medido',
+  medido: 'Con dato',
   pendiente: 'Pendiente',
   sin_dato: 'Sin dato',
   sin_periodo: 'Sin periodo',
@@ -93,14 +84,19 @@ const VerificationCard: React.FC<{ verification: ProjectionVerification }> = ({
             Verificación contra datos actuales
           </h4>
           <p className="mt-0.5 text-[11px] leading-relaxed text-app-muted">
-            {verification.measured_steps} medidos · {verification.pending_steps} pendientes ·{' '}
-            {verification.missing_steps} sin dato · {verification.inside_band_steps} dentro de
-            la banda · {verification.outside_band_steps} fuera
+            {verification.measured_steps} con dato · {verification.pending_steps} pendientes ·{' '}
+            {verification.missing_steps} sin dato · {verification.inside_band_steps} dentro del
+            rango · {verification.outside_band_steps} fuera
           </p>
         </div>
       </header>
 
-      <div className="mt-2 overflow-x-auto">
+      <div
+        role="region"
+        tabIndex={0}
+        aria-label="Verificación contra datos actuales"
+        className="mt-2 overflow-x-auto"
+      >
         <table className="w-full min-w-[620px] text-[11px]">
           <caption className="sr-only">
             Comparación por paso entre lo proyectado y el dato actual
@@ -111,8 +107,8 @@ const VerificationCard: React.FC<{ verification: ProjectionVerification }> = ({
               <th scope="col" className="py-1.5 pr-2 font-medium">Periodo</th>
               <th scope="col" className="py-1.5 pr-2 text-right font-medium">Proyectado</th>
               <th scope="col" className="py-1.5 pr-2 text-right font-medium">Actual</th>
-              <th scope="col" className="py-1.5 pr-2 text-right font-medium">Error</th>
-              <th scope="col" className="py-1.5 pr-2 font-medium">Banda</th>
+              <th scope="col" className="py-1.5 pr-2 text-right font-medium">Diferencia</th>
+              <th scope="col" className="py-1.5 pr-2 font-medium">Rango</th>
               <th scope="col" className="py-1.5 font-medium">Estado</th>
             </tr>
           </thead>
@@ -292,7 +288,7 @@ export const ProjectionHistory: React.FC<{
                     {item.question}
                   </p>
                   <p className="mt-0.5 text-[11px] text-app-muted">
-                    {dateLabel(item.timestamp)} · {item.horizon} pasos · {item.table ?? '—'} ·{' '}
+                    {dateLabel(item.timestamp)} · {item.horizon} períodos · {item.table ?? '—'} ·{' '}
                     {item.metric_column ?? '—'}
                   </p>
                 </div>

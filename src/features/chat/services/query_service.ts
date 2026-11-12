@@ -115,6 +115,21 @@ export const queryService = {
     };
   },
 
+  async getBuilderOptions(connectionId?: number): Promise<BuilderOptions | null> {
+    const params: Record<string, any> = { builder_only: true };
+    if (connectionId) {
+      params.connection_id = connectionId;
+    }
+    // Camino rapido: el backend devuelve solo el esquema del constructor y no
+    // espera al LLM. Las sugerencias narrativas siguen por `getSuggestions`.
+    const res = await apiClient.get<{ builder?: BuilderOptions | null }>(
+      '/chat/suggestions',
+      { params }
+    );
+    const builder = res.data.builder;
+    return builder && Array.isArray(builder.tables) ? builder : null;
+  },
+
   /**
    * Consulta simple (sin stream) a `/chat/query`.
    *

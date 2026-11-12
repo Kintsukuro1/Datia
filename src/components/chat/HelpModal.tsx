@@ -1,5 +1,5 @@
 import React from 'react';
-import { BarChart3, Calendar, Download, HelpCircle, ShieldCheck, Sparkles, X } from 'lucide-react';
+import { BarChart3, Calendar, Download, HelpCircle, ShieldCheck, Sparkles, TrendingUp, X } from 'lucide-react';
 import { useModalA11y } from '../../hooks/useModalA11y';
 
 interface HelpModalProps {
@@ -9,7 +9,7 @@ interface HelpModalProps {
 
 /**
  * Ayuda en lenguaje de usuario: que puede preguntar, como se pide el periodo,
- * que no hace y como exportar. Sin SQL, RBAC ni nombres de motor.
+ * que no hace y como exportar.
  */
 export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
   const modalRef = useModalA11y<HTMLDivElement>(isOpen, onClose);
@@ -18,17 +18,22 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
   const items = [
     {
       icon: <Sparkles className="h-4 w-4" aria-hidden />,
-      title: 'Preguntá con tus palabras',
-      body: 'Escribí lo que necesitás saber, como se lo preguntarías a un compañero. No hace falta conocer los nombres de las tablas ni escribir SQL.',
+      title: 'Pregunta con tus palabras',
+      body: 'Escribe lo que necesitas saber, como se lo preguntarías a un compañero. No hace falta conocer los nombres de las tablas ni saber de bases de datos.',
     },
     {
       icon: <Calendar className="h-4 w-4" aria-hidden />,
-      title: 'Decí el período que querés',
-      body: 'Podés escribir «el próximo año», «6 semanas» o «3 meses». Dat.ia ajusta la proyección a lo que pidas en la pregunta.',
+      title: 'Indica el período que quieres',
+      body: 'Puedes escribir «el próximo año», «6 semanas» o «3 meses». Dat.ia ajusta la proyección a lo que pidas en la pregunta.',
+    },
+    {
+      icon: <TrendingUp className="h-4 w-4" aria-hidden />,
+      title: 'Proyecciones',
+      body: 'Un pronóstico base sigue lo que dicen los datos: la tendencia que ya existe. Un escenario aplica el supuesto que indiques (por ejemplo, «10% de crecimiento anual») y muestra cómo cambiarían los números con ese supuesto.',
     },
     {
       icon: <BarChart3 className="h-4 w-4" aria-hidden />,
-      title: 'Mirá la respuesta',
+      title: 'Mira la respuesta',
       body: 'Cada respuesta trae una tabla o un gráfico, los números principales y una explicación en lenguaje simple.',
     },
     {
@@ -38,8 +43,8 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
     },
     {
       icon: <Download className="h-4 w-4" aria-hidden />,
-      title: 'Llevate el resultado',
-      body: 'Podés descargar la proyección en PDF o Excel desde la tarjeta de resultados.',
+      title: 'Descarga el resultado',
+      body: 'Puedes descargar la proyección en PDF o Excel desde la tarjeta de resultados.',
     },
   ];
 

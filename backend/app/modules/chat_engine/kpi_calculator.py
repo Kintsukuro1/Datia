@@ -17,7 +17,7 @@ from app.modules.chat_engine.schemas import KPICard, ExecutiveReport, Presentati
 # 3 recomendaciones + 3 preguntas + el andamiaje JSON. Sin margen, y sin margen
 # no hay margen: basta un acento de mas en una cadena y el cierre se cae.
 #
-# El techo NO se sube mucho mas a proposito. El cliente corta la espera a 90 s
+# El techo NO se sube mucho mas a proposito. El cliente corta la espera a 180 s
 # (`useChatEngine.ts`) y un Q4_K_M en CPU va a ~5 tok/s, asi que cada token de
 # mas son ~200 ms de espera visible. Subir el limite sin aligerar el payload
 # compra JSON truncado a cambio de mas timeout.
@@ -211,7 +211,21 @@ class KPICalculator:
             cat_cols = [c for c in columns if not isinstance(rows[0].get(c), (int, float))] or [columns[0]]
 
         primary_cat = cat_cols[0] if cat_cols else (date_cols[0] if date_cols else columns[0])
-        primary_num = num_cols[0] if num_cols else None
+
+        # Si la pregunta nombra una metrica numerica, esa manda. Antes se usaba
+        # num_cols[0]: una consulta "suma de monto_total" graficaba
+        # cantidad_registros solo porque el COUNT aparecia primero en el SELECT.
+        question_lower = (question or "").lower()
+        mentioned_num = next(
+            (
+                col
+                for col in num_cols
+                if col.lower() in question_lower
+                or col.lower().replace("_", " ") in question_lower
+            ),
+            None,
+        )
+        primary_num = mentioned_num or (num_cols[0] if num_cols else None)
 
         # CASE 1: NO QUANTITATIVE METRIC COLUMNS (Descriptive / Categorical / Survey data)
         if not primary_num:

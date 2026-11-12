@@ -14,7 +14,7 @@ Decisiones:
   "siguientes"...) y se descartan las de historico ("ultimos", "pasados").
   Sin contexto, gana la ultima mencion: en una pregunta real el horizonte suele
   cerrar la frase.
-- El tope es `MAX_HORIZON` (36). Si el texto pide mas, se recorta y se devuelve
+- El tope es `MAX_HORIZON`. Si el texto pide mas, se recorta y se devuelve
   `requested_steps` para que la respuesta pueda declarar el recorte en vez de
   mentir sobre lo que se publico.
 """
@@ -25,6 +25,16 @@ import re
 import unicodedata
 from typing import NamedTuple, Optional
 
+from app.modules.ml_forecast.lexicon import (
+    FUTURE_MARKERS,
+    GRANULARITY_HINTS,
+    HISTORY_MARKERS,
+    NUMBER_WORDS,
+    UNIT_FACTOR,
+    UNIT_GRANULARITY,
+    UNIT_PATTERN,
+)
+from app.modules.ml_forecast.policy import POLICY
 from app.modules.ml_forecast.schemas import MAX_HORIZON
 
 
@@ -36,43 +46,15 @@ class Timeframe(NamedTuple):
     requested_steps: Optional[int]
 
 
-_NUMBER_WORDS = {
-    "un": 1, "una": 1, "uno": 1,
-    "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6,
-    "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11, "doce": 12,
-}
-
-_UNIT_GRANULARITY = {
-    "dia": "day", "dias": "day",
-    "semana": "week", "semanas": "week",
-    "mes": "month", "meses": "month",
-    "trimestre": "quarter", "trimestres": "quarter",
-    "ano": "month", "anos": "month",
-}
-
-_UNIT_FACTOR = {
-    "ano": 12,
-    "anos": 12,
-}
-
-_NUMBER_PATTERN = "|".join(_NUMBER_WORDS)
-_UNIT_PATTERN = "dias?|semanas?|meses?|mes|trimestres?|anos?"
+_NUMBER_PATTERN = "|".join(NUMBER_WORDS)
+_UNIT_PATTERN = UNIT_PATTERN
 
 _MENTION_RE = re.compile(
-    rf"\b(?:(?P<num>\d{{1,3}}|{_NUMBER_PATTERN})\s+)?(?P<unit>{_UNIT_PATTERN})\b"
+    rf"\b(?:(?P<num>\d{{1,4}}|{_NUMBER_PATTERN})\s+)?(?P<unit>{_UNIT_PATTERN})\b"
 )
 
-_FUTURE_MARKERS = (
-    "proyect", "pronostic", "estim", "predec", "predic", "adelant",
-    "futuro", "proxim", "siguiente", "que viene",
-)
-_HISTORY_MARKERS = ("ultim", "pasado", "anterior", "histor")
-
-_GRANULARITY_HINTS = (
-    (re.compile(r"\b(semanal(?:es|mente)?|por semana|semana a semana)\b"), "week"),
-    (re.compile(r"\b(diari[oa]s?|diariamente|por dia|dia a dia)\b"), "day"),
-    (re.compile(r"\b(mensual(?:es|mente)?|por mes|mes a mes)\b"), "month"),
-    (re.compile(r"\b(trimestral(?:es|mente)?|por trimestre|trimestre a trimestre)\b"), "quarter"),
+_GRANULARITY_HINTS = tuple(
+    (re.compile(pattern), granularity) for pattern, granularity in GRANULARITY_HINTS
 )
 
 
@@ -87,14 +69,14 @@ def _quantity(raw: Optional[str]) -> int:
         return 1
     if raw.isdigit():
         return int(raw)
-    return _NUMBER_WORDS.get(raw, 1)
+    return NUMBER_WORDS.get(raw, 1)
 
 
 def _mention_steps(match: re.Match[str]) -> tuple[int, str]:
     unit = match.group("unit")
     quantity = _quantity(match.group("num"))
-    factor = _UNIT_FACTOR.get(unit, 1)
-    return quantity * factor, _UNIT_GRANULARITY[unit]
+    factor = UNIT_FACTOR.get(unit, 1)
+    return quantity * factor, UNIT_GRANULARITY[unit]
 
 
 def parse_question_timeframe(question: str) -> Timeframe:
@@ -105,8 +87,8 @@ def parse_question_timeframe(question: str) -> Timeframe:
     for match in _MENTION_RE.finditer(text):
         steps, granularity = _mention_steps(match)
         window = text[max(0, match.start() - 60):match.start()]
-        is_future = any(marker in window for marker in _FUTURE_MARKERS)
-        is_history = any(marker in window for marker in _HISTORY_MARKERS)
+        is_future = any(marker in window for marker in FUTURE_MARKERS)
+        is_history = any(marker in window for marker in HISTORY_MARKERS)
         # "semana a semana" / "mes a mes" describen la forma de leer, no una
         # duracion: no cuentan como horizonte (si como pista de granularidad).
         unit = re.escape(match.group("unit"))
@@ -143,13 +125,13 @@ def parse_question_timeframe(question: str) -> Timeframe:
 
 _SCENARIO_GROWTH_RE = re.compile(
     r"(?:crecimiento|crecer|aumento|incremento)\s+(?:anual\s+)?(?:del?\s+)?"
-    r"(\d{1,3}(?:[.,]\d+)?)\s*%"
+    r"(\d{1,4}(?:[.,]\d+)?)\s*%"
 )
 _SCENARIO_ANNUAL_RE = re.compile(
-    r"(\d{1,3}(?:[.,]\d+)?)\s*%\s*(?:anual|por ano)"
+    r"(\d{1,4}(?:[.,]\d+)?)\s*%\s*(?:anual|por ano)"
 )
 _SCENARIO_GAIN_YEARS_RE = re.compile(
-    r"ganancia.*?(\d{1,3}(?:[.,]\d+)?)\s*%.*?\banos?\b"
+    r"ganancia.*?(\d{1,4}(?:[.,]\d+)?)\s*%.*?\banos?\b"
 )
 
 
@@ -175,7 +157,7 @@ def parse_growth_scenario(question: str) -> Optional[float]:
             value = float(match.group(1).replace(",", "."))
         except ValueError:
             continue
-        if 0 < value <= 100:
+        if 0 < value <= POLICY.scenario_growth_max_pct:
             return value
     return None
 
@@ -188,7 +170,7 @@ def __self_check() -> None:
         ("proyecta 6 semanas", 6, "week"),
         ("proyecta 3 trimestres", 3, "quarter"),
         ("proyecta 30 dias", 30, "day"),
-        ("proyecta 10 anos", 36, "month"),
+        ("proyecta 10 anos", MAX_HORIZON, "month"),
     ]
     for question, steps, granularity in cases:
         result = parse_question_timeframe(question)

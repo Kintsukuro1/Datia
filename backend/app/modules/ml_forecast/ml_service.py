@@ -12,10 +12,9 @@ Aca viven las tres piezas que faltaban para publicarlas por HTTP:
    CERRADA de columnas y validacion del lado del backend—. El modelo propone, el
    backend decide: lo que viaja al SQL y a la respuesta es siempre un nombre que
    existe en los metadatos, nunca el texto que devolvio el modelo.
-3. `narrate`: redacta la lectura de numeros YA calculados, con un contrato
-   explicito ("solo podes citar numeros que estan en este payload") y una
-   plantilla determinista como respaldo. La narrativa no es el dato: si el LLM
-   no responde, la respuesta se queda sin lectura pero nunca sin los hechos.
+3. `narrate`: arma la lectura con una plantilla determinista sobre los numeros YA
+   calculados. La prosa no la escribe un LLM: cada cifra, cada unidad y cada
+   salvedad salen del payload. La narrativa no es el dato, y no puede inventarlo.
 
 Por que el SQL lo sigue armando el codigo: un modelo de 7B que tiene que
 inventar el nombre de una tabla y de dos columnas para producir una proyeccion
@@ -31,7 +30,6 @@ import math
 import re
 import statistics
 import time
-import unicodedata
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -46,15 +44,12 @@ from app.modules.chat_engine.ast_validator import ASTValidationError
 from app.modules.chat_engine.governance_guard import GovernanceGuard
 from app.modules.chat_engine.forecast_calculator import (
     GRANULARITIES,
-    MIN_PERIODS,
     next_period,
     normalize_period,
     period_distance,
 )
 from app.modules.chat_engine.forecast_service import (
-    DATE_CANDIDATES,
     ForecastUnavailable,
-    VALUE_CANDIDATES,
     _is_date_col,
     _is_dimension_col,
     _is_num_col,
@@ -62,7 +57,6 @@ from app.modules.chat_engine.forecast_service import (
     # tiene que ser la MISMA que la del forecast y del chat. Dos implementaciones
     # divergen en el primer arreglo y el mismo rol termina leyendo otra tabla
     # segun por que endpoint entro.
-    _load_fact_table,
     _load_table_columns,
     _list_fact_tables,
     _motivo_sin_eje_temporal,
@@ -75,10 +69,13 @@ from app.modules.chat_engine.forecast_service import (
     resolve_columns,
 )
 from app.modules.chat_engine.llm_service import LLMService
+from app.modules.ml_forecast.diagnosis import diagnose_series
+from app.modules.ml_forecast.formatting import pct_text
 from app.modules.ml_forecast.ml_models import (
     build_projection,
     evaluate_quality,
 )
+from app.modules.ml_forecast.policy import POLICY
 from app.modules.ml_forecast.resolver import (
     build_resolution,
     find_option,
@@ -87,6 +84,7 @@ from app.modules.ml_forecast.resolver import (
     public_tables,
     table_catalog,
 )
+from app.modules.ml_forecast.lexicon import COUNT_WORDS, GAIN_WORDS
 from app.modules.ml_forecast.schemas import (
     DEFAULT_HORIZON,
     MAX_HORIZON,
@@ -101,70 +99,36 @@ from app.modules.telemetry_audit.models import AuditLog
 # raro). `ponytail:` lo que queda afuera de la lista NO queda afuera de la
 # eleccion: el fallback heuristico ve todas las columnas CANDIDATAS (las que el
 # rol puede leer, ya sin BLOCKED/MASKED), y un nombre que el modelo no vio
-# simplemente no lo va a proponer.
-_MAX_PROMPT_COLUMNS = 120
+# simplemente no lo va a proponer. El valor lo decide la politica.
+_MAX_PROMPT_COLUMNS = POLICY.max_prompt_columns
 
 # Top de grupos del desglose. Se elige por volumen historico y no se agrega
 # "Otros": una categoria residual que suma grupos no proyectados es un numero
 # que parece total y no lo es.
-BREAKDOWN_TOP_N = 5
+BREAKDOWN_TOP_N = POLICY.breakdown_top_n
 
 # Presupuesto de la respuesta del analisis: el JSON son cuatro claves cortas.
 # Un techo bajo evita que el modelo "explique" antes del JSON y gaste la latencia.
-_ANALYSIS_MAX_TOKENS = 160
-# 420 y no 300: con 300 el modelo cortaba la tercera frase a mitad ("...la
-# proyeccion" sin terminar) y ese texto truncado viaja a la UI y al Informe. El
-# costo son ~15 s mas en CPU; el presupuesto real lo acotan el system prompt y el
-# pedido de 2 o 3 parrafos.
-_NARRATION_MAX_TOKENS = 420
+_ANALYSIS_MAX_TOKENS = POLICY.analysis_max_tokens
 
 _ANALYSIS_SYSTEM_PROMPT = (
     "Eres un asistente de analisis de datos. Recibes una pregunta de negocio y la "
-    "lista CERRADA de columnas de una tabla. Solo podes elegir nombres que esten "
+    "lista CERRADA de columnas de una tabla. Solo puedes elegir nombres que esten "
     "en esa lista: un nombre que no figure invalida tu respuesta. Responde "
     "UNICAMENTE con un objeto JSON."
-)
-
-# Contrato de la narrativa: los numeros ya estan calculados por el backend. El
-# modelo redacta, no calcula. El texto prohibe explicitamente citar cifras que no
-# esten en el payload porque eso es exactamente lo que un 7B hace si se le pide
-# "explicar el forecast" sobre una tabla de numeros.
-_NARRATION_SYSTEM_PROMPT = (
-    "Eres el redactor de un informe de proyeccion para una persona de negocio, "
-    "no para un analista tecnico. Recibes un JSON con numeros YA calculados por "
-    "el backend. Reglas: empeza por la respuesta directa a la pregunta; solo "
-    "podes citar numeros que aparezcan en el JSON; no inventes cifras ni "
-    "prometas precision; explica las limitaciones en palabras simples (poca "
-    "historia, error promedio, huecos en la serie, pasos sin evidencia "
-    "suficiente); no uses las palabras MAPE, naive, backtest, walk-forward ni "
-    "banda; no contradigas el metodo publicado. El horizonte publicado esta en "
-    "el JSON (`horizon` y `granularity`): no lo cambies, no lo traduzcas a otra "
-    "unidad y no repitas la cifra que pidio el usuario si el backend la recorto. "
-    "Responde en espanol, en 2 o 3 parrafos."
 )
 
 # --- Estimacion de duracion ---------------------------------------------------
 # La estimacion NO mide: reusa la velocidad que el asistente de enriquecimiento
 # ya midio (un probe real al LLM) y la deja cacheada. Sin esa medicion no hay
 # numero creible, y se declara `fallback` en vez de inventar uno.
-_FALLBACK_SECONDS = 60.0
-# Piso de la estimacion medida: menos que esto se lee como una promesa rota. Dos
-# llamadas al LLM local en CPU nunca bajan de ahi, y una estimacion de 0,4 s
-# promete una velocidad que el hardware no tiene.
-_MEASURED_FLOOR_S = 5.0
-# Carga de trabajo de UNA corrida: dos llamadas cortas al LLM (elegir columnas y
-# redactar) y el trabajo local del SQL y el backtest.
-_ANALYSIS_OUTPUT_TOKENS = float(_ANALYSIS_MAX_TOKENS)
-_NARRATION_OUTPUT_TOKENS = float(_NARRATION_MAX_TOKENS)
-_PROMPT_BASE_TOKENS = 400.0  # Pregunta + lista de columnas de la fact table.
-_PROMPT_TOKENS_PER_STEP = 25.0  # Payload de la narrativa, un registro por paso.
-# Mismo factor que `enrich_estimator`: en CPU el prompt se procesa varias veces
-# mas rapido que la generacion. Compartir el factor hace comparables las dos
-# estimaciones del producto.
-_PROMPT_SPEED_FACTOR = 4.0
-# SQL + backtest walk-forward (que ajusta los metodos por origen) + banda por paso.
-# Corre en el servidor, sin LLM, y no depende de la velocidad del modelo.
-_LOCAL_OVERHEAD_S = 2.0
+#
+# La corrida hace UNA llamada al LLM (elegir columnas); la narrativa es
+# determinista y no consume tokens. Los valores operativos viven en `policy.py`.
+_ANALYSIS_OUTPUT_TOKENS = float(POLICY.analysis_max_tokens)
+_PROMPT_BASE_TOKENS = POLICY.prompt_base_tokens
+_PROMPT_SPEED_FACTOR = POLICY.prompt_speed_factor
+_LOCAL_OVERHEAD_S = POLICY.local_overhead_s
 
 
 # ----------------------------------------------------------------------------
@@ -269,16 +233,23 @@ def load_fact_context(
         set(blocked or set()),
         budget,
     )
+    # La heuristica fisica solo se calcula si no hay resolucion: con catalogo/
+    # perfil, `analyze_question` usa `_analyze_with_resolution` y este barrido
+    # seria trabajo tirado.
+    heuristic = resolve_columns(candidate_cols) if not resolution else {}
     return {
         "table": table,
         "table_source": table_source,
         "tables": public_tables(tables, catalog),
         "cols": cols,
         "candidate_cols": candidate_cols,
+        # Interna: el router la reusa en `run_projection`/`verify_projection`
+        # para no volver a consultar la misma conexion en la misma request.
+        "connection": connection,
         # La resolucion es la fuente de verdad de la proyeccion; `heuristic`
         # queda para el forecast del chat, que sigue usando nombre + tipo.
         "resolution": resolution,
-        "heuristic": resolve_columns(candidate_cols),
+        "heuristic": heuristic,
     }
 
 
@@ -324,7 +295,7 @@ def projection_context(
             ],
             "granularities": ["day", "week", "month", "quarter"],
             "default_granularity": "month",
-            "min_periods": MIN_PERIODS,
+            "min_periods": POLICY.min_periods,
         }
 
     date_options = resolution.get("date_options") or []
@@ -350,7 +321,7 @@ def projection_context(
         "count_option": public_option(count_option),
         "granularities": ["day", "week", "month"],
         "default_granularity": "month",
-        "min_periods": MIN_PERIODS,
+        "min_periods": POLICY.min_periods,
     }
 
 
@@ -373,6 +344,75 @@ def _canonical_column(value: Any, by_lower: Dict[str, Dict[str, Any]], predicate
     if col is None or not predicate(col):
         return None
     return str(col.get("name"))
+
+
+def _valid_llm_horizon(value: Any) -> Optional[int]:
+    """Horizonte que propuso el LLM, si es un entero publicable; si no, None."""
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    if isinstance(value, int) and MIN_HORIZON <= value <= MAX_HORIZON:
+        return value
+    return None
+
+
+def _manual_ready(
+    table: str, manual: Dict[str, Any], requested_horizon: Optional[int]
+) -> Optional[Dict[str, Any]]:
+    """Analisis completo por overrides manuales, o None si falta una decision."""
+    if (
+        manual.get("metric_column")
+        and manual.get("date_column")
+        and requested_horizon is not None
+    ):
+        return {
+            "table": table,
+            **manual,
+            "horizon": requested_horizon,
+            "horizon_source": "pedido",
+            "source": "manual",
+        }
+    return None
+
+
+def _llm_choice_payload(
+    table: str,
+    choice: Dict[str, Any],
+    manual: Dict[str, Any],
+    requested_horizon: Optional[int],
+    fallback: Dict[str, Any],
+    *,
+    metric_agg: Any = None,
+) -> Dict[str, Any]:
+    """Combina la eleccion del LLM con los overrides manuales y la heuristica."""
+    horizon, horizon_source = _resolve_horizon(choice["horizon"], requested_horizon)
+    fallback["horizon"] = horizon
+    fallback["horizon_source"] = horizon_source
+
+    # Con ambos overrides, la unica decision que queda es el horizonte.
+    if manual.get("metric_column") and manual.get("date_column"):
+        return fallback
+
+    if not (choice["metric_column"] and choice["date_column"]):
+        # Un nombre invalido tumba las DOS columnas del LLM (no se mezcla media
+        # eleccion con media heuristica), pero un override manual sobrevive.
+        logger.info(
+            "El LLM eligio columnas no utilizables (metrica=%r, fecha=%r); columnas por heuristica.",
+            choice["metric_column"], choice["date_column"],
+        )
+        return fallback
+
+    payload = {
+        "table": table,
+        "metric_column": manual.get("metric_column") or choice["metric_column"],
+        "date_column": manual.get("date_column") or choice["date_column"],
+        "dimension_column": choice.get("dimension_column"),
+        "horizon": horizon,
+        "horizon_source": horizon_source,
+        "source": "manual" if manual else "llm",
+    }
+    if metric_agg is not None:
+        payload["metric_agg"] = metric_agg
+    return payload
 
 
 def _validate_llm_choice(raw: Any, cols: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -399,11 +439,7 @@ def _validate_llm_choice(raw: Any, cols: List[Dict[str, Any]]) -> Optional[Dict[
 
     # Si el modelo propone un 18, el pedido del usuario sigue siendo valido y se
     # usa ese. No se recorta a 12 ni se redondea: se ignora.
-    horizon = raw.get("horizon")
-    if isinstance(horizon, str) and horizon.strip().isdigit():
-        horizon = int(horizon.strip())
-    if not isinstance(horizon, int) or not (MIN_HORIZON <= horizon <= MAX_HORIZON):
-        horizon = None
+    horizon = _valid_llm_horizon(raw.get("horizon"))
     return {
         "metric_column": metric,
         "date_column": date,
@@ -448,13 +484,13 @@ async def _ask_llm_for_columns(
 
     prompt = (
         f"Pregunta de negocio: {question}\n\n"
-        "Columnas de la tabla (lista CERRADA; solo podes elegir de aca):\n"
+        "Columnas de la tabla (lista CERRADA; Solo puedes elegir de aca):\n"
         f"{listing}\n\n"
-        "Elegi la columna numerica que representa la metrica que hay que proyectar "
+        "Elige la columna numerica que representa la metrica que hay que proyectar "
         "y la columna de fecha que define el periodo. Si la pregunta pide contar "
-        "registros, podes elegir '*' como metrica. Si la pregunta pide saber "
-        "CUAL o QUIEN (por ejemplo 'cual es el producto con mas ventas'), elegi "
-        "ademas una columna de tipo 'dimension' para desglosar. Si no podes "
+        "registros, puedes elegir '*' como metrica. Si la pregunta pide saber "
+        "CUAL o QUIEN (por ejemplo 'cual es el producto con mas ventas'), elige "
+        "ademas una columna de tipo 'dimension' para desglosar. Si no puedes "
         "decidir con esta lista, usa null en ese campo (el backend decidira por "
         "su cuenta).\n"
         f"Horizonte: cuantos periodos proyectar, entre {MIN_HORIZON} y "
@@ -502,13 +538,7 @@ def _question_wants_count(question: str) -> bool:
     modelo.
     """
     text = str(question or "").lower()
-    return any(
-        token in text
-        for token in (
-            "cantidad", "cuantos", "cuántos", "registros", "tramites",
-            "trámites", "volumen", "conteo", "count",
-        )
-    )
+    return any(token in text for token in COUNT_WORDS)
 
 
 def _resolved_metrics(resolution: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -519,34 +549,17 @@ def _resolved_metrics(resolution: Dict[str, Any]) -> List[Dict[str, Any]]:
     return metrics
 
 
-def _preferred_option(
-    options: Sequence[Dict[str, Any]], candidates: Sequence[str]
-) -> Optional[Dict[str, Any]]:
-    by_lower = {
-        str(option.get("column", "")).lower(): option for option in options
-    }
-    for candidate in candidates:
-        option = by_lower.get(candidate.lower())
-        if option is not None:
-            return option
-    return None
-
-
 def _resolved_fallback(
     question: str, resolution: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Fecha/métrica sin LLM: nombre preferido y, si no, primera de confianza."""
+    """Fecha/métrica sin LLM: la primera opción por evidencia del resolvedor."""
     dates = list(resolution.get("date_options") or [])
     metrics = list(resolution.get("metric_options") or [])
-    date_option = _preferred_option(dates, DATE_CANDIDATES) or (
-        dates[0] if dates else None
-    )
+    date_option = dates[0] if dates else None
     if _question_wants_count(question) and resolution.get("count_option"):
         metric_option = resolution.get("count_option")
     else:
-        metric_option = _preferred_option(metrics, VALUE_CANDIDATES) or (
-            metrics[0] if metrics else None
-        )
+        metric_option = metrics[0] if metrics else None
     return {
         "metric_column": metric_option["column"] if metric_option else None,
         "metric_agg": metric_option.get("agg") if metric_option else None,
@@ -660,11 +673,7 @@ def _validate_llm_choice_resolved(
     dimension = allowed_dimensions.get(
         str(raw.get("dimension_column") or "").strip().lower()
     )
-    horizon = raw.get("horizon")
-    if isinstance(horizon, str) and horizon.strip().isdigit():
-        horizon = int(horizon.strip())
-    if not isinstance(horizon, int) or not (MIN_HORIZON <= horizon <= MAX_HORIZON):
-        horizon = None
+    horizon = _valid_llm_horizon(raw.get("horizon"))
     return {
         "metric_column": metric["column"] if metric else None,
         "metric_agg": metric.get("agg") if metric else None,
@@ -732,15 +741,9 @@ async def analyze_question(
             )
         manual["date_column"] = date_col
 
-    # Con las tres decisiones tomadas no hay nada que preguntarle al modelo.
-    if manual.get("metric_column") and manual.get("date_column") and requested_horizon is not None:
-        return {
-            "table": table,
-            **manual,
-            "horizon": requested_horizon,
-            "horizon_source": "pedido",
-            "source": "manual",
-        }
+    ready = _manual_ready(table, manual, requested_horizon)
+    if ready is not None:
+        return ready
 
     suggested_horizon = (
         requested_horizon if requested_horizon is not None else DEFAULT_HORIZON
@@ -767,32 +770,9 @@ async def analyze_question(
         logger.info("El LLM no devolvio un objeto utilizable; se usa la heuristica.")
         return fallback
 
-    horizon, horizon_source = _resolve_horizon(choice["horizon"], requested_horizon)
-    fallback["horizon"] = horizon
-    fallback["horizon_source"] = horizon_source
-
-    # Con ambos overrides, la unica decision que queda es el horizonte.
-    if manual.get("metric_column") and manual.get("date_column"):
-        return fallback
-
-    if not (choice["metric_column"] and choice["date_column"]):
-        # Un nombre invalido tumba las DOS columnas del LLM (no se mezcla media
-        # eleccion con media heuristica), pero un override manual sobrevive.
-        logger.info(
-            "El LLM eligio columnas no utilizables (metrica=%r, fecha=%r); columnas por heuristica.",
-            choice["metric_column"], choice["date_column"],
-        )
-        return fallback
-
-    return {
-        "table": table,
-        "metric_column": manual.get("metric_column") or choice["metric_column"],
-        "date_column": manual.get("date_column") or choice["date_column"],
-        "dimension_column": choice.get("dimension_column"),
-        "horizon": horizon,
-        "horizon_source": horizon_source,
-        "source": "manual" if manual else "llm",
-    }
+    return _llm_choice_payload(
+        table, choice, manual, requested_horizon, fallback
+    )
 
 
 async def _analyze_with_resolution(
@@ -809,15 +789,9 @@ async def _analyze_with_resolution(
         table, resolution, requested_metric, requested_date, requested_agg
     )
 
-    # Con las tres decisiones tomadas no hay nada que preguntarle al modelo.
-    if manual.get("metric_column") and manual.get("date_column") and requested_horizon is not None:
-        return {
-            "table": table,
-            **manual,
-            "horizon": requested_horizon,
-            "horizon_source": "pedido",
-            "source": "manual",
-        }
+    ready = _manual_ready(table, manual, requested_horizon)
+    if ready is not None:
+        return ready
 
     suggested_horizon = (
         requested_horizon if requested_horizon is not None else DEFAULT_HORIZON
@@ -844,35 +818,14 @@ async def _analyze_with_resolution(
         logger.info("El LLM no devolvio un objeto utilizable; se usa la heuristica.")
         return fallback
 
-    horizon, horizon_source = _resolve_horizon(choice["horizon"], requested_horizon)
-    fallback["horizon"] = horizon
-    fallback["horizon_source"] = horizon_source
-
-    # Con ambos overrides, la unica decision que queda es el horizonte.
-    if manual.get("metric_column") and manual.get("date_column"):
-        return fallback
-
-    if not (choice["metric_column"] and choice["date_column"]):
-        logger.info(
-            "El LLM eligio columnas no utilizables (metrica=%r, fecha=%r); columnas por heuristica.",
-            choice["metric_column"], choice["date_column"],
-        )
-        return fallback
-
-    return {
-        "table": table,
-        "metric_column": manual.get("metric_column") or choice["metric_column"],
-        "metric_agg": (
-            manual.get("metric_agg")
-            or choice.get("metric_agg")
-            or "sum"
-        ),
-        "date_column": manual.get("date_column") or choice["date_column"],
-        "dimension_column": choice.get("dimension_column"),
-        "horizon": horizon,
-        "horizon_source": horizon_source,
-        "source": "manual" if manual else "llm",
-    }
+    return _llm_choice_payload(
+        table,
+        choice,
+        manual,
+        requested_horizon,
+        fallback,
+        metric_agg=manual.get("metric_agg") or choice.get("metric_agg") or "sum",
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -1006,9 +959,12 @@ def _partial_period(
     period_start, period_end = _period_bounds(today, granularity)
     period_length = (period_end - period_start).days + 1
     elapsed = (today - period_start).days + 1
-    if period_length > 0 and elapsed / period_length >= 0.9:
+    if (
+        period_length > 0
+        and elapsed / period_length >= POLICY.partial_period_closed_ratio
+    ):
         return None
-    if distinct_days >= 0.7 * median_days:
+    if distinct_days >= POLICY.partial_period_min_ratio * median_days:
         return None
     return last_period
 
@@ -1110,7 +1066,6 @@ def _build_breakdown(
     connection_id: int,
     budget: Optional[Dict[str, Any]],
     *,
-    resolution: Optional[Dict[str, Any]] = None,
     sql_agg: str = "sum",
     date_expr: Optional[str] = None,
     value_expr: Optional[str] = None,
@@ -1224,7 +1179,7 @@ def _clamp_count_bands(
     """Una cantidad no puede ser negativa: acota la banda inferior a 0.
 
     Solo aplica a conteos (`COUNT(*)`/`COUNT(DISTINCT)`). El `band_pct` no se
-    toca: sigue siendo el residuo medido; el rango publicado es el que se acota.
+    toca: sigue siendo la banda calibrada; el rango publicado es el que se acota.
     """
     if metric_agg not in ("count", "count_distinct"):
         return
@@ -1257,13 +1212,14 @@ def _projection_sql_parts(
         metric_agg == "count"
         or str(metric_column or "").strip() == "*"
     )
+    resolved_agg = "count" if is_count else (metric_agg or "sum")
     if not resolution:
         return {
             "metric_column": "*" if is_count else metric_column,
-            "metric_agg": "count" if is_count else (metric_agg or "sum"),
+            "metric_agg": resolved_agg,
             "date_expr": None,
             "value_expr": None,
-            "sql_agg": "count" if is_count else (metric_agg or "sum"),
+            "sql_agg": resolved_agg,
         }
 
     date_option = find_option(resolution.get("date_options") or [], date_column)
@@ -1307,12 +1263,10 @@ def _projection_sql_parts(
     }
 
 
-_SCENARIO_STEPS_PER_YEAR = {
-    "day": 365.0,
-    "week": 52.0,
-    "month": 12.0,
-    "quarter": 4.0,
-}
+# Crecimientos de la tabla de comparacion: se DERIVAN de la historia de cada
+# conexion (ritmo historico, conservador, optimista, sin crecimiento) y se
+# agrega el supuesto del usuario. No hay una lista fija de 5/10/15: la misma
+# pantalla sobre otra base tiene que mostrar otros numeros.
 
 
 def _scenario_projection(
@@ -1355,9 +1309,9 @@ def _scenario_projection(
         return empty
 
     base_period, base_value = pairs[-1]
-    steps_per_year = _SCENARIO_STEPS_PER_YEAR.get(granularity)
-    if steps_per_year is None:
-        return empty
+    # Los periodos por ano salen de la politica: el rezago estacional/interanual
+    # y la conversion de una tasa anual no pueden tener dos definiciones.
+    steps_per_year = POLICY.steps_per_year(granularity)
     factor = (1.0 + growth_pct / 100.0) ** (1.0 / steps_per_year)
 
     steps: List[Dict[str, Any]] = []
@@ -1417,6 +1371,187 @@ def _scenario_projection(
     }
 
 
+def _quantile(sorted_values: Sequence[float], q: float) -> float:
+    """Cuantil por interpolacion lineal; 0.0 si no hay valores."""
+    if not sorted_values:
+        return 0.0
+    position = (len(sorted_values) - 1) * q
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return float(sorted_values[lower])
+    weight = position - lower
+    return float(
+        sorted_values[lower]
+        + (sorted_values[upper] - sorted_values[lower]) * weight
+    )
+
+
+def _growth_scenarios(
+    values: Sequence[Any],
+    normalized: Sequence[Optional[str]],
+    requested_pct: float,
+    granularity: str = "month",
+) -> List[Tuple[float, str]]:
+    """Tasas de crecimiento ANUAL que salen de la historia de ESTA serie.
+
+    Con al menos un ano de historia (`steps_per_year + 1` periodos) se compara
+    cada periodo contra el MISMO periodo del ano anterior, que ya es una tasa
+    anual. Con menos, se compara periodo contra periodo y la tasa se anualiza
+    antes de publicarla: un +1% semanal no es un +1% anual, y ofrecerlo como
+    supuesto anual subestima el escenario por dos ordenes de magnitud.
+
+    El ritmo historico es la mediana; conservador/optimista son los cuartiles
+    25/75. Se agrega 0% ("Sin crecimiento") y el supuesto del usuario ("Tu
+    supuesto"). Una serie plana produce escenarios cerca de 0; una serie que cae,
+    escenarios negativos.
+    """
+    clean: List[Tuple[str, float]] = []
+    for period, value in zip(normalized, values):
+        number = _number(value)
+        if period is not None and number is not None:
+            clean.append((period, number))
+
+    steps = POLICY.steps_per_year(granularity)
+    # Con un ano completo el rezago ya es anual; sin el, se anualiza la tasa.
+    annual_lag = len(clean) >= steps + 1
+    lag = steps if annual_lag else 1
+
+    rates: List[float] = []
+    for index in range(lag, len(clean)):
+        previous = clean[index - lag][1]
+        current = clean[index][1]
+        # Una base 0 no tiene tasa y una caida de -100% o peor no tiene tasa
+        # anual equivalente: se descartan en vez de publicar un numero inutil.
+        if previous == 0:
+            continue
+        rate = current / previous - 1.0
+        if not math.isfinite(rate) or rate <= -1.0:
+            continue
+        if not annual_lag:
+            try:
+                rate = (1.0 + rate) ** steps - 1.0
+            except OverflowError:
+                continue
+            if not math.isfinite(rate):
+                continue
+        rates.append(rate * 100.0)
+    if not rates:
+        rates = [0.0]
+
+    ordered = sorted(rates)
+    candidates: List[Tuple[float, str]] = [
+        (_quantile(ordered, POLICY.scenario_historical_quantile), "Ritmo histórico"),
+        (_quantile(ordered, POLICY.scenario_conservative_quantile), "Conservador"),
+        (_quantile(ordered, POLICY.scenario_optimistic_quantile), "Optimista"),
+        (0.0, "Sin crecimiento"),
+    ]
+
+    tolerance = POLICY.scenario_rate_tolerance_pct
+    replaced = False
+    for index, (growth, _) in enumerate(candidates):
+        if abs(growth - requested_pct) < tolerance:
+            candidates[index] = (float(requested_pct), "Tu supuesto")
+            replaced = True
+            break
+    if not replaced:
+        candidates.append((float(requested_pct), "Tu supuesto"))
+
+    deduped: List[Tuple[float, str]] = []
+    for growth, label in candidates:
+        if all(abs(growth - other) >= tolerance for other, _ in deduped):
+            deduped.append((round(float(growth), 2), label))
+    return deduped
+
+
+def _scenario_comparison(
+    values: Sequence[Any],
+    normalized: Sequence[Optional[str]],
+    horizon: int,
+    granularity: str,
+    requested_pct: float,
+) -> Dict[str, Any]:
+    """Tabla de escenarios contra la proyeccion estadistica base.
+
+    La base es el pronostico, no el historico: un escenario no compite contra el
+    ultimo dato, compite contra lo que el motor ya publicaria sin supuesto. Por
+    eso `base_total` sale de `build_projection` y cada item se mide contra ese
+    total. La proyeccion base se calcula aunque el modo escenario no la publique:
+    sin ella la comparacion seria "crecimiento contra crecimiento".
+
+    Los escenarios salen de la historia de ESTA serie (ritmo historico,
+    conservador, optimista y sin crecimiento) mas el supuesto pedido, con el
+    rezago de `POLICY.steps_per_year(granularity)` y la tasa anualizada cuando no
+    hay un ano de historia. Se generan con `_scenario_projection`, la MISMA
+    funcion que publica el escenario principal: el numero de la tabla y el del
+    grafico no pueden divergir.
+    """
+    base = build_projection(values, horizon)
+    base_total = _number((base.get("total") or {}).get("point"))
+    base_steps = base.get("steps") or []
+    base_final = _number(base_steps[-1].get("point")) if base_steps else None
+    if base_final is None:
+        # El motor no pudo proyectar (serie corta): la ultima referencia real es
+        # el ultimo valor historico. None solo si tampoco hay historia numerica.
+        for value in reversed(list(values)):
+            base_final = _number(value)
+            if base_final is not None:
+                break
+
+    scenarios_spec = _growth_scenarios(
+        values, normalized, requested_pct, granularity
+    )
+
+    scenarios: List[Dict[str, Any]] = []
+    for growth, label in scenarios_spec:
+        projection = _scenario_projection(
+            values, normalized, horizon, granularity, growth
+        )
+        total = _number((projection.get("total") or {}).get("point"))
+        final_value = _number((projection.get("scenario") or {}).get("final_value"))
+        gain = None
+        gain_pct = None
+        if total is not None and base_total is not None:
+            gain = total - base_total
+            if base_total != 0:
+                gain_pct = gain / base_total * 100.0
+        scenarios.append({
+            "growth_pct": growth,
+            "label": label,
+            "total": total,
+            "final_value": final_value,
+            "gain_vs_base": gain,
+            "gain_vs_base_pct": gain_pct,
+        })
+
+    return {
+        "base_total": base_total,
+        "base_final": base_final,
+        "scenarios": scenarios,
+    }
+
+
+def _guidance_for_series(n_periods: int) -> Optional[str]:
+    """Que puede hacer el lector cuando la historia no alcanza, o None.
+
+    Una serie corta no es un dead end: el motor no puede pronosticar, pero el
+    lector si puede elegir un supuesto. La guia nombra la cuenta real (periodos
+    observados y minimo) y la salida concreta. Con historia suficiente devuelve
+    None: el diagnostico ya describe la serie y repetirlo en cada respuesta
+    agrega ruido sin informacion nueva.
+    """
+    if n_periods >= POLICY.min_periods:
+        return None
+    periodos = "período" if n_periods == 1 else "períodos"
+    return (
+        f"Hay {n_periods} {periodos} de historia y se necesitan al menos "
+        f"{POLICY.min_periods} para un pronóstico estadístico. Puedes probar un "
+        f"escenario de crecimiento anual (por ejemplo, "
+        f"{POLICY.scenario_example_growth_pct:g}%) o ampliar la historia de la "
+        "tabla."
+    )
+
+
 def run_projection(
     db: Session,
     connection_id: int,
@@ -1437,6 +1572,7 @@ def run_projection(
     metric_agg: Optional[str] = None,
     granularity: str = "month",
     scenario_growth_pct: Optional[float] = None,
+    connection: Optional[CorporateConnection] = None,
 ) -> Dict[str, Any]:
     """Serie real + proyeccion + metadatos. Sincrono: el router lo corre en un hilo.
 
@@ -1460,7 +1596,11 @@ def run_projection(
     para proyectar" con el motivo, en vez de un payload vacio que se lee como una
     falla del sistema.
     """
-    connection = db.query(CorporateConnection).filter(CorporateConnection.id == connection_id).first()
+    connection = connection or (
+        db.query(CorporateConnection)
+        .filter(CorporateConnection.id == connection_id)
+        .first()
+    )
     if not connection:
         raise ForecastUnavailable(f"No existe la conexion {connection_id}.")
     if granularity not in GRANULARITIES:
@@ -1520,7 +1660,7 @@ def run_projection(
         logger.warning("Serie ML no ejecutable en %s: %s", table, exc)
         raise ForecastUnavailable(
             f"No se pudo leer la serie de '{table}' con la configuración actual. "
-            f"Revisá la fórmula de fecha o métrica en el catálogo semántico de "
+            f"Revisa la fórmula de fecha o métrica en el catálogo semántico de "
             f"la conexión."
         ) from exc
 
@@ -1536,15 +1676,33 @@ def run_projection(
         normalize_period(str(row.get("periodo")), granularity) for row in rows
     ]
     has_gaps = _has_gaps(normalized, granularity)
+    # Lectura de la historia con la que se proyecto. Se calcula SIEMPRE, tambien
+    # cuando el motor no alcanza a proyectar: "hay poca historia" es justamente
+    # lo que el diagnostico describe, y es la respuesta a "por que no me creo
+    # este numero".
+    diagnosis = diagnose_series(
+        values, normalized, horizon=horizon, granularity=granularity
+    )
     if scenario_growth_pct is not None:
         projection = _scenario_projection(
             values, normalized, horizon, granularity, scenario_growth_pct
         )
         quality = None
+        comparison = _scenario_comparison(
+            values, normalized, horizon, granularity, scenario_growth_pct
+        )
     else:
-        projection = build_projection(values, horizon, has_gaps=has_gaps)
+        projection = build_projection(
+            values,
+            horizon,
+            has_gaps=has_gaps,
+            has_level_shift=bool(diagnosis.get("level_shift")),
+        )
         _clamp_count_bands(projection, metric_agg)
-        quality = evaluate_quality(projection, horizon=horizon, has_gaps=has_gaps)
+        quality = evaluate_quality(
+            projection, horizon=horizon, has_gaps=has_gaps, diagnosis=diagnosis
+        )
+        comparison = None
 
     breakdown: Optional[Dict[str, Any]] = None
     if dimension_column and scenario_growth_pct is None:
@@ -1584,12 +1742,20 @@ def run_projection(
                 str(dim_col.get("name") if dim_col else dimension_column),
                 horizon, kept_periods,
                 user_role, is_admin, role_id, connection_id, budget,
-                resolution=resolution,
                 sql_agg=sql_agg,
                 date_expr=parts["date_expr"],
                 value_expr=parts["value_expr"],
                 granularity=granularity,
             )
+
+    # Lo que la historia sostiene y lo que le falta al lector. Se calcula sobre
+    # los periodos OBSERVADOS (`values`), no sobre los pasos publicados: un
+    # escenario de 120 pasos no convierte 9 meses de historia en 10 anos de
+    # evidencia. En modo escenario el motor no hace backtest, asi que las
+    # metricas quedan vacias y no se inventa banda ni calidad para el supuesto.
+    n_history = sum(1 for value in values if _number(value) is not None)
+    can_forecast = bool(projection["available"])
+    guidance = _guidance_for_series(n_history)
 
     return {
         "available": projection["available"],
@@ -1603,13 +1769,33 @@ def run_projection(
         "total": projection["total"],
         "breakdown": breakdown,
         "scenario": projection.get("scenario"),
+        "comparison": comparison,
+        "diagnosis": diagnosis,
         "method": projection["method"],
         "beats_naive": projection["beats_naive"],
         "mape": projection["mape"],
         "mape_by_method": projection["mape_by_method"],
+        # Evidencia completa del backtest. En modo escenario no hay backtest y
+        # las claves no existen en el payload del motor: quedan vacias, no en 0.
+        "metrics_by_method": projection.get("metrics_by_method", {}),
+        "model_comparison": projection.get("model_comparison", []),
+        "mase": projection.get("mase"),
+        "mae": projection.get("mae"),
+        "rmse": projection.get("rmse"),
         "quality": quality,
         "n_periods": projection["n_periods"],
+        "interval_target": projection.get(
+            "interval_target", POLICY.interval_coverage
+        ),
         "has_gaps": has_gaps,
+        # El contrato nuevo: la politica vigente y los limites que la historia
+        # sostiene. La UI lee `max_horizon` de aca en vez de repetir 36.
+        "policy": POLICY.public(),
+        "max_horizon": POLICY.max_horizon_for(n_history),
+        "min_periods": POLICY.min_periods,
+        "reliable_horizon": POLICY.reliable_horizon_for(n_history),
+        "can_forecast": can_forecast,
+        "guidance": guidance,
         "partial_period_excluded": prepared["partial_period_excluded"],
         "future_periods_excluded": prepared["future_periods_excluded"],
         "table": table,
@@ -1671,10 +1857,10 @@ def _inside_band(
 
 
 def list_projection_history(
-    db: Session, user_id: int, limit: int = 10
+    db: Session, user_id: int, limit: int = POLICY.history_default_limit
 ) -> List[Dict[str, Any]]:
     """Ultimas proyecciones auditadas del usuario. Nunca las de otro usuario."""
-    limit = max(1, min(int(limit), 20))
+    limit = max(1, min(int(limit), POLICY.history_max_limit))
     logs = (
         db.query(AuditLog)
         .filter(
@@ -1859,11 +2045,11 @@ def verify_projection(
             "available": False,
             "reason": "La granularidad de la proyeccion no es verificable.",
         }
-    closed_steps = [
-        step for step in snapshot.steps
-        if step.period and normalize_period(step.period, granularity) is not None
-        and normalize_period(step.period, granularity) < current_period
-    ]
+    closed_steps = []
+    for step in snapshot.steps:
+        period = normalize_period(step.period, granularity) if step.period else None
+        if period is not None and period < current_period:
+            closed_steps.append(step)
     actual_by_period: Dict[str, float] = {}
     secured_sql: Optional[str] = None
     if closed_steps:
@@ -1877,9 +2063,7 @@ def verify_projection(
         )
         try:
             actual_rows, secured_sql = _run_guarded_sql(
-                db, db.query(CorporateConnection).filter(
-                    CorporateConnection.id == snapshot.connection_id
-                ).first(),
+                db, context.get("connection"),
                 actual_sql, "postgres", user_role, is_admin, role_id,
                 snapshot.connection_id, snapshot.table, context["cols"], budget,
             )
@@ -1895,7 +2079,7 @@ def verify_projection(
                 "available": False,
                 "reason": (
                     f"No se pudo releer la serie actual de '{snapshot.table}' "
-                    f"con la configuración actual. Revisá el catálogo semántico."
+                    f"con la configuración actual. Revisa el catálogo semántico."
                 ),
                 "sql": actual_sql,
             }
@@ -1911,33 +2095,31 @@ def verify_projection(
             normalize_period(step.period, granularity) if step.period else None
         )
         projected = _number(step.point)
+        item = {
+            "step": step.step,
+            "period": period if period is not None else step.period,
+            "projected": projected,
+            "actual": None,
+            "error_pct": None,
+            "inside_band": None,
+        }
         if period is None:
-            statuses.append({
-                "step": step.step, "period": step.period, "projected": projected,
-                "actual": None, "error_pct": None, "inside_band": None,
-                "status": "sin_periodo",
-            })
+            item["status"] = "sin_periodo"
         elif period >= current_period:
-            statuses.append({
-                "step": step.step, "period": period, "projected": projected,
-                "actual": None, "error_pct": None, "inside_band": None,
-                "status": "pendiente",
-            })
+            item["status"] = "pendiente"
         elif period not in actual_by_period:
-            statuses.append({
-                "step": step.step, "period": period, "projected": projected,
-                "actual": None, "error_pct": None, "inside_band": None,
-                "status": "sin_dato",
-            })
+            item["status"] = "sin_dato"
         else:
             actual = actual_by_period[period]
-            statuses.append({
-                "step": step.step, "period": period, "projected": projected,
+            item.update({
                 "actual": actual,
                 "error_pct": _error_pct(actual, projected),
-                "inside_band": _inside_band(actual, _number(step.lower), _number(step.upper)),
+                "inside_band": _inside_band(
+                    actual, _number(step.lower), _number(step.upper)
+                ),
                 "status": "medido",
             })
+        statuses.append(item)
 
     measured = sum(1 for item in statuses if item["status"] == "medido")
     pending = sum(1 for item in statuses if item["status"] == "pendiente")
@@ -2028,31 +2210,77 @@ def _breakdown_top_group(payload: Dict[str, Any]) -> Optional[Tuple[str, float]]
     return mejor
 
 
+_PERIOD_UNITS = {
+    "day": ("un día", "días"),
+    "week": ("una semana", "semanas"),
+    "month": ("un mes", "meses"),
+    "quarter": ("un trimestre", "trimestres"),
+}
+
+
+def _period_with_article(granularity: Optional[str]) -> str:
+    return _PERIOD_UNITS.get(granularity or "month", ("un período", "períodos"))[0]
+
+
+def _period_plural(granularity: Optional[str]) -> str:
+    return _PERIOD_UNITS.get(granularity or "month", ("un período", "períodos"))[1]
+
+
+def _money_text(value: Any) -> Optional[str]:
+    """Monto con separador de miles espanol, o None si no es un numero."""
+    number = _number(value)
+    if number is None:
+        return None
+    return f"{number:,.0f}".replace(",", ".")
+
+
 def _template_narration(payload: Dict[str, Any]) -> str:
     """Narrativa determinista, hecha en codigo y SIN LLM.
 
-    Dice los mismos hechos que el LLM tiene permitido citar —como se calculo,
-    error promedio, huecos, total y pasos sin evidencia— pero en lenguaje de
-    negocio. Las dos narraciones son comparables entre si. Existe porque la
-    lectura no es el dato: si el modelo local no responde, la respuesta se queda
-    sin prosa pero nunca sin la lectura.
+    Es la UNICA narrativa: cada cifra y cada salvedad salen del payload que ya
+    calculo el motor. No hay prosa libre que validar ni numeros que puedan
+    reescalarse. Nombra el metodo con `method_label`/`method_description`, cuenta
+    los metodos probados desde `mape_by_method` y usa la unidad de la
+    granularidad publicada; no hay "tres" ni "mes" fijos.
     """
     n_periodos = payload.get("n_periods") or 0
     mape = payload.get("mape")
+    granularity = payload.get("granularity")
     partes: List[str] = []
 
+    if payload.get("available") is False:
+        # Sin proyeccion no hubo backtest: decir "probamos N formas" seria
+        # inventar una comparacion que no ocurrio.
+        return payload.get("reason") or (
+            "No se pudo calcular la proyección con la historia disponible."
+        )
+
+    tested = len(payload.get("mape_by_method") or {})
+    formas = (
+        "una forma"
+        if tested == 1
+        else (f"{tested} formas" if tested > 1 else "varias formas")
+    )
     if payload.get("beats_naive"):
         partes.append(
-            "Probamos tres formas de calcular la proyección y elegimos la que mejor "
+            f"Probamos {formas} de calcular la proyección y elegimos la que mejor "
             "se comportó al repetir la historia: le ganó a suponer que todo sigue "
             "igual que en el último período."
         )
     else:
         partes.append(
-            "Probamos tres formas de calcular la proyección y ninguna superó a "
+            f"Probamos {formas} de calcular la proyección y ninguna superó a "
             "suponer que todo sigue igual que en el último período. Publicamos la "
             "más simple de las que empataron."
         )
+
+    method_label = payload.get("method_label")
+    if method_label:
+        method_description = payload.get("method_description")
+        sentence = f"El método publicado es {method_label}"
+        if method_description:
+            sentence += f": {method_description}"
+        partes.append(sentence + ".")
 
     if mape is None:
         partes.append(
@@ -2062,19 +2290,20 @@ def _template_narration(payload: Dict[str, Any]) -> str:
     else:
         partes.append(
             f"Al comparar la proyección con {n_periodos} períodos ya ocurridos, el "
-            f"error promedio fue de {mape}%."
+            f"error promedio fue de {pct_text(mape)}."
         )
 
     if payload.get("has_gaps"):
         partes.append(
             "Faltan períodos en la serie: entre el primero y el último hay al menos "
-            "un mes sin datos, así que la línea de tiempo no es continua."
+            f"{_period_with_article(granularity)} sin datos, así que la línea de "
+            "tiempo no es continua."
         )
 
     steps = payload.get("steps") or []
     total = payload.get("total")
     if isinstance(total, dict) and total.get("point") is not None:
-        total_txt = f"{float(total['point']):,.0f}".replace(",", ".")
+        total_txt = _money_text(total["point"])
         if total.get("extrapolated"):
             medidos = total.get("measured_steps")
             unidad = "paso" if medidos == 1 else "pasos"
@@ -2083,20 +2312,23 @@ def _template_narration(payload: Dict[str, Any]) -> str:
                 f"error se calculó con los primeros {medidos} {unidad}, así que no "
                 "cubre todo el período proyectado."
             )
-        elif total.get("lower") is None:
-            partes.append(
-                f"El total de los {len(steps)} pasos es {total_txt}, sin un margen "
-                "de error medido: no hubo un tramo completo para comparar."
-            )
         else:
-            partes.append(
-                f"El total de los {len(steps)} pasos es {total_txt}, con un margen "
-                "de error calculado sobre todo el período proyectado."
-            )
+            lower_txt = _money_text(total.get("lower"))
+            upper_txt = _money_text(total.get("upper"))
+            if lower_txt is not None and upper_txt is not None:
+                partes.append(
+                    f"El total de los {len(steps)} pasos es {total_txt}, con un "
+                    f"rango de {lower_txt} a {upper_txt}."
+                )
+            else:
+                partes.append(
+                    f"El total de los {len(steps)} pasos es {total_txt}, sin un "
+                    "margen de error medido: no hubo un tramo completo para comparar."
+                )
     top_group = _breakdown_top_group(payload)
     if top_group is not None:
         nombre, valor = top_group
-        valor_txt = f"{valor:,.0f}".replace(",", ".")
+        valor_txt = _money_text(valor)
         partes.append(
             f"Entre los grupos publicados, el de mayor proyección es {nombre}, "
             f"con un total estimado de {valor_txt} en el período."
@@ -2124,104 +2356,7 @@ def _template_narration(payload: Dict[str, Any]) -> str:
     return " ".join(partes)
 
 
-def _narration_prompt(payload: Dict[str, Any]) -> str:
-    """Prompt de la narrativa, SIN la serie ni el SQL.
-
-    `series` es el historico completo (una fila por periodo) y `sql` es texto: los
-    dos inflan el prompt sin agregar nada a la redaccion, porque los numeros que
-    la narrativa puede citar son los ya calculados (punto, banda, MAPE). El resto
-    de los hechos —incluidos los huecos y la evidencia por paso— viaja entero.
-    """
-    visible = {key: value for key, value in payload.items() if key not in ("series", "sql")}
-    body = json.dumps(visible, ensure_ascii=False, default=str)
-    return (
-        "Numeros ya calculados (JSON):\n"
-        f"{body}\n\n"
-        "En cada paso, `mape` es el error medido de ESE paso (null = ese paso no "
-        "tiene backtest propio) y `extrapolated` marca banda heredada del ultimo "
-        "paso medido, que no es una medicion de ese paso; `n_backtests` cuenta los "
-        "backtests de ESE paso, no la cantidad de datos historicos. Un MAPE mas "
-        "bajo es mejor: el metodo publicado supera al naive solo si su MAPE es "
-        "menor, y `beats_naive: true` es ese veredicto ya calculado. El campo "
-        "`total` es la suma de los puntos publicados; si `extrapolated` es true, "
-        "su banda se hereda de `measured_steps` pasos y NO es una medicion del "
-        "horizonte completo. `breakdown.groups` es el top de categorias de "
-        "`dimension_column`, cada una proyectada con SU propia historia: si la "
-        "pregunta pide un ranking (\"cual\" o \"quien\" tiene mas), nombra el grupo "
-        "con mayor `total.point` y cita ese total; no sumes los grupos, no los "
-        "compares con el total general y no inventes grupos que no esten en la "
-        "lista.\n\n"
-        "Redacta la lectura de esta proyeccion para el usuario, en lenguaje simple, "
-        "empezando por la respuesta directa y con su limitacion de confianza explicita."
-    )
-
-
-_HORIZON_CLAIM_RE = re.compile(
-    r"(?:proxim[oa]s?|horizonte\s+de|periodo\s+de|durante(?:\s+el|\s+los)?)"
-    r"\s+(\d{1,3})\s+(dias?|semanas?|meses?|anos?|trimestres?)",
-    re.IGNORECASE,
-)
-
-# Palabras que el contrato prohibe en la prosa visible. El LLM local las ignora
-# con frecuencia ("naive", "backtests", "MAPE"), asi que la prosa se descarta y
-# se publica la plantilla, que ya habla de "repetir el último valor" y "pruebas".
-_FORBIDDEN_NARRATION_TERMS = (
-    "mape", "naive", "backtest", "walk-forward", "walk forward", "banda",
-)
-
-_UNIT_TO_MONTHS = {
-    "dia": 1 / 30.0, "dias": 1 / 30.0,
-    "semana": 1 / 4.345, "semanas": 1 / 4.345,
-    "mes": 1.0, "meses": 1.0,
-    "ano": 12.0, "anos": 12.0,
-    "trimestre": 3.0, "trimestres": 3.0,
-}
-
-_GRANULARITY_TO_MONTHS = {
-    "day": 1 / 30.0,
-    "week": 1 / 4.345,
-    "month": 1.0,
-    "quarter": 3.0,
-}
-
-
-def _normalize_for_narration(value: str) -> str:
-    normalized = unicodedata.normalize("NFKD", str(value or "").lower())
-    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
-
-
-def _narration_contradicts_horizon(text: str, payload: Dict[str, Any]) -> bool:
-    """True si el LLM afirma un horizonte distinto al que publico el backend.
-
-    El caso real: la pregunta pedia 10 anos, el backend publico 36 meses por el
-    tope, y el LLM escribio "proximos 10 meses". La cifra del usuario y la del
-    payload no coinciden; publicar esa prosa es peor que publicar la plantilla.
-    Solo se revisan las frases "proximos N <unidad>": una mencion suelta de un
-    numero no alcanza para saber si habla del horizonte.
-    """
-    horizon = payload.get("horizon")
-    granularity = payload.get("granularity") or "month"
-    if not isinstance(horizon, int) or granularity not in _GRANULARITY_TO_MONTHS:
-        return False
-    expected_months = horizon * _GRANULARITY_TO_MONTHS[granularity]
-    normalized = _normalize_for_narration(text)
-    for match in _HORIZON_CLAIM_RE.finditer(normalized):
-        claimed_months = int(match.group(1)) * _UNIT_TO_MONTHS[match.group(2)]
-        if abs(claimed_months - expected_months) > 1.0:
-            return True
-    return False
-
-
-def _narration_has_jargon(text: str) -> bool:
-    normalized = _normalize_for_narration(text)
-    return any(term in normalized for term in _FORBIDDEN_NARRATION_TERMS)
-
-
 _PERCENT_RE = re.compile(r"\b\d{1,3}(?:[.,]\d+)?\s*%")
-_GAIN_WORDS_RE = re.compile(
-    r"\b(ganancia|ganancias|utilidad|utilidades|margen|rentabilidad|profit)\b",
-    re.IGNORECASE,
-)
 
 
 def _derived_metric_note(question: str, metric_column: Optional[str]) -> Optional[str]:
@@ -2233,10 +2368,11 @@ def _derived_metric_note(question: str, metric_column: Optional[str]) -> Optiona
     la respuesta tiene que decirlo: publicar ventas como si fueran ganancias es
     peor que no responder.
     """
-    if not _GAIN_WORDS_RE.search(question) or not _PERCENT_RE.search(question):
+    text = str(question or "").lower()
+    if not any(word in text for word in GAIN_WORDS) or not _PERCENT_RE.search(question):
         return None
     metric = str(metric_column or "").lower()
-    if any(word in metric for word in ("margen", "ganancia", "utilidad", "profit")):
+    if any(word in metric for word in GAIN_WORDS):
         return None
     label = str(metric_column or "la métrica publicada").replace("_", " ")
     return (
@@ -2247,67 +2383,39 @@ def _derived_metric_note(question: str, metric_column: Optional[str]) -> Optiona
 
 def _scenario_narration(payload: Dict[str, Any], scenario: Dict[str, Any]) -> str:
     """Lectura determinista de un escenario: sin LLM y sin jerga estadistica."""
-    unit = {
-        "day": "días", "week": "semanas", "month": "meses", "quarter": "trimestres",
-    }.get(payload.get("granularity") or "month", "pasos")
-    def money(value: Any) -> str:
-        number = _number(value)
-        return f"{number:,.0f}".replace(",", ".") if number is not None else "—"
+    unit = _period_plural(payload.get("granularity"))
+    annual = bool(scenario.get("annual", True))
+    rate_label = "anual" if annual else "por período"
+
     horizon = payload.get("horizon") or 0
     growth = scenario.get("growth_pct")
-    growth_txt = f"{float(growth):g}" if growth is not None else "—"
-    base = money(scenario.get("base_value"))
-    final = money(scenario.get("final_value"))
-    gain = money(scenario.get("gain"))
+    growth_txt = pct_text(float(growth)) if growth is not None else "—"
+    base = _money_text(scenario.get("base_value")) or "—"
+    final = _money_text(scenario.get("final_value")) or "—"
+    gain = _money_text(scenario.get("gain")) or "—"
     base_period = scenario.get("base_period") or "el último período"
     return (
         f"Escenario: partiendo de {base} en {base_period}, con un crecimiento "
-        f"anual del {growth_txt}% durante {horizon} {unit}, el valor final estimado "
-        f"es {final} y la ganancia respecto de la base es {gain}. Es un escenario "
-        "determinista: no es un pronóstico estadístico y no tiene margen de error "
-        "calculado."
+        f"{rate_label} del {growth_txt} durante {horizon} {unit}, el valor final "
+        f"estimado es {final} y la ganancia respecto de la base es {gain}. Es un "
+        "escenario determinista: no es un pronóstico estadístico y no tiene margen "
+        "de error calculado."
     )
 
 
 async def narrate(payload: Dict[str, Any]) -> Tuple[str, str]:
-    """(narrativa, "llm"|"plantilla"). UNA llamada con los numeros YA calculados.
+    """Lectura determinista del payload. Siempre `("plantilla", "plantilla")`.
 
-    El fallback es determinista y en espanol, hecho en codigo: una respuesta sin
-    lectura es peor que una lectura mecanica, pero muchisimo mejor que un texto
-    vacio o que un numero inventado por un modelo que no respondio.
+    La prosa no la escribe un LLM: cada cifra y cada salvedad salen del payload
+    que ya calculo el motor. Un modelo libre puede inventar unidades, confundir
+    cobertura con confianza o mezclar el rango mensual con el total; la plantilla
+    no tiene esa superficie de error. El LLM sigue eligiendo columnas en
+    `analyze_question`, donde la lista es cerrada y la respuesta se valida.
     """
-    plantilla = _template_narration(payload)
     scenario = payload.get("scenario")
     if isinstance(scenario, dict):
         return _scenario_narration(payload, scenario), "plantilla"
-    try:
-        text = await LLMService.generate_completion(
-            _narration_prompt(payload),
-            system_prompt=_NARRATION_SYSTEM_PROMPT,
-            temperature=0.3,
-            max_tokens=_NARRATION_MAX_TOKENS,
-        )
-    except Exception as exc:
-        logger.warning("Narracion por LLM no disponible (%s); se publica la plantilla.", exc)
-        return plantilla, "plantilla"
-
-    text = (text or "").strip()
-    if not text:
-        return plantilla, "plantilla"
-    if _narration_contradicts_horizon(text, payload):
-        logger.warning(
-            "La narrativa del LLM afirma un horizonte distinto al publicado "
-            "(%s %s); se publica la plantilla.",
-            payload.get("horizon"), payload.get("granularity"),
-        )
-        return plantilla, "plantilla"
-    if _narration_has_jargon(text):
-        logger.warning(
-            "La narrativa del LLM usa jerga prohibida (MAPE/naive/backtest/banda); "
-            "se publica la plantilla."
-        )
-        return plantilla, "plantilla"
-    return text, "llm"
+    return _template_narration(payload), "plantilla"
 
 
 # ----------------------------------------------------------------------------
@@ -2349,38 +2457,36 @@ def estimate_seconds(question: str, horizon: Optional[int] = None) -> Dict[str, 
     """{"estimated_seconds", "source", "horizon_used"} — instantaneo.
 
     Sin LLM y sin BD: solo la cache de velocidad del wizard. Con medicion, la
-    duracion sale de los tokens de trabajo (dos llamadas cortas mas el prompt)
-    sobre esa velocidad, con piso de `_MEASURED_FLOOR_S`; sin medicion, se
+    duracion sale de los tokens de la UNICA llamada al LLM (elegir columnas) y
+    del trabajo local, con piso de `POLICY.measured_floor_s`; sin medicion, se
     declara `fallback` con una espera conservadora en vez de un numero inventado
-    con formato de medicion.
+    con formato de medicion. La narrativa es determinista y no consume tokens.
 
     `horizon=None` es Auto: la pregunta ya se parseo en el router; sin horizonte
-    en el texto se usa el default declarado, no el maximo, para no inflar la
-    espera de una corrida que no lo pidio. El horizonte asumido viaja en
-    `horizon_used`.
+    en el texto se usa el default declarado, no el maximo. El horizonte asumido
+    viaja en `horizon_used`.
     """
     assumed = horizon if horizon is not None else DEFAULT_HORIZON
     tps = _measured_tokens_per_second()
     if tps is None:
         return {
-            "estimated_seconds": _FALLBACK_SECONDS,
+            "estimated_seconds": POLICY.fallback_seconds,
             "source": "fallback",
             "horizon_used": assumed,
         }
 
     prompt_tokens = (
         _PROMPT_BASE_TOKENS
-        + len(question or "") / 4.0  # chars/4: aproximacion gruesa a tokens, igual que el wizard.
-        + _PROMPT_TOKENS_PER_STEP * max(assumed, 0)
+        + len(question or "") / POLICY.chars_per_token
     )
-    output_tokens = _ANALYSIS_OUTPUT_TOKENS + _NARRATION_OUTPUT_TOKENS
+    output_tokens = _ANALYSIS_OUTPUT_TOKENS
     seconds = (
         _LOCAL_OVERHEAD_S
         + output_tokens / tps
         + prompt_tokens / (tps * _PROMPT_SPEED_FACTOR)
     )
     return {
-        "estimated_seconds": round(max(seconds, _MEASURED_FLOOR_S), 1),
+        "estimated_seconds": round(max(seconds, POLICY.measured_floor_s), 1),
         "source": "medido",
         "horizon_used": assumed,
     }

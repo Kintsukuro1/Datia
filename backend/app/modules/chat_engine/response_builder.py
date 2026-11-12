@@ -115,13 +115,13 @@ class ResponseBuilder:
             )
             if activate_connection:
                 action_text = (
-                    f"\n\n**Podés resolverlo vos mismo:** la conexión "
+                    f"\n\n**Puedes resolverlo tú mismo:** la conexión "
                     f"'{activate_connection['connection_name']}' está dada de baja. "
                     "Activándola, el chat vuelve a tener tablas para consultar."
                 )
             else:
                 action_text = (
-                    "\n\nEncender una base es una tarea de administración: pedile a un "
+                    "\n\nEncender una base es una tarea de administración: pídele a un "
                     "administrador que active una conexión desde el panel de conectores."
                 )
             conversational = (

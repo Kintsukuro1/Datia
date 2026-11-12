@@ -94,7 +94,7 @@ export const AdminCatalogTab: React.FC = () => {
               type="button"
               onClick={() => setIsAddModalOpen(true)}
               disabled={selectedConnectionId === null}
-              title={selectedConnectionId === null ? 'Seleccioná una fuente de datos primero' : undefined}
+              title={selectedConnectionId === null ? 'Selecciona una fuente de datos primero' : undefined}
               className="flex items-center space-x-1.5 text-xs bg-slate-100 hover:bg-slate-200 dark:bg-dark-base dark:hover:bg-dark-border text-slate-800 dark:text-gray-200 border border-slate-300 dark:border-dark-border px-3 py-2 rounded-xl transition-colors font-medium cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
             >
               <Plus className="w-3.5 h-3.5" />

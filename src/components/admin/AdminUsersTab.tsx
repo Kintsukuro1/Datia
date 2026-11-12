@@ -85,16 +85,22 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({ users, usersLoaded
       )}
 
       {/* Users Table */}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-dark-border">
+      <div
+        role="region"
+        tabIndex={0}
+        aria-label="Usuarios y roles RBAC"
+        className="overflow-x-auto rounded-xl border border-slate-200 dark:border-dark-border"
+      >
         <table className="w-full text-left text-xs">
+          <caption className="sr-only">Usuarios registrados y su rol RBAC asignado</caption>
           <thead className="bg-slate-50 dark:bg-dark-base border-b border-slate-200 dark:border-dark-border text-slate-600 dark:text-gray-400 uppercase tracking-wider">
             <tr>
-              <th className="px-4 py-3">Usuario</th>
-              <th className="px-4 py-3">Correo</th>
-              <th className="px-4 py-3">Rol RBAC Asignado</th>
-              <th className="px-4 py-3">Privilegios Admin</th>
-              <th className="px-4 py-3">Estado</th>
-              <th className="px-4 py-3 text-right">Acciones</th>
+              <th scope="col" className="px-4 py-3">Usuario</th>
+              <th scope="col" className="px-4 py-3">Correo</th>
+              <th scope="col" className="px-4 py-3">Rol RBAC Asignado</th>
+              <th scope="col" className="px-4 py-3">Privilegios Admin</th>
+              <th scope="col" className="px-4 py-3">Estado</th>
+              <th scope="col" className="px-4 py-3 text-right">Acciones</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-dark-border text-slate-800 dark:text-gray-200 bg-white dark:bg-transparent">

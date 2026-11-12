@@ -126,7 +126,7 @@ class TestNoActiveConnection(unittest.TestCase):
         self.assertIsNotNone(admin.activate_connection_action)
         self.assertEqual(admin.activate_connection_action["connection_id"], 7)
         self.assertEqual(admin.activate_connection_action["connection_name"], "ERP Bodega")
-        self.assertIn("Podés resolverlo vos mismo", admin.conversational_response)
+        self.assertIn("Puedes resolverlo tú mismo", admin.conversational_response)
 
     def test_si_no_se_puede_comprobar_se_declara_desconocido(self):
         """No afirmar 'no hay conexiones' sin haberlo comprobado."""

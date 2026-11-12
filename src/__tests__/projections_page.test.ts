@@ -103,7 +103,34 @@ const availableFixture: ProjectionResult = {
   method: 'naive',
   beats_naive: false,
   mape: 8.1,
+  mae: 21.5,
+  rmse: 33.2,
+  mase: 1,
   mape_by_method: { naive: 8.1, mean: 12.3, ols_trend: null, holt_damped: null },
+  metrics_by_method: {
+    naive: { mape: 8.1, mae: 21.5, rmse: 33.2, mase: 1 },
+    mean: { mape: 12.3, mae: 30.7, rmse: 41.9, mase: 1.43 },
+    ols_trend: { mape: null, mae: null, rmse: null, mase: null },
+  },
+  model_comparison: [
+    { method: 'naive', mape: 8.1, mae: 21.5, rmse: 33.2, mase: 1, selected: true },
+    { method: 'mean', mape: 12.3, mae: 30.7, rmse: 41.9, mase: 1.43, selected: false },
+    { method: 'ols_trend', mape: null, mae: null, rmse: null, mase: null, selected: false },
+  ],
+  policy: {
+    min_horizon: 1,
+    max_horizon: 36,
+    max_scenario_horizon: 120,
+    default_horizon: 6,
+    min_periods: 6,
+    reliable_backtests: 4,
+    exploratory_mape: 30,
+    unreliable_mape: 50,
+  },
+  max_horizon: 36,
+  min_periods: 6,
+  reliable_horizon: 6,
+  can_forecast: true,
   n_periods: 9,
   has_gaps: false,
   partial_period_excluded: '2026-10',
@@ -149,6 +176,106 @@ const totalFixture: ProjectionResult = {
     extrapolated: true,
     measured_steps: 1,
   },
+};
+
+/** Pregunta por dimensión: el ranking es la respuesta, y hay escenario que comparar. */
+const decisionFixture: ProjectionResult = {
+  ...availableFixture,
+  horizon: 12,
+  horizon_source: 'pregunta',
+  method: 'scenario',
+  beats_naive: null,
+  mape: null,
+  mae: null,
+  rmse: null,
+  mase: null,
+  mape_by_method: {},
+  metrics_by_method: {},
+  model_comparison: undefined,
+  quality: null,
+  partial_period_excluded: null,
+  future_periods_excluded: [],
+  series: [{ periodo: '2026-09', valor: 1_000 }],
+  steps: [
+    {
+      step: 1, period: '2026-10', point: 1_000, lower: null, upper: null,
+      band_pct: null, mape: null, n_backtests: 0, reliable: false, extrapolated: false,
+    },
+  ],
+  total: {
+    point: 2_100,
+    lower: null,
+    upper: null,
+    band_pct: null,
+    mape: null,
+    n_backtests: 0,
+    reliable: false,
+    extrapolated: false,
+    measured_steps: null,
+  },
+  scenario: {
+    growth_pct: 10,
+    annual: true,
+    base_value: 1_000,
+    base_period: '2026-09',
+    final_value: 1_100,
+    gain: 100,
+  },
+  breakdown: {
+    available: true,
+    dimension_column: 'producto',
+    top_n: 2,
+    groups: [
+      {
+        value: 'Cemento',
+        available: true,
+        mape: 6.2,
+        n_periods: 12,
+        has_gaps: false,
+        total: {
+          point: 900, lower: null, upper: null, band_pct: null, mape: null,
+          n_backtests: 0, reliable: false, extrapolated: false, measured_steps: null,
+        },
+      },
+      {
+        value: 'Áridos',
+        available: true,
+        mape: 4.1,
+        n_periods: 12,
+        has_gaps: false,
+        total: {
+          point: 1_400, lower: null, upper: null, band_pct: null, mape: null,
+          n_backtests: 0, reliable: false, extrapolated: false, measured_steps: null,
+        },
+      },
+    ],
+  },
+  comparison: {
+    base_total: 2_000,
+    base_final: 1_000,
+    scenarios: [
+      { growth_pct: 2.1, label: 'Ritmo histórico', total: 2_040, final_value: 1_020, gain_vs_base: 40, gain_vs_base_pct: 2 },
+      { growth_pct: 10, label: 'Tu supuesto', total: 2_100, final_value: 1_100, gain_vs_base: 100, gain_vs_base_pct: 5 },
+      { growth_pct: 20, label: 'Optimista', total: 2_400, final_value: 1_200, gain_vs_base: 400, gain_vs_base_pct: 20 },
+    ],
+  },
+  diagnosis: {
+    summary: 'Las ventas vienen creciendo de forma sostenida en los últimos meses.',
+    trend: 'creciente',
+    warnings: ['La serie tiene pocos periodos: la lectura es preliminar.'],
+    season_length: 12,
+    seasonality_strength: 0.42,
+    trend_pct_per_step: 2.1,
+    level_shift: 150,
+    level_shift_pct: 8.4,
+    outlier_count: 0,
+    missing_periods: 2,
+    usable_periods: 9,
+    reliable_horizon: 4,
+  },
+  answer_focus: 'dimension',
+  narration: 'Con el escenario del 10% anual, el total ronda los 2.100.',
+  narration_source: 'plantilla',
 };
 
 describe('ProjectionsPage', () => {
@@ -200,6 +327,37 @@ describe('ProjectionsPage', () => {
     });
   };
 
+  /** Enter con las opciones del evento nativo, para simular una composición IME. */
+  const pressEnterAs = async (init: KeyboardEventInit) => {
+    await act(async () => {
+      getTextarea().dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          cancelable: true,
+          ...init,
+        })
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  };
+
+  /** `keyCode` es legacy y no viaja en `KeyboardEventInit`: se define en la instancia. */
+  const pressEnterWithKeyCode = async (keyCode: number) => {
+    await act(async () => {
+      const event = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(event, 'keyCode', { value: keyCode });
+      getTextarea().dispatchEvent(event);
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  };
+
   beforeEach(() => {
     projectionService.estimate.mockReset();
     projectionService.run.mockReset();
@@ -229,6 +387,28 @@ describe('ProjectionsPage', () => {
     });
 
     expect(getTextarea().value).toBe(QUESTION);
+    expect(projectionService.estimate).not.toHaveBeenCalled();
+    expect(projectionService.run).not.toHaveBeenCalled();
+  });
+
+  it('un ejemplo se carga en el campo al hacer clic y no lanza la corrida', async () => {
+    act(() => {
+      renderPage();
+    });
+
+    const example = 'Proyecta un crecimiento del 10% anual a 5 años';
+    const button = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === example
+    );
+    expect(button).toBeTruthy();
+
+    await act(async () => {
+      button!.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(getTextarea().value).toBe(example);
+    expect(document.activeElement).toBe(getTextarea());
     expect(projectionService.estimate).not.toHaveBeenCalled();
     expect(projectionService.run).not.toHaveBeenCalled();
   });
@@ -267,7 +447,7 @@ describe('ProjectionsPage', () => {
     expect(detailed).not.toContain('$0');
     // Narrativa con su origen.
     expect(detailed).toContain('La serie sube de forma sostenida');
-    expect(detailed).toContain('plantilla del servidor');
+    expect(detailed).toContain('plantilla determinista del servidor');
     // Horizonte resuelto y su origen, no solo el numero.
     expect(detailed).toContain('elegido en el pedido');
     // Periodos descartados por el backend, con su motivo.
@@ -277,6 +457,88 @@ describe('ProjectionsPage', () => {
     // La banda ya no se presenta como un "80%" fijo.
     expect(detailed).toContain('banda de error');
     expect(detailed).not.toContain('80%');
+  });
+
+  it('un Enter que confirma una composición IME no lanza la proyección', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue(availableFixture);
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnterAs({ isComposing: true });
+
+    expect(projectionService.estimate).not.toHaveBeenCalled();
+    expect(projectionService.run).not.toHaveBeenCalled();
+
+    // Con la composición cerrada, el mismo Enter sí envía: el corte es por
+    // composición, no porque el campo haya quedado inutilizable.
+    await pressEnterAs({});
+    expect(projectionService.estimate).toHaveBeenCalledTimes(1);
+    expect(projectionService.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('un Enter con keyCode 229 (IME en navegadores viejos) tampoco lanza la proyección', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue(availableFixture);
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnterWithKeyCode(229);
+
+    expect(projectionService.estimate).not.toHaveBeenCalled();
+    expect(projectionService.run).not.toHaveBeenCalled();
+
+    await pressEnterWithKeyCode(13);
+    expect(projectionService.estimate).toHaveBeenCalledTimes(1);
+    expect(projectionService.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('las tablas de resultados declaran caption y scope de columna', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    // Sin escenario se muestran las tres tablas: ranking, comparación y pasos.
+    projectionService.run.mockResolvedValue({ ...decisionFixture, scenario: undefined });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+    await openTechnicalDetail();
+
+    const tables = Array.from(container.querySelectorAll('table'));
+    expect(tables.length).toBeGreaterThanOrEqual(3);
+    for (const table of tables) {
+      // El nombre de la tabla no puede depender de la sección que la contiene.
+      expect(table.querySelector('caption')?.textContent?.trim()).toBeTruthy();
+      const headers = Array.from(table.querySelectorAll('th'));
+      expect(headers.length).toBeGreaterThan(0);
+      for (const header of headers) {
+        expect(header.getAttribute('scope')).toBe('col');
+      }
+    }
+  });
+
+  it('cada tabla con scroll horizontal vive en una región enfocable', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue({ ...decisionFixture, scenario: undefined });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+    await openTechnicalDetail();
+
+    const wrappers = Array.from(container.querySelectorAll('table')).map(
+      (table) => table.parentElement
+    );
+    expect(wrappers.length).toBeGreaterThanOrEqual(3);
+    for (const wrapper of wrappers) {
+      expect(wrapper).not.toBeNull();
+      expect(wrapper!.getAttribute('role')).toBe('region');
+      expect(wrapper!.getAttribute('tabindex')).toBe('0');
+      expect(wrapper!.getAttribute('aria-label')?.trim()).toBeTruthy();
+    }
   });
 
   it('muestra tabla, métrica y eje con nombres legibles y hasta dónde llegan los datos', async () => {
@@ -394,6 +656,143 @@ describe('ProjectionsPage', () => {
     expect(text).toContain('según tu pregunta');
   });
 
+  it('la etiqueta del horizonte recortado usa el máximo de la política, no un 36 fijo', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue({
+      ...availableFixture,
+      horizon: 24,
+      horizon_source: 'pregunta_recortada',
+      policy: { ...availableFixture.policy!, max_horizon: 24 },
+    });
+
+    act(() => {
+      renderPage({ question: 'proyecta 24 meses' });
+    });
+    await pressEnter();
+    await openTechnicalDetail();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('máximo 24 pasos');
+    expect(text).not.toContain('máximo 36 pasos');
+  });
+
+  it('sin política publicada usa el máximo declarado en la respuesta', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    // Respuesta de una versión anterior del backend: no trae `policy`, pero sí
+    // el `max_horizon` de la corrida.
+    projectionService.run.mockResolvedValue({
+      ...availableFixture,
+      horizon: 36,
+      horizon_source: 'pregunta_recortada',
+      policy: undefined,
+    });
+
+    act(() => {
+      renderPage({ question: 'proyecta 10 años' });
+    });
+    await pressEnter();
+    await openTechnicalDetail();
+
+    expect(container.textContent ?? '').toContain('máximo 36 pasos');
+  });
+
+  it('sin política ni máximo en la respuesta no inventa un tope', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue({
+      ...availableFixture,
+      horizon: 36,
+      horizon_source: 'pregunta_recortada',
+      policy: undefined,
+      max_horizon: undefined,
+    });
+
+    act(() => {
+      renderPage({ question: 'proyecta 10 años' });
+    });
+    await pressEnter();
+    await openTechnicalDetail();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('recortada al máximo de la política');
+    expect(text).not.toContain('máximo 36 pasos');
+  });
+
+  it('compara los modelos probados con MAPE, MAE, RMSE y MASE en el detalle técnico', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue(availableFixture);
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+    await openTechnicalDetail();
+
+    const text = container.textContent ?? '';
+    // La tabla nueva reemplaza al párrafo de `mape_by_method` cuando hay comparación.
+    expect(text).toContain('Métodos probados en el backtest');
+    expect(text).not.toContain('Error de cada método probado');
+    expect(text).toContain('Repetir el último valor');
+    expect(text).toContain('Media histórica');
+    expect(text).toContain('Tendencia lineal (OLS)');
+    expect(text).toContain('MASE');
+    // Métrica del método publicado y del resto, con su unidad declarada.
+    expect(text).toContain('8,1%');
+    expect(text).toContain('30,7');
+    expect(text).toContain('1,43');
+    // Exactamente un método seleccionado, y es el que sostiene la proyección.
+    expect(text.split('seleccionado')).toHaveLength(2);
+    const selectedRow = Array.from(container.querySelectorAll('tr')).find((row) =>
+      row.textContent?.includes('seleccionado')
+    );
+    expect(selectedRow?.textContent).toContain('Repetir el último valor');
+  });
+
+  it('usa la etiqueta del método que publica el backend, no un mapa fijo', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue({
+      ...availableFixture,
+      method: 'modelo_externo',
+      method_label: 'Modelo del cliente',
+      method_description: 'promedio móvil configurado',
+      model_comparison: [
+        {
+          method: 'modelo_externo',
+          label: 'Modelo del cliente',
+          mape: 1.0,
+          selected: true,
+        },
+      ],
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+    await openTechnicalDetail();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('Modelo del cliente');
+    expect(text).not.toContain('modelo_externo');
+  });
+
+  it('sin comparación de modelos cae al resumen de MAPE por método', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue({
+      ...availableFixture,
+      model_comparison: undefined,
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+    await openTechnicalDetail();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('Error de cada método probado');
+    expect(text).not.toContain('Métodos probados en el backtest');
+  });
+
   it('muestra un escenario de crecimiento sin semáforo de calidad ni backtest', async () => {
     projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
     projectionService.run.mockResolvedValue({
@@ -453,6 +852,120 @@ describe('ProjectionsPage', () => {
     expect(text).not.toContain('banda de error (backtest)');
   });
 
+  it('entrega la decisión: diagnóstico, ranking y comparación base vs. escenario', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue(decisionFixture);
+
+    act(() => {
+      renderPage({ question: '¿Qué producto va a crecer más con un escenario del 10% anual?' });
+    });
+    await pressEnter();
+
+    const text = container.textContent ?? '';
+    // Diagnóstico: resumen y salvedades en texto llano, después de la narración.
+    expect(text).toContain('Diagnóstico de la serie');
+    expect(text).toContain('Las ventas vienen creciendo de forma sostenida');
+    expect(text).toContain('La serie tiene pocos periodos');
+    expect(text.indexOf('Qué dicen los números')).toBeLessThan(
+      text.indexOf('Diagnóstico de la serie')
+    );
+    // Comparación base vs. escenarios, con la diferencia firmada y su porcentaje.
+    expect(text).toContain('Comparación de escenarios');
+    expect(text).toContain('Pronóstico base');
+    expect(text).toContain('$2.000');
+    expect(text).toContain('Ritmo histórico (2,1%)');
+    expect(text).toContain('Tu supuesto (10%)');
+    expect(text).toContain('Optimista (20%)');
+    expect(text).toContain('Diferencia vs. base');
+    expect(text).toContain('+$100');
+    expect(text).toContain('(+5%)');
+    expect(text).toContain('El escenario es un supuesto, no un pronóstico.');
+    // El ranking es la respuesta: va antes del total, no se duplica y ordena
+    // por total proyectado (Áridos 1.400 antes que Cemento 900).
+    expect(text).toContain('Producto con mayor proyección');
+    expect(text).toContain('Ranking proyectado');
+    expect(text.indexOf('Producto con mayor proyección')).toBeLessThan(
+      text.indexOf('Total del escenario')
+    );
+    expect(text.indexOf('Producto con mayor proyección')).toBeLessThan(
+      text.indexOf('Comparación de escenarios')
+    );
+    expect(text.split('Producto con mayor proyección')).toHaveLength(2);
+    expect(text).not.toContain('Desglose por');
+    expect(text.indexOf('Áridos')).toBeLessThan(text.indexOf('Cemento'));
+  });
+
+  it('muestra la calidad medida de la serie en el diagnóstico, con el 0 como resultado', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue(decisionFixture);
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    // Se lee del <dd> de cada término: buscar el número suelto en el texto
+    // pasaría por cualquier otro importe de la página.
+    const ddFor = (label: string): string | null => {
+      const dt = Array.from(container.querySelectorAll('dt')).find(
+        (node) => node.textContent?.trim() === label
+      );
+      return dt?.nextElementSibling?.textContent?.trim() ?? null;
+    };
+
+    expect(ddFor('Periodos usables')).toBe('9');
+    expect(ddFor('Periodos faltantes')).toBe('2');
+    // 0 atípicos es una medición ("sin atípicos"), no un dato faltante.
+    expect(ddFor('Valores atípicos')).toBe('Sin atípicos');
+    expect(ddFor('Cambio de nivel')).toBe('+150 (+8,4%)');
+    expect(ddFor('Horizonte confiable')).toBe('4 pasos');
+    expect(container.textContent ?? '').toContain(
+      '«Horizonte confiable»: pasos con evidencia suficiente'
+    );
+  });
+
+  it('no marca cambio de nivel cuando el backend lo declara falso', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue({
+      ...decisionFixture,
+      diagnosis: {
+        ...decisionFixture.diagnosis,
+        level_shift: false,
+        level_shift_pct: -5.5,
+      },
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const text = container.textContent ?? '';
+    expect(text).not.toContain('Cambio de nivel');
+  });
+
+  it('no inventa el bloque de calidad cuando la respuesta no trae esos campos', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue({
+      ...decisionFixture,
+      diagnosis: {
+        summary: 'Lectura de una respuesta vieja.',
+        trend: 'estable',
+        warnings: [],
+      },
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('Lectura de una respuesta vieja.');
+    expect(text).not.toContain('Periodos faltantes');
+    expect(text).not.toContain('Horizonte confiable');
+  });
+
   it('publica el total del horizonte con su banda y su evidencia parcial', async () => {
     projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
     projectionService.run.mockResolvedValue(totalFixture);
@@ -496,6 +1009,106 @@ describe('ProjectionsPage', () => {
     expect(text).toContain('no hay cantidades negativas');
   });
 
+  it('explica la banda calibrada del total con su cobertura y su peor caso', async () => {
+    projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
+    projectionService.run.mockResolvedValue({
+      ...totalFixture,
+      interval_target: 0.8,
+      total: {
+        ...totalFixture.total!,
+        band_method: 'conformal_quantile',
+        interval_coverage: 0.83,
+        interval_coverage_n: 12,
+        interval_target: 0.8,
+        worst_case_pct: 21.4,
+        measured_steps: 3,
+        extrapolated: false,
+      },
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('Banda calibrada al 80%');
+    expect(text).toContain('83% de los casos quedaron dentro (12 comparaciones)');
+    expect(text).toContain('El peor error observado fue ±21,4%');
+    expect(text).not.toContain('Banda conservadora');
+  });
+
+  it('declara banda conservadora cuando el total usa el peor caso', async () => {
+    projectionService.run.mockResolvedValue({
+      ...totalFixture,
+      total: {
+        ...totalFixture.total!,
+        band_method: 'max_residual',
+        interval_coverage: null,
+        interval_coverage_n: 0,
+      },
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('Banda conservadora');
+    expect(text).toContain('poca evidencia o cambio de nivel reciente');
+    expect(text).not.toContain('Banda calibrada al');
+  });
+
+  it('publica la cobertura por paso sin presentarla como si fuera del total', async () => {
+    projectionService.run.mockResolvedValue({
+      ...totalFixture,
+      interval_target: 0.8,
+      steps: totalFixture.steps.map((step) => ({
+        ...step,
+        band_method: 'conformal_quantile',
+        interval_coverage: 0.83,
+        interval_coverage_n: 12,
+      })),
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+    await openTechnicalDetail();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('cob. 83%');
+    // La nota de calibración vive en la tabla de pasos, no en el bloque del
+    // total (que en este fixture sigue sin banda calibrada).
+    expect(text).toContain('La banda se calibró al 80%');
+  });
+
+  it('no inventa el objetivo de cobertura si la respuesta no lo trae', async () => {
+    projectionService.run.mockResolvedValue({
+      ...totalFixture,
+      interval_target: undefined,
+      policy: undefined,
+      steps: totalFixture.steps.map((step) => ({
+        ...step,
+        band_method: 'conformal_quantile',
+        interval_coverage: 0.83,
+        interval_coverage_n: 12,
+      })),
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+    await openTechnicalDetail();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('La banda se calibró por cobertura observada');
+    expect(text).not.toContain('La banda se calibró al 80%');
+  });
+
   it('muestra el estado de calidad y sus razones', async () => {
     projectionService.estimate.mockResolvedValue({ estimated_seconds: 25, source: 'medido' });
     projectionService.run.mockResolvedValue({
@@ -528,6 +1141,37 @@ describe('ProjectionsPage', () => {
       .map((node) => node.textContent ?? '')
       .join(' ');
     expect(tooltipText).toContain('el error promedio (67,7%) supera el límite de 50%');
+  });
+
+  it('pide cautela cuando la calidad trae alertas de datos, no solo de error', async () => {
+    projectionService.run.mockResolvedValue({
+      ...totalFixture,
+      quality: {
+        status: 'exploratoria',
+        mape: 2.6,
+        unreliable_threshold: 50,
+        exploratory_threshold: 30,
+        reasons: [
+          'el último dato está 15,3% por debajo de la media',
+          'se detectó 1 valor atípico en la serie',
+        ],
+      },
+    });
+
+    act(() => {
+      renderPage({ question: QUESTION });
+    });
+    await pressEnter();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('Revisar con cautela');
+    expect(text).toContain('el último dato está 15,3% por debajo de la media');
+    expect(text).toContain('se detectó 1 valor atípico en la serie');
+
+    const tooltipText = Array.from(container.querySelectorAll('[role="tooltip"]'))
+      .map((node) => node.textContent ?? '')
+      .join(' ');
+    expect(tooltipText).toContain('alertas en los datos');
   });
 
   it('explica en la nota por qué una proyección es confiable', async () => {

@@ -252,6 +252,23 @@ describe('getSuggestions: un fallo no es una lista vacia', () => {
   });
 });
 
+describe('getBuilderOptions: camino rapido del constructor', () => {
+  it('pide solo el esquema con builder_only y no espera sugerencias', async () => {
+    const builder = { tables: [{ name: 'ventas', label: 'Ventas', metrics: [], dimensions: [], dates: [] }] };
+    apiClient.get.mockResolvedValue({ data: { builder } });
+
+    await expect(queryService.getBuilderOptions(5)).resolves.toEqual(builder);
+    expect(apiClient.get).toHaveBeenCalledWith('/chat/suggestions', {
+      params: { builder_only: true, connection_id: 5 },
+    });
+  });
+
+  it('devuelve null si el payload no trae tablas', async () => {
+    apiClient.get.mockResolvedValue({ data: {} });
+    await expect(queryService.getBuilderOptions()).resolves.toBeNull();
+  });
+});
+
 describe('getThread: 404 es null, cualquier otro fallo se propaga', () => {
   it('404 devuelve null', async () => {
     apiClient.get.mockRejectedValue(httpError(404));

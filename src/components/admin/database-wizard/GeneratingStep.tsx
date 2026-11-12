@@ -52,8 +52,8 @@ export const GeneratingStep: React.FC<GeneratingStepProps> = ({
         </div>
         <p className="text-[11px] text-app-muted leading-relaxed">
           {estimate
-            ? `Estimado: ${formatDuration(estimate.min_seconds)} a ${formatDuration(estimate.max_seconds)} (${estimate.tokens_per_second} tok/s medidos del modelo). Podés revisar y ajustar todo al terminar.`
-            : 'Con modelos locales esto puede tardar de uno a tres minutos. Podés revisar y ajustar todo al terminar.'}
+            ? `Estimado: ${formatDuration(estimate.min_seconds)} a ${formatDuration(estimate.max_seconds)} (${estimate.tokens_per_second} tok/s medidos del modelo). Puedes revisar y ajustar todo al terminar.`
+            : 'Con modelos locales esto puede tardar de uno a tres minutos. Puedes revisar y ajustar todo al terminar.'}
         </p>
         {estimate?.beyond_budget && (
           <p className="text-[11px] text-amber-600 dark:text-amber-400 leading-relaxed">

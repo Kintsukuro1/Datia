@@ -150,7 +150,7 @@ export const ExecutiveAssistantView: React.FC<ExecutiveAssistantViewProps> = ({
           <div className="pt-2 space-y-1.5 border-t border-slate-200/60 dark:border-dark-border/60">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-brand-800 dark:text-brand-300">
               <Sparkles className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />
-              <span>¿Qué querés analizar ahora?</span>
+              <span>¿Qué quieres analizar ahora?</span>
             </div>
             <div className="flex flex-wrap gap-1.5">
               {actionOptions.map((q, idx) => (

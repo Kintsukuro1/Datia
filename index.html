@@ -4,15 +4,20 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="preload" href="/fonts/plus-jakarta-sans-latin.woff2" as="font" type="font/woff2" crossorigin />
     <title>Dat.ia</title>
     <script>
       // Apply the persisted theme before first paint. Without this, index.html
-      // ships class="dark" while Header.tsx defaults to 'light', so every load
-      // of a light-mode user paints dark first. Also covers deep links to
-      // /login and /change-password, where Header never mounts to correct it.
-      // Keep the 'light' default in sync with Header.tsx.
+      // ships class="dark" while Header.tsx defaults to the system theme, so
+      // every load of a light-mode user paints dark first. Also covers deep
+      // links to /login and /change-password, where Header never mounts to
+      // correct it. Keep this rule in sync with Header.tsx.
       try {
-        var t = localStorage.getItem('datia-theme') || 'light';
+        var stored = localStorage.getItem('datia-theme');
+        var t = stored === 'light' || stored === 'dark'
+          ? stored
+          : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
         document.documentElement.classList.remove('light', 'dark');
         document.documentElement.classList.add(t);
       } catch (e) {}

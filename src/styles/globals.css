@@ -56,6 +56,8 @@
 @layer base {
   :root,
   html.dark {
+    color-scheme: dark;
+
     --app-bg-rgb: 11 15 25;
     --app-surface-rgb: 17 24 39;
     --app-card-rgb: 31 41 55;
@@ -73,6 +75,8 @@
   }
 
   html.light {
+    color-scheme: light;
+
     --app-bg-rgb: 245 247 251;
     --app-surface-rgb: 255 255 255;
     --app-card-rgb: 248 250 252;
@@ -236,20 +240,34 @@ html.light .chat-shell-input-wrap {
   background: linear-gradient(180deg, rgba(245, 247, 251, 0) 0%, rgba(245, 247, 251, 0.9) 35%, rgba(245, 247, 251, 1) 100%);
 }
 
-/* Custom Scrollbars */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* Scrollbars.
+ *
+ * `scrollbar-width`/`scrollbar-color` es el camino estandar (Firefox y
+ * Chromium 121+); el color sale de una variable de tema, asi que no necesita
+ * un bloque por modo. Los pseudo-elementos `::-webkit-scrollbar-*` se dejan
+ * solo para navegadores sin soporte, porque cuando ambos aplican el estandar
+ * gana y los `::-webkit-*` quedan muertos.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(var(--app-text-muted-rgb) / 0.45) transparent;
 }
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.35);
-  border-radius: 9999px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.6);
+
+@supports not (scrollbar-color: auto) {
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.35);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.6);
+  }
 }
 
 /* Glassmorphism & Cyber-Utilitarian Utility Classes */

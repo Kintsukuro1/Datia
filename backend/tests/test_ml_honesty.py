@@ -16,9 +16,9 @@ capa de SERVICIO que lo publica por HTTP, sin base de datos:
    reglas propias: un 3/6/12 explicito manda siempre; con Auto (`None`) se
    acepta el del LLM si es valido; sin ninguno queda el default 6 declarado
    como `default`.
-4. La narrativa tiene contrato y respaldo: sin LLM se publica la plantilla
-   determinista, que dice los mismos hechos (metodo, periodos, MAPE, total,
-   pasos sin evidencia) y nunca queda vacia.
+4. La narrativa es determinista: se arma con los numeros del payload, sin LLM.
+   Nombra el metodo publicado, cuenta los metodos probados desde los datos y
+   nunca queda vacia.
 5. La estimacion es instantanea y honesta: reusa la velocidad YA medida por el
    wizard (`medido`, con piso), y sin medicion declara 60 s `fallback` en vez de
    un numero con formato de medicion que nadie midio. Con Auto asume 12 pasos y
@@ -48,6 +48,7 @@ from app.modules.chat_engine.forecast_service import (
 )
 from app.modules.ml_forecast import ml_service
 from app.modules.ml_forecast.ml_models import build_projection
+from app.modules.ml_forecast.policy import POLICY
 from app.modules.ml_forecast.schemas import ProjectionEstimateRequest, ProjectionRequest
 
 # La misma serie de `test_prediction_honesty.py`: 9 meses con el quiebre de mayo.
@@ -549,12 +550,16 @@ def test_la_plantilla_dice_los_mismos_hechos_que_el_llm_podria_citar():
     assert texto.strip()
     assert "último período" in texto
     assert "9 períodos" in texto
-    assert "9.0%" in texto
+    assert "9%" in texto
     assert "pasos 4, 5, 6" in texto   # extrapolados: margen heredado, no medido
     assert "pasos 1, 2, 3" in texto   # evidencia escasa: reliable=False
     assert "El total de los 6 pasos" in texto
     assert "los primeros 3 pasos" in texto
     assert "no es una promesa de precisión futura" in texto
+    # La plantilla tampoco convierte la cobertura en confianza ni llama
+    # "escenario" a la proyección base.
+    assert "confianza" not in texto.lower()
+    assert "escenario" not in texto.lower()
 
 
 def test_la_plantilla_nombra_el_grupo_con_mayor_proyeccion():
@@ -595,66 +600,80 @@ def test_sin_desglose_disponible_la_plantilla_no_inventa_un_grupo():
     assert "mayor proyección" not in sin_breakdown
 
 
-def test_la_narrativa_sin_llm_publica_plantilla_nunca_vacia():
+def test_la_narrativa_es_determinista_y_no_llama_al_llm():
     payload = _payload_proyectado(6)
-    for caida in (RuntimeError("apagado"), None, "   "):
-        if isinstance(caida, Exception):
-            mock = AsyncMock(side_effect=caida)
-        else:
-            mock = AsyncMock(return_value=caida)
-        with patch(_LLM, new=mock):
-            texto, fuente = asyncio.run(ml_service.narrate(payload))
-        assert fuente == "plantilla", caida
-        assert texto == ml_service._template_narration(payload)
-
-
-def test_la_narrativa_que_contradice_el_horizonte_cae_a_plantilla():
-    payload = _payload_proyectado(36)
-    payload["horizon"] = 36
-    payload["granularity"] = "month"
-    for contradiccion in (
-        "La proyección para los próximos 10 meses (hasta octubre de 2029) se sitúa en...",
-        "La proyección total para el horizonte de 10 meses (enero de 2029 a octubre de 2029) es...",
-        "Durante los 10 meses siguientes el total asciende a...",
-    ):
-        mock = AsyncMock(return_value=contradiccion)
-        with patch(_LLM, new=mock):
-            texto, fuente = asyncio.run(ml_service.narrate(payload))
-        assert fuente == "plantilla", contradiccion
-        assert texto == ml_service._template_narration(payload)
-
-
-def test_la_narrativa_que_respeta_el_horizonte_se_publica():
-    payload = _payload_proyectado(36)
-    payload["horizon"] = 36
-    payload["granularity"] = "month"
-    mock = AsyncMock(return_value="La proyección para los próximos 36 meses se sitúa en...")
+    mock = AsyncMock(side_effect=AssertionError("la narrativa no debe llamar al LLM"))
     with patch(_LLM, new=mock):
         texto, fuente = asyncio.run(ml_service.narrate(payload))
-    assert fuente == "llm"
-    assert "36 meses" in texto
 
-    # El mismo horizonte en años es correcto: 36 meses = 3 años.
-    mock = AsyncMock(return_value="La proyección para los próximos 3 años se sitúa en...")
-    with patch(_LLM, new=mock):
-        texto, fuente = asyncio.run(ml_service.narrate(payload))
-    assert fuente == "llm"
+    assert fuente == "plantilla"
+    assert texto == ml_service._template_narration(payload)
+    mock.assert_not_called()
 
 
-def test_la_narrativa_con_jerga_cae_a_plantilla():
-    payload = _payload_proyectado(36)
-    payload["horizon"] = 36
-    payload["granularity"] = "month"
-    for jerga in (
-        "El método naive fue el mejor para esta serie.",
-        "La banda de error y los backtests muestran poca evidencia.",
-        "El MAPE del paso es 2,5%.",
+def test_la_narrativa_nunca_queda_vacia():
+    texto, fuente = asyncio.run(ml_service.narrate(_payload_proyectado(6)))
+    assert fuente == "plantilla"
+    assert texto.strip()
+
+
+def test_la_plantilla_nombra_el_metodo_del_payload():
+    payload = _payload_proyectado(6)
+    payload["method_label"] = "Media histórica"
+    payload["method_description"] = "promedio simple de todos los períodos"
+
+    texto = ml_service._template_narration(payload)
+
+    assert "El método publicado es Media histórica" in texto
+    assert "promedio simple de todos los períodos" in texto
+
+
+def test_la_plantilla_cuenta_los_metodos_probados():
+    payload = _payload_proyectado(6)
+    payload["mape_by_method"] = {"naive": 1.0, "mean": 2.0}
+
+    texto = ml_service._template_narration(payload)
+
+    assert "Probamos 2 formas" in texto
+
+
+def test_la_plantilla_no_finge_un_backtest_si_no_hay_proyeccion():
+    corta = build_projection([10.0, 20.0, 30.0], 3)
+
+    texto = ml_service._template_narration(corta)
+
+    assert corta["available"] is False
+    assert texto == corta["reason"]
+    assert "Probamos" not in texto
+
+
+def test_la_plantilla_cita_el_rango_del_total_calibrado():
+    payload = _payload_proyectado(6)
+    payload["total"] = {
+        "point": 150.0,
+        "lower": 120.0,
+        "upper": 180.0,
+        "extrapolated": False,
+        "measured_steps": 6,
+    }
+
+    texto = ml_service._template_narration(payload)
+
+    assert "El total de los 6 pasos es 150" in texto
+    assert "con un rango de 120 a 180" in texto
+
+
+def test_la_plantilla_usa_la_unidad_de_la_granularidad():
+    for granularity, phrase in (
+        ("month", "un mes sin datos"),
+        ("week", "una semana sin datos"),
+        ("day", "un día sin datos"),
+        ("quarter", "un trimestre sin datos"),
     ):
-        mock = AsyncMock(return_value=jerga)
-        with patch(_LLM, new=mock):
-            texto, fuente = asyncio.run(ml_service.narrate(payload))
-        assert fuente == "plantilla", jerga
-        assert texto == ml_service._template_narration(payload)
+        payload = _payload_proyectado(6)
+        payload["has_gaps"] = True
+        payload["granularity"] = granularity
+        assert phrase in ml_service._template_narration(payload), granularity
 
 
 def test_aviso_cuando_la_pregunta_pide_ganancia_con_porcentaje():
@@ -713,28 +732,11 @@ def test_el_escenario_compone_el_crecimiento_anual():
 
 
 def test_la_narrativa_con_llm_publica_su_texto():
+    """La narrativa ya no usa el LLM: publica la plantilla aunque el LLM responda."""
     with patch(_LLM, new=AsyncMock(return_value="Lectura en dos frases.")):
-        assert asyncio.run(ml_service.narrate(_payload_proyectado(6))) == (
-            "Lectura en dos frases.", "llm")
-
-
-def test_el_prompt_de_la_narrativa_explica_los_campos_por_paso():
-    # Sin la leyenda, el modelo confundio el `band_pct` de un paso con el `mape`
-    # de otro (visto en vivo con Qwen2.5-Coder): los campos tienen que estar
-    # nombrados en el prompt, no solo presentes en el JSON.
-    prompt = ml_service._narration_prompt(_payload_proyectado(6))
-    assert "`mape` es el error medido de ESE paso" in prompt
-    assert "`extrapolated` marca banda heredada" in prompt
-    # Visto en vivo dos veces con Qwen2.5-Coder: leyo 961.7 como "mayor" que
-    # 1436.9 (es menor, y menor es mejor) y confundio n_backtests con historia.
-    assert "Un MAPE mas bajo es mejor" in prompt
-    assert "`n_backtests` cuenta los backtests de ESE paso" in prompt
-    assert "`beats_naive: true` es ese veredicto ya calculado" in prompt
-    # El desglose se cita solo si esta en el payload; el ranking es del total
-    # proyectado de cada grupo, no de una suma de grupos.
-    assert "si la pregunta pide un ranking" in prompt
-    assert "mayor `total.point`" in prompt
-    assert "no sumes los grupos" in prompt
+        texto, fuente = asyncio.run(ml_service.narrate(_payload_proyectado(6)))
+    assert fuente == "plantilla"
+    assert texto != "Lectura en dos frases."
 
 
 # --- 5: la estimacion no mide, reusa lo medido --------------------------------
@@ -744,7 +746,7 @@ def test_estimate_sin_medicion_declara_fallback():
 
     with patch.dict(enrich_estimator._SPEED_CACHE, {}, clear=True):
         assert ml_service.estimate_seconds("proyecta los ingresos", 6) == {
-            "estimated_seconds": 60.0,
+            "estimated_seconds": POLICY.fallback_seconds,
             "source": "fallback",
             "horizon_used": 6,
         }
@@ -761,7 +763,7 @@ def test_estimate_sin_horizonte_en_el_texto_usa_el_default():
     with patch.dict(enrich_estimator._SPEED_CACHE, {}, clear=True):
         out = ml_service.estimate_seconds("proyecta los ingresos", None)
     assert out["source"] == "fallback"
-    assert out["horizon_used"] == 6
+    assert out["horizon_used"] == POLICY.default_horizon
 
 
 def test_estimate_con_medicion_no_llama_al_llm():
@@ -776,7 +778,7 @@ def test_estimate_con_medicion_no_llama_al_llm():
 
     assert out["source"] == "medido"
     assert out["horizon_used"] == 6
-    assert 5.0 <= out["estimated_seconds"] < 60.0
+    assert POLICY.measured_floor_s <= out["estimated_seconds"] < POLICY.fallback_seconds
 
 
 def test_estimate_ignora_una_medicion_vencida():
@@ -789,16 +791,24 @@ def test_estimate_ignora_una_medicion_vencida():
 
 # --- el borde del contrato ----------------------------------------------------
 
-def test_horizonte_entre_1_y_36_o_auto():
-    for valido in (1, 3, 6, 12, 18, 36):
+def test_horizonte_entre_el_minimo_y_el_maximo_de_la_politica_o_auto():
+    validos = (
+        POLICY.min_horizon,
+        3,
+        POLICY.default_horizon,
+        12,
+        18,
+        POLICY.max_horizon,
+    )
+    for valido in validos:
         assert ProjectionRequest(question="proyecta", horizon=valido).horizon == valido
         assert ProjectionEstimateRequest(question="proyecta", horizon=valido).horizon == valido
-    # `None` es Auto; el default del campo sigue siendo 6.
+    # `None` es Auto; el default del campo es el de la politica.
     assert ProjectionRequest(question="proyecta", horizon=None).horizon is None
     assert ProjectionEstimateRequest(question="proyecta", horizon=None).horizon is None
-    assert ProjectionRequest(question="proyecta").horizon == 6
-    assert ProjectionEstimateRequest(question="proyecta").horizon == 6
-    for invalido in (0, -1, 37):
+    assert ProjectionRequest(question="proyecta").horizon == POLICY.default_horizon
+    assert ProjectionEstimateRequest(question="proyecta").horizon == POLICY.default_horizon
+    for invalido in (POLICY.min_horizon - 1, -1, POLICY.max_horizon + 1):
         with pytest.raises(ValidationError):
             ProjectionRequest(question="proyecta", horizon=invalido)
         with pytest.raises(ValidationError):

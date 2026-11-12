@@ -1,6 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import ReactEChartsCore from 'echarts-for-react/lib/core';
-import echarts from '../shared/echarts';
+import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense, lazy } from 'react';
 import { useChatEngine } from '../features/chat/hooks/useChatEngine';
 import { SidebarChatHistory } from '../components/chat/SidebarChatHistory';
 import { ChatMessageItem } from '../components/chat/ChatMessageItem';
@@ -22,12 +20,18 @@ import {
   BarChart3,
   RefreshCw,
   HelpCircle,
+  Database,
 } from 'lucide-react';
 import { queryService } from '../features/chat/services/query_service';
 import { ProjectionSuggestionCard } from '../features/chat/components/ProjectionSuggestionCard';
 import { useNotifications } from '../context/NotificationContext';
 import { prefersReducedMotion } from '../features/dashboard/components/charts/theme';
 import { useModalA11y } from '../hooks/useModalA11y';
+
+// ECharts solo lo necesita el gráfico de un widget fijado. Import estático acá
+// metía el chunk completo (~1 MB) en la carga inicial de /chat, aunque el
+// usuario nunca abriera el Tablero Ejecutivo.
+const WidgetChart = lazy(() => import('../components/dashboard/WidgetChart'));
 
 export const ChatDashboardPage: React.FC = () => {
   const { notify } = useNotifications();
@@ -46,7 +50,9 @@ export const ChatDashboardPage: React.FC = () => {
     setIsMobileHistoryOpen,
     activeDatabaseName,
     activeConnectionId,
+    connectors,
     builderOptions,
+    builderLoading,
     activeThread,
     sidebarThreads,
     threadsError,
@@ -250,9 +256,40 @@ export const ChatDashboardPage: React.FC = () => {
               onClick={() => setIsMobileHistoryOpen(true)}
               className="md:hidden p-1.5 rounded-lg text-app-muted hover:text-app-text hover:bg-app-hover transition"
               title="Ver Historial"
+              aria-label="Abrir historial de consultas"
             >
               <History size={18} />
             </button>
+
+            {/* Selector de fuente activa: antes desapareció al simplificar el
+                subheader y el chat quedaba sin forma de cambiar de base. */}
+            <div className="flex items-center gap-2 text-xs font-medium">
+              <Database size={14} className="text-cyan-400 shrink-0" />
+              {connectors.length > 1 ? (
+                <div className="flex items-center gap-1.5">
+                  <label htmlFor="chat-active-db-select" className="sr-only">
+                    Seleccionar fuente de datos
+                  </label>
+                  <select
+                    id="chat-active-db-select"
+                    aria-label="Seleccionar fuente de datos activa"
+                    value={activeConnectionId || ''}
+                    onChange={(e) => handleSelectConnection(Number(e.target.value))}
+                    className="cursor-pointer rounded-lg border border-app-border bg-app-surface px-2.5 py-1 text-xs font-medium text-app-text shadow-xs transition-colors hover:border-brand-500/50 focus:border-brand-500 focus:outline-none"
+                  >
+                    {connectors.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.db_type.toUpperCase()})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <span className="max-w-[200px] truncate font-semibold text-app-text sm:max-w-none">
+                  {activeDatabaseName}
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -305,7 +342,7 @@ export const ChatDashboardPage: React.FC = () => {
                           type="button"
                           onClick={() => setIsAnomaliesOpen(false)}
                           aria-label="Cerrar alertas"
-                          className="text-gray-400 hover:text-gray-600 dark:hover:text-white"
+                          className="inline-flex items-center justify-center w-6 h-6 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-white transition-colors"
                         >
                           <X size={14} />
                         </button>
@@ -393,6 +430,15 @@ export const ChatDashboardPage: React.FC = () => {
           </div>
         </div>
 
+        {/* Aviso único para lectores de pantalla. El reloj de segundos y la
+            narrativa token a token NO llevan aria-live: anunciarían un cambio
+            por segundo. Esta región se monta una sola vez por consulta. */}
+        {isGenerating && (
+          <span role="status" className="sr-only">
+            Consulta en curso
+          </span>
+        )}
+
         {/* El historial de la barra lateral sale de localStorage; si el servidor no
             lo confirmó, se lo dice en vez de dejarlo parecer un historial verificado. */}
         {threadsError && (
@@ -404,7 +450,7 @@ export const ChatDashboardPage: React.FC = () => {
         )}
 
         {/* Scrollable Conversation Stream */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-8 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
+        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-8 space-y-6">
           {(!activeThread || activeThread.results.length === 0) && !attemptCard && !projectionSuggestion ? (
             <ChatEmptyState onOpenHelp={() => setIsHelpOpen(true)} />
           ) : (
@@ -479,7 +525,10 @@ export const ChatDashboardPage: React.FC = () => {
                         )}
                       </div>
                       {pendingError ? (
-                        <p className="text-xs sm:text-sm leading-relaxed text-rose-700 dark:text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg px-2.5 py-2 animate-fadeIn">
+                        <p
+                          role="alert"
+                          className="text-xs sm:text-sm leading-relaxed text-rose-700 dark:text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg px-2.5 py-2 animate-fadeIn"
+                        >
                           {pendingError}
                         </p>
                       ) : (
@@ -513,7 +562,7 @@ export const ChatDashboardPage: React.FC = () => {
 
                       {longWaitNotice && !pendingError && (
                         <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-2 animate-fadeIn">
-                          Está tardando un poco más de lo normal. Seguimos trabajando: podés esperar
+                          Está tardando un poco más de lo normal. Seguimos trabajando: puedes esperar
                           o cancelar y volver a preguntar.
                         </p>
                       )}
@@ -590,6 +639,7 @@ export const ChatDashboardPage: React.FC = () => {
               isGenerating={isGenerating}
               activeDatabaseName={activeDatabaseName}
               builderOptions={builderOptions}
+              builderLoading={builderLoading}
               textareaRef={promptTextareaRef}
               onSubmit={(customPrompt) => handleSendPrompt(customPrompt || promptInput)}
             />
@@ -631,7 +681,7 @@ export const ChatDashboardPage: React.FC = () => {
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5 sm:p-6 scrollbar-thin">
+            <div className="flex-1 overflow-y-auto p-5 sm:p-6">
               {widgetsError ? (
                 <div className="text-center py-16 space-y-3">
                   <Pin className="w-10 h-10 text-app-muted mx-auto" />
@@ -700,12 +750,9 @@ export const ChatDashboardPage: React.FC = () => {
 
                           {hasChartSeries ? (
                             <div className="w-full h-44 rounded-xl overflow-hidden bg-app-bg/60 border border-app-border/60 p-1">
-                              <ReactEChartsCore
-                                echarts={echarts}
-                                option={option}
-                                style={{ height: '100%', width: '100%' }}
-                                opts={{ renderer: 'canvas' }}
-                              />
+                              <Suspense fallback={<div className="w-full h-full" aria-hidden="true" />}>
+                                <WidgetChart option={option} />
+                              </Suspense>
                             </div>
                           ) : (
                             <div className="w-full py-4 px-3 rounded-xl bg-app-bg/40 border border-dashed border-app-border/70 text-center space-y-1">
