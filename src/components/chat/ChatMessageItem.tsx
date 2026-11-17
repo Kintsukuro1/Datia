@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { User, QueryResult } from '../../types';
 import { ExecutiveDashboardView } from '../dashboard/ExecutiveDashboardView';
 import {
@@ -17,12 +18,14 @@ import {
   Sparkles,
   Star,
   ChevronDown,
+  BarChart3,
 } from 'lucide-react';
 import { queryService } from '../../features/chat/services/query_service';
 import { connectorService } from '../../features/admin/services/connector_service';
 import { useNotifications } from '../../context/NotificationContext';
 import { buildDynamicChartOption, deriveProcessedRows, THEME_COLORS, ChartType } from '../dashboard/executiveDashboardUtils';
 import { useCopyFeedback } from '../../hooks/useCopyFeedback';
+import { buildPowerBiUrl } from '../../features/bi/report_logic';
 
 interface ChatMessageItemProps {
   result: QueryResult;
@@ -84,6 +87,7 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
   onFollowUp,
   onWidgetPinned,
 }) => {
+  const navigate = useNavigate();
   const { notify } = useNotifications();
   const { copied: copiedSql, copy: copySql } = useCopyFeedback();
   const { copied: copiedShareLink, copy: copyShareLink } = useCopyFeedback();
@@ -460,6 +464,27 @@ const ChatMessageItemBase: React.FC<ChatMessageItemProps> = ({
                       <span className="hidden sm:inline text-[11px]">SQL</span>
                     </>
                   )}
+                </button>
+              )}
+
+              {/* Abrir esta consulta en el informe BI nativo. Sin PHP ni iframe. */}
+              {result.traceability?.sql_executed && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigate(
+                      buildPowerBiUrl(
+                        result.connection_id ?? connectionId,
+                        result.traceability?.schema_tables_used?.[0],
+                      ),
+                    )
+                  }
+                  className="flex items-center space-x-1 px-2 py-1 rounded-lg text-app-muted hover:text-app-text hover:bg-app-hover transition-colors text-xs font-medium"
+                  title="Abrir estos datos en el informe Power BI"
+                  aria-label="Abrir en Power BI"
+                >
+                  <BarChart3 className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                  <span className="hidden sm:inline text-[11px]">Power BI</span>
                 </button>
               )}
             </div>

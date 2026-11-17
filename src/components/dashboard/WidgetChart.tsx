@@ -10,6 +10,11 @@ interface WidgetChartProps {
    * repinte el widget en cada tick.
    */
   option: any;
+  /**
+   * Eventos de ECharts (p. ej. `{ click: fn }`). Opcional para no obligar a
+   * los consumidores existentes a pasar nada.
+   */
+  onEvents?: Record<string, (params: Record<string, unknown>) => void>;
 }
 
 /**
@@ -19,12 +24,13 @@ interface WidgetChartProps {
  * dinámico: entrar a /chat sin abrir el tablero no descarga el chunk de
  * ECharts.
  */
-const WidgetChart: React.FC<WidgetChartProps> = ({ option }) => (
+const WidgetChart: React.FC<WidgetChartProps> = ({ option, onEvents }) => (
   <ReactEChartsCore
     echarts={echarts}
     option={option}
     style={{ height: '100%', width: '100%' }}
     opts={{ renderer: 'canvas' }}
+    onEvents={onEvents}
   />
 );
 

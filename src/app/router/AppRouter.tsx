@@ -18,6 +18,8 @@ const ChatDashboardPage = lazy(() => import('../../pages/ChatDashboardPage').the
 const SettingsPage = lazy(() => import('../../pages/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const AdminPage = lazy(() => import('../../pages/AdminPage').then((m) => ({ default: m.AdminPage })));
 const ProjectionsPage = lazy(() => import('../../pages/ProjectionsPage').then((m) => ({ default: m.ProjectionsPage })));
+const BIReportPage = lazy(() => import('../../pages/BIReportPage').then((m) => ({ default: m.BIReportPage })));
+const PanelsPage = lazy(() => import('../../pages/PanelsPage').then((m) => ({ default: m.PanelsPage })));
 
 const RouteFallback: React.FC = () => (
   <div className="flex items-center justify-center h-full min-h-[50vh] text-[var(--app-text)]">
@@ -34,6 +36,8 @@ const ROUTE_TITLES: Record<string, string> = {
   '/': 'Consultar',
   '/chat': 'Consultar',
   '/projections': 'Proyecciones',
+  '/powerbi': 'Power BI',
+  '/panels': 'Paneles',
   '/admin': 'Administración',
   '/settings': 'Opciones',
   '/login': 'Iniciar sesión',
@@ -215,6 +219,26 @@ export const AppRouter: React.FC = () => {
             <ProtectedLayout>
               <Suspense fallback={<RouteFallback />}>
                 <ProjectionsPage />
+              </Suspense>
+            </ProtectedLayout>
+          }
+        />
+        <Route
+          path="/powerbi"
+          element={
+            <ProtectedLayout>
+              <Suspense fallback={<RouteFallback />}>
+                <BIReportPage />
+              </Suspense>
+            </ProtectedLayout>
+          }
+        />
+        <Route
+          path="/panels"
+          element={
+            <ProtectedLayout>
+              <Suspense fallback={<RouteFallback />}>
+                <PanelsPage />
               </Suspense>
             </ProtectedLayout>
           }

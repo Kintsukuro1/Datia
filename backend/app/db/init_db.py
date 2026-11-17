@@ -2,6 +2,7 @@ import app.modules.auth.models  # noqa: F401 - registra el modelo en SQLAlchemy
 import app.modules.admin_catalog.models  # noqa: F401
 import app.modules.telemetry_audit.models  # noqa: F401
 import app.modules.chat_engine.models  # noqa: F401
+import app.modules.bi.models  # noqa: F401
 from sqlalchemy.orm import Session
 from app.core.database import Base, engine, ensure_schema_migrations
 from app.core.constants import (

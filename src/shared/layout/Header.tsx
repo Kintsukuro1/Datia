@@ -8,6 +8,8 @@ import {
   LogOut,
   LayoutDashboard,
   TrendingUp,
+  BarChart3,
+  PanelsTopLeft,
   Menu,
   X,
   Moon,
@@ -184,6 +186,34 @@ export const Header: React.FC = () => {
           <span>Proyecciones</span>
         </button>
 
+        <button
+          type="button"
+          aria-current={activePath === '/powerbi' ? 'page' : undefined}
+          onClick={() => navigate('/powerbi')}
+          className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-semibold transition-all ${
+            activePath === '/powerbi'
+              ? 'bg-brand-600 text-white shadow-sm'
+              : 'text-slate-600 dark:text-gray-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-dark-card/60'
+          }`}
+        >
+          <BarChart3 className="w-4 h-4" />
+          <span>Power BI</span>
+        </button>
+
+        <button
+          type="button"
+          aria-current={activePath === '/panels' ? 'page' : undefined}
+          onClick={() => navigate('/panels')}
+          className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-semibold transition-all ${
+            activePath === '/panels'
+              ? 'bg-brand-600 text-white shadow-sm'
+              : 'text-slate-600 dark:text-gray-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-dark-card/60'
+          }`}
+        >
+          <PanelsTopLeft className="w-4 h-4" />
+          <span>Paneles</span>
+        </button>
+
         {isPlatformAdmin(user) && (
           <button
             type="button"
@@ -340,6 +370,38 @@ export const Header: React.FC = () => {
                 >
                   <TrendingUp className="w-4 h-4" />
                   <span>Proyecciones</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigate('/powerbi');
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold text-left transition-colors ${
+                    activePath === '/powerbi'
+                      ? 'bg-brand-600 text-white'
+                      : 'text-slate-600 dark:text-gray-300 hover:bg-slate-100 dark:hover:bg-dark-card'
+                  }`}
+                >
+                  <BarChart3 className="w-4 h-4" />
+                  <span>Power BI</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigate('/panels');
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold text-left transition-colors ${
+                    activePath === '/panels'
+                      ? 'bg-brand-600 text-white'
+                      : 'text-slate-600 dark:text-gray-300 hover:bg-slate-100 dark:hover:bg-dark-card'
+                  }`}
+                >
+                  <PanelsTopLeft className="w-4 h-4" />
+                  <span>Paneles</span>
                 </button>
 
                 {isPlatformAdmin(user) && (

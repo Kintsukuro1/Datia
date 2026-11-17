@@ -6,6 +6,7 @@ from app.modules.admin_catalog.router import router as admin_catalog_router
 from app.modules.telemetry_audit.router import router as audit_router
 from app.modules.system.router import router as system_router
 from app.modules.ml_forecast.router import router as ml_router
+from app.modules.bi.router import router as bi_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router, prefix="/auth", tags=["Autenticación & Usuarios"])
@@ -15,3 +16,4 @@ api_router.include_router(admin_catalog_router, prefix="", tags=["Catálogo, Con
 api_router.include_router(audit_router, prefix="/audit", tags=["Auditoría & Compliance"])
 api_router.include_router(system_router, prefix="/system", tags=["Estado del Sistema"])
 api_router.include_router(ml_router, prefix="/ml", tags=["Proyecciones ML"])
+api_router.include_router(bi_router, prefix="/bi", tags=["Informe BI & Paneles"])

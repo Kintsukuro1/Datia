@@ -61,7 +61,8 @@ Punto de entrada único a la documentación del proyecto. Todos los enlaces son 
 2. [`21_MODELO_DE_DATOS.md`](21_MODELO_DE_DATOS.md) — tablas y relaciones.
 3. [`02_ARQUITECTURA_TECNICA.md`](02_ARQUITECTURA_TECNICA.md) — capas.
 4. [`24_PRUEBAS.md`](24_PRUEBAS.md) — suite y cómo agregar tests.
-5. [`../plans/README.md`](../plans/README.md) — planes de implementación.
+5. [`28_INFORME_BI_Y_PANELES.md`](28_INFORME_BI_Y_PANELES.md) — cómo funciona el informe BI y los paneles nativos (reemplazo del PHP).
+6. [`../plans/README.md`](../plans/README.md) — planes de implementación.
 
 ### Para operar
 
