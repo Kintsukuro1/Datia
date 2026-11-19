@@ -4,7 +4,9 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
-BIChartType = Literal["bar", "hbar", "line", "area", "pie", "kpi", "table"]
+BIChartType = Literal[
+    "bar", "hbar", "line", "area", "pie", "donut", "scatter", "stacked", "gauge", "kpi", "table"
+]
 BIAggregation = Literal["sum", "avg", "count", "count_distinct", "min", "max"]
 BIFilterOp = Literal["=", "!=", ">", "<", ">=", "<=", "contains"]
 BISort = Literal["value_desc", "value_asc", "label_asc", "label_desc"]
@@ -55,6 +57,11 @@ class BIVisualSpec(BaseModel):
     filters: List[BIFilter] = Field(default_factory=list, max_length=5)
     sort: BISort = "value_desc"
     limit: int = Field(20, ge=1, le=500)
+    # Segunda dimensión de agrupación para barras apiladas. `None` (default)
+    # para que los visuales guardados antes del campo sigan viéndose igual.
+    # La serie se deniega para no-admin si la columna es confidencial: ver
+    # `sql_builder.build_visual_sql`.
+    series: Optional[str] = Field(None, max_length=128)
     # Ancho del visual en la grilla del panel. Default "small" para que los
     # visuales guardados antes de este campo sigan viéndose igual.
     size: BISize = "small"
@@ -104,6 +111,58 @@ class BIVisualOut(BaseModel):
     position: int
     spec: BIVisualSpec
     created_at: str
+
+
+class BIPanelFilter(BaseModel):
+    """Filtro compartido de una pestaña del panel BI.
+
+    Declara base y tabla de destino porque una pestaña puede mezclar
+    visuales de varias tablas y bases: solo aplica a los visuales cuya
+    `connection_id` y `table` coincidan. La forma se valida aquí; la
+    gobernanza de la columna se aplica al EJECUTAR el visual, con los
+    permisos de hoy.
+    """
+
+    connection_id: int
+    table: str = Field(..., max_length=128)
+    column: str = Field(..., max_length=128)
+    op: BIFilterOp = "="
+    value: Union[str, int, float] = ""
+
+
+class BIPanelRename(BaseModel):
+    panel_name: str = Field(..., min_length=1, max_length=120)
+    new_name: str = Field(..., min_length=1, max_length=120)
+
+
+class BIPanelFiltersUpdate(BaseModel):
+    panel_name: str = Field(..., min_length=1, max_length=120)
+    filters: List[BIPanelFilter] = Field(default_factory=list, max_length=5)
+
+
+class BIPanelOut(BaseModel):
+    name: str
+    filters: List[BIPanelFilter] = Field(default_factory=list)
+
+
+class BISuggestRequest(BaseModel):
+    connection_id: int = Field(..., ge=1)
+    table: str = Field(..., min_length=1, max_length=128)
+
+
+class BISuggestion(BaseModel):
+    """Definición de visual propuesta por la IA, ya validada server-side.
+
+    Nada se guarda ni se ejecuta al sugerir: el usuario abre la sugerencia
+    en el constructor, la previsualiza y decide.
+    """
+
+    title: str = Field(..., min_length=1, max_length=255)
+    spec: BIVisualSpec
+
+
+class BISuggestionsOut(BaseModel):
+    suggestions: List[BISuggestion] = Field(default_factory=list, max_length=4)
 
 
 class BIConnectionRef(BaseModel):

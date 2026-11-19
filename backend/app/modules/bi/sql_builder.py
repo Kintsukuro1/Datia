@@ -16,7 +16,7 @@ from sqlglot import exp
 
 from app.modules.catalog.services.schema_inspector import quote_sql_identifier
 from app.modules.bi.governance import BIAccessDenied, BIColumnMeta, BITableMeta
-from app.modules.bi.schemas import BIVisualSpec
+from app.modules.bi.schemas import BIFilter, BIVisualSpec
 
 _INTEGER_RE = re.compile(r"^-?\d+$")
 
@@ -289,8 +289,15 @@ def build_visual_sql(
     spec: BIVisualSpec,
     blocked_columns: set,
     is_admin: bool,
+    panel_filters: Optional[Sequence[BIFilter]] = None,
 ) -> Tuple[str, bool]:
-    """Arma el SELECT agregado de un visual. Devuelve (sql, enmascarar_etiqueta)."""
+    """Arma el SELECT agregado de un visual. Devuelve (sql, enmascarar_etiqueta).
+
+    `panel_filters` son los filtros compartidos de la pestaña que ya
+    matchean la tabla/base de este visual: pasan por el MISMO `resolve` que
+    los filtros propios, así que una columna enmascarada de un no-admin se
+    deniega igual (fail-closed).
+    """
 
     def resolve(column_name: Optional[str], role: str, allow_masked: bool) -> Optional[BIColumnMeta]:
         if not column_name:
@@ -325,6 +332,22 @@ def build_visual_sql(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"'{dimension.name}' no es una columna de fecha.",
         )
+    series = None
+    if spec.series:
+        if dimension is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Para apilar por serie primero elige una columna de eje.",
+            )
+        # La serie se muestra en la leyenda: una columna confidencial se
+        # deniega para no-admin en vez de enmascararse etiqueta por etiqueta
+        # (mismo criterio que los filtros, más simple y más seguro).
+        series = resolve(spec.series, "serie", allow_masked=True)
+        if series is not None and series.masked and not is_admin:
+            raise BIAccessDenied(
+                f"La columna de serie '{series.name}' es confidencial: "
+                "elige otra columna para la serie."
+            )
     if measure and measure.masked and not is_admin and spec.aggregation not in (
         "count",
         "count_distinct",
@@ -352,33 +375,40 @@ def build_visual_sql(
         aggregation = "count"
     value_sql = measure_expr(measure.name if measure else None, aggregation)
 
-    conditions: List[str] = []
-    for item in spec.filters:
-        filter_column = resolve(item.column, "filtro", allow_masked=False)
-        if filter_column is None:
-            continue
-        if item.value in (None, ""):
-            # Un filtro recién agregado no debe romper la vista previa.
-            continue
-        if filter_column.kind == "number" and item.op != "contains":
-            try:
-                float(str(item.value))
-            except (TypeError, ValueError):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        f"El filtro de '{filter_column.name}' necesita un valor "
-                        "numérico."
-                    ),
-                )
-        column_sql = ident(filter_column.name)
-        if item.op == "contains":
-            pattern = sql_literal(f"%{item.value}%", "text")
-            conditions.append(f"CAST({column_sql} AS TEXT) ILIKE {pattern}")
-        else:
-            value = sql_literal(item.value, filter_column.kind)
-            conditions.append(f"{column_sql} {item.op} {value}")
-    where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    def filter_conditions(items: Sequence[BIFilter]) -> List[str]:
+        """Condiciones WHERE de una lista de filtros, validadas contra el esquema."""
+        conditions: List[str] = []
+        for item in items:
+            filter_column = resolve(item.column, "filtro", allow_masked=False)
+            if filter_column is None:
+                continue
+            if item.value in (None, ""):
+                # Un filtro recién agregado no debe romper la vista previa.
+                continue
+            if filter_column.kind == "number" and item.op != "contains":
+                try:
+                    float(str(item.value))
+                except (TypeError, ValueError):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            f"El filtro de '{filter_column.name}' necesita un valor "
+                            "numérico."
+                        ),
+                    )
+            column_sql = ident(filter_column.name)
+            if item.op == "contains":
+                pattern = sql_literal(f"%{item.value}%", "text")
+                conditions.append(f"CAST({column_sql} AS TEXT) ILIKE {pattern}")
+            else:
+                value = sql_literal(item.value, filter_column.kind)
+                conditions.append(f"{column_sql} {item.op} {value}")
+        return conditions
+
+    all_conditions = filter_conditions(spec.filters) + filter_conditions(
+        panel_filters or []
+    )
+    where_sql = f" WHERE {' AND '.join(all_conditions)}" if all_conditions else ""
 
     from_sql = ident(table.name)
     if dimension is None:
@@ -390,6 +420,21 @@ def build_visual_sql(
     dimension_sql = ident(dimension.name)
     if spec.date_grain:
         dimension_sql = date_bucket_expr(dimension_sql, spec.date_grain)
+    mask_label = bool(
+        dimension.masked and not is_admin and not spec.date_grain
+    )
+    if series is not None:
+        # Apiladas: agrupan por eje Y serie. El orden es fijo (eje, serie) para
+        # que el pivot del frontend sea determinista; `spec.sort` no aplica.
+        series_sql = f"CAST({ident(series.name)} AS TEXT)"
+        sql = (
+            f"SELECT {dimension_sql} AS label, {series_sql} AS series, "
+            f"{value_sql} AS value "
+            f"FROM {from_sql}{where_sql} "
+            f"GROUP BY {dimension_sql}, {series_sql} "
+            f"ORDER BY label ASC, series ASC LIMIT {int(spec.limit)}"
+        )
+        return sql, mask_label
     order_sql = {
         "value_desc": "value DESC",
         "value_asc": "value ASC",
@@ -400,8 +445,5 @@ def build_visual_sql(
         f"SELECT {dimension_sql} AS label, {value_sql} AS value "
         f"FROM {from_sql}{where_sql} "
         f"GROUP BY {dimension_sql} ORDER BY {order_sql} LIMIT {int(spec.limit)}"
-    )
-    mask_label = bool(
-        dimension.masked and not is_admin and not spec.date_grain
     )
     return sql, mask_label

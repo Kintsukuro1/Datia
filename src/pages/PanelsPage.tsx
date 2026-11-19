@@ -4,10 +4,13 @@ import {
   ArrowDown,
   ArrowUp,
   BarChart3,
+  CircleDot,
   Database,
   Download,
   Eye,
+  Gauge,
   Hash,
+  Layers,
   LineChart,
   Loader2,
   Mountain,
@@ -16,6 +19,9 @@ import {
   Plus,
   RefreshCw,
   Save,
+  ScatterChart,
+  SlidersHorizontal,
+  Sparkles,
   Table2,
   Trash2,
   X,
@@ -29,8 +35,11 @@ import {
   BIColumn,
   BIConnection,
   BIFilter,
+  BIPanel,
+  BIPanelFilter,
   BIQueryResult,
   BISchema,
+  BISuggestion,
   BIVisual,
   BIVisualSpec,
 } from '../features/bi/types';
@@ -38,6 +47,7 @@ import {
   AGGREGATIONS,
   FILTER_OPS,
   SORTS,
+  chartNeedsNoDimension,
   csvFilename,
   describeVisualSpec,
   emptyVisualSpec,
@@ -51,7 +61,11 @@ const CHART_TYPES: Array<{ id: BIChartType; label: string; icon: React.FC<{ clas
   { id: 'line', label: 'Líneas', icon: LineChart },
   { id: 'area', label: 'Área', icon: Mountain },
   { id: 'pie', label: 'Circular', icon: PieChart },
+  { id: 'donut', label: 'Dona', icon: CircleDot },
+  { id: 'scatter', label: 'Dispersión', icon: ScatterChart },
+  { id: 'stacked', label: 'Apiladas', icon: Layers },
   { id: 'kpi', label: 'Tarjeta', icon: Hash },
+  { id: 'gauge', label: 'Gauge', icon: Gauge },
   { id: 'table', label: 'Tabla', icon: Table2 },
 ];
 
@@ -204,12 +218,211 @@ const SavedVisualCard: React.FC<{
   );
 };
 
+// Filtros compartidos de la pestaña activa: cada uno declara base y tabla, y
+// el backend los mergea al ejecutar cada visual que coincida, con los
+// permisos de hoy. No aplican a la vista previa del constructor: ahí se edita
+// un visual, no el panel. Columnas confidenciales: ni se ofrecen (no-admin).
+const PanelFiltersBar: React.FC<{
+  connections: BIConnection[];
+  filters: BIPanelFilter[];
+  schemas: Record<number, BISchema>;
+  saving: boolean;
+  onChange: (filters: BIPanelFilter[]) => void;
+  onEnsureSchema: (connectionId: number) => Promise<BISchema | null>;
+  onSave: () => void;
+}> = ({ connections, filters, schemas, saving, onChange, onEnsureSchema, onSave }) => {
+  const update = (index: number, patch: Partial<BIPanelFilter>) =>
+    onChange(
+      filters.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    );
+
+  const setConnection = (index: number, connectionId: number) => {
+    void onEnsureSchema(connectionId).then((schema) => {
+      const table = schema?.tables[0];
+      update(index, {
+        connection_id: connectionId,
+        table: table?.name ?? '',
+        column: table?.columns.find((column) => !column.masked)?.name ?? '',
+      });
+    });
+  };
+
+  const setTable = (index: number, table: string, schema?: BISchema) => {
+    const columns =
+      schema?.tables.find((item) => item.name === table)?.columns ?? [];
+    update(index, {
+      table,
+      column: columns.find((column) => !column.masked)?.name ?? '',
+    });
+  };
+
+  const addFilter = () => {
+    if (filters.length >= 5) return;
+    const preferred = connections.find((c) => c.is_active) ?? connections[0];
+    if (!preferred) return;
+    void onEnsureSchema(preferred.id).then((schema) => {
+      const table = schema?.tables[0];
+      onChange([
+        ...filters,
+        {
+          connection_id: preferred.id,
+          table: table?.name ?? '',
+          column: table?.columns.find((column) => !column.masked)?.name ?? '',
+          op: '=',
+          value: '',
+        },
+      ]);
+    });
+  };
+
+  return (
+    <div className="rounded-2xl border border-app-border bg-app-card p-3 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[11px] text-app-muted">
+          Filtros de la pestaña: aplican a todos los visuales cuya base y tabla coincidan.
+        </p>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={addFilter}
+            disabled={!connections.length || filters.length >= 5}
+            className="text-[11px] font-semibold text-brand-600 disabled:opacity-40"
+          >
+            + Agregar filtro
+          </button>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-brand-600 text-white text-[11px] font-semibold hover:bg-brand-700 disabled:opacity-40"
+          >
+            {saving ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <Save className="w-3 h-3" />
+            )}
+            Guardar filtros
+          </button>
+        </div>
+      </div>
+      {filters.length === 0 ? (
+        <p className="text-[11px] text-app-muted">
+          Sin filtros compartidos: cada visual usa solo sus filtros propios.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {filters.map((filter, index) => {
+            const schema = schemas[filter.connection_id];
+            const columns =
+              schema?.tables.find((table) => table.name === filter.table)
+                ?.columns ?? [];
+            return (
+              <div
+                key={index}
+                className="grid grid-cols-2 lg:grid-cols-[1.4fr_1.4fr_1.4fr_90px_1fr_auto] gap-1"
+              >
+                <select
+                  aria-label="Base del filtro de pestaña"
+                  className={inputCls}
+                  value={filter.connection_id || ''}
+                  onChange={(event) =>
+                    setConnection(index, Number(event.target.value))
+                  }
+                >
+                  <option value="">Base…</option>
+                  {connections.map((connection) => (
+                    <option key={connection.id} value={connection.id}>
+                      {connection.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Tabla del filtro de pestaña"
+                  className={inputCls}
+                  value={filter.table}
+                  disabled={!schema}
+                  onChange={(event) => setTable(index, event.target.value, schema)}
+                >
+                  <option value="">{schema ? 'Tabla…' : 'Cargando…'}</option>
+                  {schema?.tables.map((table) => (
+                    <option key={table.name} value={table.name}>
+                      {table.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Columna del filtro de pestaña"
+                  className={inputCls}
+                  value={filter.column}
+                  disabled={!columns.length}
+                  onChange={(event) => update(index, { column: event.target.value })}
+                >
+                  <option value="">Columna…</option>
+                  {columns
+                    .filter((column) => !column.masked)
+                    .map((column) => (
+                      <option key={column.name} value={column.name}>
+                        {column.name}
+                      </option>
+                    ))}
+                </select>
+                <select
+                  aria-label="Condición del filtro de pestaña"
+                  className={inputCls}
+                  value={filter.op}
+                  onChange={(event) =>
+                    update(index, { op: event.target.value as BIPanelFilter['op'] })
+                  }
+                >
+                  {FILTER_OPS.map((operator) => (
+                    <option key={operator.id} value={operator.id}>
+                      {operator.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  aria-label="Valor del filtro de pestaña"
+                  className={inputCls}
+                  value={filter.value}
+                  placeholder="valor"
+                  onChange={(event) => update(index, { value: event.target.value })}
+                />
+                <button
+                  type="button"
+                  aria-label="Quitar filtro de pestaña"
+                  className="px-1.5 text-app-muted hover:text-rose-500"
+                  onClick={() =>
+                    onChange(filters.filter((_, itemIndex) => itemIndex !== index))
+                  }
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const PanelsPage: React.FC = () => {
   const { notify } = useNotifications();
   const [connections, setConnections] = useState<BIConnection[]>([]);
   const [visuals, setVisuals] = useState<BIVisual[]>([]);
+  const [panels, setPanels] = useState<BIPanel[]>([]);
   const [activePanel, setActivePanel] = useState('Mi panel');
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Gestión de pestañas: renombrar en línea, borrar y filtros compartidos.
+  const [renamingPanel, setRenamingPanel] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [showPanelFilters, setShowPanelFilters] = useState(false);
+  const [panelFiltersDraft, setPanelFiltersDraft] = useState<BIPanelFilter[]>([]);
+  const [panelSchemas, setPanelSchemas] = useState<Record<number, BISchema>>({});
+  const [savingPanelFilters, setSavingPanelFilters] = useState(false);
 
   const [builderOpen, setBuilderOpen] = useState(false);
   const [editing, setEditing] = useState<BIVisual | null>(null);
@@ -229,9 +442,22 @@ export const PanelsPage: React.FC = () => {
   const [dragOverId, setDragOverId] = useState<number | null>(null);
   const previewRequest = useRef(0);
 
+  // Sugerencias IA dentro del constructor.
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestions, setSuggestions] = useState<BISuggestion[]>([]);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+
   const loadVisuals = useCallback(async () => {
     try {
       setVisuals(await biService.listVisuals());
+    } catch (err) {
+      notify('error', getApiErrorMessage(err, 'No se pudieron cargar tus paneles.'));
+    }
+  }, [notify]);
+
+  const loadPanels = useCallback(async () => {
+    try {
+      setPanels(await biService.listPanels());
     } catch (err) {
       notify('error', getApiErrorMessage(err, 'No se pudieron cargar tus paneles.'));
     }
@@ -244,15 +470,30 @@ export const PanelsPage: React.FC = () => {
       } catch (err) {
         notify('error', getApiErrorMessage(err, 'No se pudieron cargar las bases de datos.'));
       }
+      void loadPanels();
       void loadVisuals();
     })();
-  }, [notify, loadVisuals]);
+  }, [notify, loadPanels, loadVisuals]);
 
   const panelNames = useMemo(() => {
-    const names = Array.from(new Set(visuals.map((visual) => visual.panel_name)));
+    // Unión defensiva: el backend ya une filas de `bi_panels` con los nombres
+    // de los visuales, pero visuals y panels cargan por separado.
+    const names = Array.from(
+      new Set([
+        ...panels.map((panel) => panel.name),
+        ...visuals.map((visual) => visual.panel_name),
+      ]),
+    );
     if (!names.includes(activePanel)) names.unshift(activePanel);
     return names;
-  }, [visuals, activePanel]);
+  }, [panels, visuals, activePanel]);
+
+  // Al cambiar de pestaña (o al recargar la lista), el borrador de filtros
+  // arranca desde lo que tiene guardado la pestaña activa.
+  useEffect(() => {
+    const current = panels.find((panel) => panel.name === activePanel);
+    setPanelFiltersDraft(current?.filters ?? []);
+  }, [activePanel, panels]);
 
   const panelVisuals = useMemo(
     () =>
@@ -263,6 +504,8 @@ export const PanelsPage: React.FC = () => {
   );
   const connectionName = (id: number) =>
     connections.find((connection) => connection.id === id)?.name ?? `Base ${id}`;
+  const activeFilterCount =
+    panels.find((panel) => panel.name === activePanel)?.filters.length ?? 0;
 
   const selectConnection = async (id: number, preset?: BIVisualSpec) => {
     setSpec(emptyVisualSpec(id));
@@ -320,7 +563,7 @@ export const PanelsPage: React.FC = () => {
 
   useEffect(() => {
     if (!builderOpen || !spec.connection_id || !spec.table) return;
-    if (spec.chart_type !== 'kpi' && !spec.dimension) {
+    if (!chartNeedsNoDimension(spec.chart_type) && !spec.dimension) {
       setPreview(null);
       setPreviewError(null);
       return;
@@ -331,7 +574,7 @@ export const PanelsPage: React.FC = () => {
       setPreviewError(null);
       try {
         const result = await biService.preview(
-          spec.chart_type === 'kpi' ? { ...spec, dimension: null } : spec,
+          chartNeedsNoDimension(spec.chart_type) ? { ...spec, dimension: null } : spec,
         );
         if (requestId === previewRequest.current) setPreview(result);
       } catch (err) {
@@ -352,7 +595,11 @@ export const PanelsPage: React.FC = () => {
     setSaving(true);
     try {
       const toSave =
-        spec.chart_type === 'kpi' ? { ...spec, dimension: null } : spec;
+        chartNeedsNoDimension(spec.chart_type)
+          ? { ...spec, dimension: null, series: null }
+          : spec.chart_type === 'stacked'
+            ? spec
+            : { ...spec, series: null };
       const body: BIVisualCreateBody = {
         title: finalTitle,
         panel_name: finalPanel,
@@ -442,7 +689,120 @@ export const PanelsPage: React.FC = () => {
     setIsCreatingPanel(false);
   };
 
-  const canPreview = Boolean(spec.table) && (spec.chart_type === 'kpi' || Boolean(spec.dimension));
+  // La pestaña activa "existe" si tiene fila propia, visuales o ambos. Una
+  // pestaña recién nombrada (sin guardar nada) es un fantasma local: renombrar
+  // o eliminarla daría 404 del servidor.
+  const activePanelExists =
+    panels.some((panel) => panel.name === activePanel) ||
+    visuals.some((visual) => visual.panel_name === activePanel);
+
+  const startRename = () => {
+    setRenameValue(activePanel);
+    setRenamingPanel(true);
+  };
+
+  const doRename = async () => {
+    const newName = renameValue.trim().slice(0, 120);
+    setRenamingPanel(false);
+    if (!newName || newName === activePanel) return;
+    try {
+      setPanels(await biService.renamePanel(activePanel, newName));
+      setActivePanel(newName);
+      await loadVisuals();
+      notify('success', `La pestaña ahora se llama "${newName}".`);
+    } catch (err) {
+      notify('error', getApiErrorMessage(err, 'No se pudo renombrar la pestaña.'));
+    }
+  };
+
+  const doDeletePanel = async () => {
+    if (
+      !window.confirm(
+        `¿Eliminar la pestaña "${activePanel}" con todos sus visuales y filtros?`,
+      )
+    )
+      return;
+    try {
+      await biService.deletePanel(activePanel);
+      const remaining = panelNames.filter((name) => name !== activePanel);
+      setActivePanel(remaining[0] ?? 'Mi panel');
+      await Promise.all([loadPanels(), loadVisuals()]);
+      notify('success', `Pestaña "${activePanel}" eliminada.`);
+    } catch (err) {
+      notify('error', getApiErrorMessage(err, 'No se pudo eliminar la pestaña.'));
+    }
+  };
+
+  const ensurePanelSchema = useCallback(
+    async (connectionId: number): Promise<BISchema | null> => {
+      const cached = panelSchemas[connectionId];
+      if (cached) return cached;
+      try {
+        const schema = await biService.getSchema(connectionId);
+        setPanelSchemas((current) => ({ ...current, [connectionId]: schema }));
+        return schema;
+      } catch (err) {
+        notify(
+          'error',
+          getApiErrorMessage(err, 'No se pudo leer la estructura de la base.'),
+        );
+        return null;
+      }
+    },
+    [panelSchemas, notify],
+  );
+
+  const savePanelFilters = async () => {
+    setSavingPanelFilters(true);
+    try {
+      setPanels(await biService.updatePanelFilters(activePanel, panelFiltersDraft));
+      // Recalcula todas las tarjetas: cada una re-ejecuta con el merge nuevo.
+      setRefreshKey((key) => key + 1);
+      notify('success', 'Filtros de la pestaña guardados.');
+    } catch (err) {
+      notify(
+        'error',
+        getApiErrorMessage(err, 'No se pudieron guardar los filtros de la pestaña.', true),
+      );
+    } finally {
+      setSavingPanelFilters(false);
+    }
+  };
+
+  const canPreview =
+    Boolean(spec.table) &&
+    (chartNeedsNoDimension(spec.chart_type) || Boolean(spec.dimension));
+
+  // --- Sugerencias IA: el backend valida cada spec contra el esquema
+  // autorizado; aquí solo se muestra lo que volvió y se precarga el
+  // constructor al hacer clic. Nada se guarda sin acción del usuario.
+  const runSuggest = async () => {
+    if (!spec.connection_id || !spec.table) return;
+    setSuggesting(true);
+    setSuggestError(null);
+    setSuggestions([]);
+    try {
+      const out = await biService.suggestVisuals(spec.connection_id, spec.table);
+      setSuggestions(out.suggestions);
+      if (!out.suggestions.length) {
+        setSuggestError('La IA no encontró visualizaciones útiles para esta tabla.');
+      }
+    } catch (err) {
+      setSuggestError(
+        getApiErrorMessage(err, 'No se pudieron generar sugerencias.', true),
+      );
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  const applySuggestion = (suggestion: BISuggestion) => {
+    // La sugerencia viene validada para la conexión y tabla actuales.
+    setSpec({ ...suggestion.spec, connection_id: spec.connection_id, table: spec.table });
+    setTitle(suggestion.title);
+    setSuggestions([]);
+    setSuggestError(null);
+  };
   const maskedMeasure = Boolean(measureCol?.masked && !schema?.is_admin);
   const aggregationOptions = AGGREGATIONS.filter(
     (aggregation) => !aggregation.numericOnly || measureCol?.kind === 'number',
@@ -536,6 +896,85 @@ export const PanelsPage: React.FC = () => {
           )}
         </div>
 
+        {renamingPanel ? (
+          <div className="flex items-center gap-1">
+            <input
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void doRename();
+                if (event.key === 'Escape') setRenamingPanel(false);
+              }}
+              placeholder="Nombre nuevo de la pestaña"
+              aria-label="Nombre nuevo de la pestaña"
+              maxLength={120}
+              autoFocus
+              className="rounded-full border border-app-border bg-app-surface px-3 py-1.5 text-xs text-app-text focus:outline-none focus:ring-2 focus:ring-brand-500"
+            />
+            <button
+              type="button"
+              onClick={() => void doRename()}
+              className="px-3 py-1.5 rounded-full bg-brand-600 text-white text-xs font-semibold"
+            >
+              Renombrar
+            </button>
+            <button
+              type="button"
+              onClick={() => setRenamingPanel(false)}
+              aria-label="Cancelar renombrado"
+              className="p-1.5 rounded-full text-app-muted hover:bg-app-hover"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={startRename}
+              disabled={!activePanelExists}
+              title="Renombrar la pestaña activa"
+              aria-label="Renombrar la pestaña activa"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-app-border text-[11px] font-semibold text-app-text hover:bg-app-hover disabled:opacity-40"
+            >
+              <Pencil className="w-3.5 h-3.5" /> Renombrar
+            </button>
+            <button
+              type="button"
+              onClick={() => void doDeletePanel()}
+              disabled={!activePanelExists}
+              title="Eliminar la pestaña activa, con todos sus visuales y filtros"
+              aria-label="Eliminar la pestaña activa"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-app-border text-[11px] font-semibold text-app-text hover:bg-rose-500/10 hover:text-rose-500 disabled:opacity-40"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Eliminar
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowPanelFilters((value) => !value)}
+              title="Filtros compartidos de la pestaña activa"
+              aria-label="Filtros compartidos de la pestaña activa"
+              aria-expanded={showPanelFilters}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-app-border text-[11px] font-semibold text-app-text hover:bg-app-hover"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" /> Filtros
+              {activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+            </button>
+          </div>
+        )}
+
+        {showPanelFilters && (
+          <PanelFiltersBar
+            connections={connections}
+            filters={panelFiltersDraft}
+            schemas={panelSchemas}
+            saving={savingPanelFilters}
+            onChange={setPanelFiltersDraft}
+            onEnsureSchema={ensurePanelSchema}
+            onSave={() => void savePanelFilters()}
+          />
+        )}
+
         {builderOpen && (
           <div className="rounded-2xl border border-brand-500/40 bg-app-card p-4 shadow-sm">
             <div className="flex items-center justify-between mb-1">
@@ -610,6 +1049,51 @@ export const PanelsPage: React.FC = () => {
                   </select>
                 </div>
 
+                {spec.table && (
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => void runSuggest()}
+                      disabled={suggesting}
+                      className="flex items-center gap-1.5 w-full px-3 py-2 rounded-lg border border-brand-500/40 text-[11px] font-semibold text-brand-600 dark:text-brand-300 hover:bg-brand-500/10 disabled:opacity-40"
+                    >
+                      {suggesting ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      {suggesting ? 'Pensando…' : 'Sugerir visuales (IA local)'}
+                    </button>
+                    {suggestError && (
+                      <p className="mt-1 text-[10px] text-rose-600 dark:text-rose-400">
+                        {suggestError}
+                      </p>
+                    )}
+                    {suggestions.length > 0 && (
+                      <div className="mt-1.5 space-y-1">
+                        {suggestions.map((suggestion) => (
+                          <button
+                            key={`${suggestion.title}|${suggestion.spec.chart_type}|${suggestion.spec.dimension ?? ''}`}
+                            type="button"
+                            onClick={() => applySuggestion(suggestion)}
+                            title="Cargar en el constructor"
+                            className="block w-full text-left px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] hover:bg-app-hover"
+                          >
+                            <span className="font-semibold text-app-text">{suggestion.title}</span>
+                            <span className="text-app-muted">
+                              {' · '}
+                              {describeVisualSpec(suggestion.spec)}
+                            </span>
+                          </button>
+                        ))}
+                        <p className="text-[10px] text-app-muted">
+                          Toca una sugerencia para cargarla; se guarda solo si tú decides.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div>
                   <span className={labelCls}>3. Tipo de visual</span>
                   <div className="grid grid-cols-4 gap-1.5">
@@ -621,6 +1105,10 @@ export const PanelsPage: React.FC = () => {
                           update({
                             chart_type: id,
                             sort: id === 'line' || id === 'area' ? 'label_asc' : spec.sort,
+                            // La serie solo tiene sentido apilada: al cambiar
+                            // de tipo se limpia para no guardar un spec que el
+                            // backend agruparía por serie sin querer.
+                            series: id === 'stacked' ? (spec.series ?? null) : null,
                           })
                         }
                         aria-pressed={spec.chart_type === id}
@@ -664,7 +1152,7 @@ export const PanelsPage: React.FC = () => {
                   </div>
                 </div>
 
-                {spec.chart_type !== 'kpi' && (
+                {spec.chart_type !== 'kpi' && spec.chart_type !== 'gauge' && (
                   <div>
                     <label className={labelCls} htmlFor="bi-dim">5. Eje / categoría</label>
                     <select
@@ -710,9 +1198,37 @@ export const PanelsPage: React.FC = () => {
                   </div>
                 )}
 
+                {spec.chart_type === 'stacked' && (
+                  <div>
+                    <label className={labelCls} htmlFor="bi-series">6. Serie (apilado)</label>
+                    <select
+                      id="bi-series"
+                      className={inputCls}
+                      value={spec.series ?? ''}
+                      disabled={!spec.table}
+                      onChange={(event) => update({ series: event.target.value || null })}
+                    >
+                      <option value="">Sin serie (barras simples)</option>
+                      {columns.filter((column) => !column.masked).map((column) => (
+                        <option key={column.name} value={column.name}>
+                          {column.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[10px] text-app-muted">
+                      Segunda dimensión: cada categoría se parte por esta columna.
+                    </p>
+                  </div>
+                )}
+
                 <div>
                   <label className={labelCls} htmlFor="bi-measure">
-                    {spec.chart_type === 'kpi' ? '5' : '6'}. Valor
+                    {spec.chart_type === 'kpi' || spec.chart_type === 'gauge'
+                      ? '5'
+                      : spec.chart_type === 'stacked'
+                        ? '7'
+                        : '6'}
+                    . Valor
                   </label>
                   <div className="grid grid-cols-2 gap-1.5">
                     <select
@@ -845,22 +1361,35 @@ export const PanelsPage: React.FC = () => {
                   </div>
                 </div>
 
-                {spec.chart_type !== 'kpi' && (
+                {spec.chart_type !== 'kpi' && spec.chart_type !== 'gauge' && (
                   <div className="grid grid-cols-[1fr_90px] gap-1.5">
                     <div>
-                      <label className={labelCls} htmlFor="bi-sort">Orden</label>
-                      <select
-                        id="bi-sort"
-                        className={inputCls}
-                        value={spec.sort}
-                        onChange={(event) =>
-                          update({ sort: event.target.value as BIVisualSpec['sort'] })
-                        }
-                      >
-                        {SORTS.map((sort) => (
-                          <option key={sort.id} value={sort.id}>{sort.label}</option>
-                        ))}
-                      </select>
+                      {spec.chart_type === 'stacked' ? (
+                        // El SQL apilado ordena por eje y serie para que el
+                        // pivot del render sea determinista; `sort` no aplica.
+                        <>
+                          <span className={labelCls}>Orden</span>
+                          <p className="text-[10px] text-app-muted">
+                            El apilado se ordena por eje y serie.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <label className={labelCls} htmlFor="bi-sort">Orden</label>
+                          <select
+                            id="bi-sort"
+                            className={inputCls}
+                            value={spec.sort}
+                            onChange={(event) =>
+                              update({ sort: event.target.value as BIVisualSpec['sort'] })
+                            }
+                          >
+                            {SORTS.map((sort) => (
+                              <option key={sort.id} value={sort.id}>{sort.label}</option>
+                            ))}
+                          </select>
+                        </>
+                      )}
                     </div>
                     <div>
                       <label className={labelCls} htmlFor="bi-limit">Máx. filas</label>
@@ -895,7 +1424,9 @@ export const PanelsPage: React.FC = () => {
                   ) : preview ? (
                     <div className={previewLoading ? 'opacity-60 transition-opacity' : ''}>
                       <VisualRenderer
-                        spec={spec.chart_type === 'kpi' ? { ...spec, dimension: null } : spec}
+                        spec={chartNeedsNoDimension(spec.chart_type)
+                          ? { ...spec, dimension: null }
+                          : spec}
                         result={preview}
                         height={300}
                       />

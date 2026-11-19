@@ -2,7 +2,7 @@ import React from 'react';
 import { BIChart } from './BIChart';
 import { BIQueryResult, BIRow, BIVisualSpec } from '../types';
 import { formatNumber } from '../report_logic';
-import { PALETTE, describeVisualSpec } from '../panels_logic';
+import { PALETTE, describeVisualSpec, rowsToStacked } from '../panels_logic';
 
 const isDark = (): boolean =>
   typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
@@ -97,7 +97,7 @@ const lineOption = (rows: BIRow[], area: boolean): Record<string, unknown> => {
   };
 };
 
-const pieOption = (rows: BIRow[]): Record<string, unknown> => {
+const pieOption = (rows: BIRow[], donut: boolean): Record<string, unknown> => {
   const colors = theme();
   return {
     color: PALETTE,
@@ -107,7 +107,7 @@ const pieOption = (rows: BIRow[]): Record<string, unknown> => {
     series: [
       {
         type: 'pie',
-        radius: ['40%', '68%'],
+        radius: donut ? ['52%', '78%'] : ['40%', '68%'],
         center: ['50%', '44%'],
         itemStyle: { borderRadius: 6, borderColor: colors.card, borderWidth: 2 },
         label: { show: false },
@@ -115,6 +115,95 @@ const pieOption = (rows: BIRow[]): Record<string, unknown> => {
           name: String(row.label ?? ''),
           value: typeof row.value === 'number' ? row.value : Number(row.value) || 0,
         })),
+      },
+    ],
+  };
+};
+
+const scatterOption = (rows: BIRow[]): Record<string, unknown> => {
+  const colors = theme();
+  const { labels, values } = labelsAndValues(rows);
+  return {
+    color: [PALETTE[0]],
+    textStyle: { fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif', color: colors.text },
+    tooltip: { trigger: 'item', valueFormatter: (value: number) => formatNumber(value, 2) },
+    grid: { left: 8, right: 16, top: 16, bottom: 8, containLabel: true },
+    xAxis: {
+      type: 'category',
+      data: labels,
+      axisLabel: { color: colors.text, fontSize: 10, hideOverlap: true },
+      axisLine: { lineStyle: { color: colors.grid } },
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: { color: colors.text, fontSize: 10, formatter: (value: number) => formatNumber(value, 2) },
+      splitLine: { lineStyle: { color: colors.grid } },
+    },
+    series: [{ type: 'scatter', data: values, symbolSize: 10 }],
+  };
+};
+
+const stackedOption = (rows: BIRow[]): Record<string, unknown> => {
+  const colors = theme();
+  const { labels, seriesNames, cells } = rowsToStacked(rows);
+  return {
+    color: PALETTE,
+    textStyle: { fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif', color: colors.text },
+    tooltip: { trigger: 'axis', valueFormatter: (value: number) => formatNumber(value, 2) },
+    legend: { type: 'scroll', bottom: 0, textStyle: { color: colors.text, fontSize: 10 } },
+    grid: { left: 8, right: 12, top: 12, bottom: 28, containLabel: true },
+    xAxis: {
+      type: 'category',
+      data: labels,
+      axisLabel: { color: colors.text, fontSize: 10, hideOverlap: true },
+      axisLine: { lineStyle: { color: colors.grid } },
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: { color: colors.text, fontSize: 10, formatter: (value: number) => formatNumber(value, 2) },
+      splitLine: { lineStyle: { color: colors.grid } },
+    },
+    series: seriesNames.map((name, index) => ({
+      name,
+      type: 'bar',
+      stack: 'total',
+      data: cells.map((cell) => cell[index]),
+      barMaxWidth: 28,
+      // Solo la última serie lleva esquinas redondeadas: en apilado se ve
+      // como una sola barra.
+      itemStyle: { borderRadius: index === seriesNames.length - 1 ? [6, 6, 0, 0] : 0 },
+    })),
+  };
+};
+
+const gaugeOption = (value: number): Record<string, unknown> => {
+  const colors = theme();
+  // Sin una meta de referencia, el arco es decorativo: la escala deja un 25 %
+  // de aire para que la aguja no vaya siempre clavada al fondo.
+  const max = Math.max(Math.abs(value), 1) * 1.25;
+  return {
+    textStyle: { fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif', color: colors.text },
+    series: [
+      {
+        type: 'gauge',
+        startAngle: 210,
+        endAngle: -30,
+        min: 0,
+        max,
+        progress: { show: true, width: 14, itemStyle: { color: PALETTE[0] } },
+        axisLine: { lineStyle: { width: 14, color: [[1, colors.grid]] } },
+        pointer: { show: false },
+        axisTick: { show: false },
+        splitLine: { show: false },
+        axisLabel: { show: false },
+        anchor: { show: false },
+        detail: {
+          fontSize: 22,
+          color: colors.text,
+          offsetCenter: [0, 0],
+          formatter: (v: number) => formatNumber(v, 2),
+        },
+        data: [{ value }],
       },
     ],
   };
@@ -138,10 +227,26 @@ export const VisualRenderer: React.FC<{
     );
   }
 
-  if (spec.chart_type === 'kpi' || !spec.dimension) {
+  if (spec.chart_type === 'gauge' || spec.chart_type === 'kpi' || !spec.dimension) {
     const total = spec.dimension
       ? rows.reduce((sum, row) => sum + (typeof row.value === 'number' ? row.value : Number(row.value) || 0), 0)
       : rows[0]?.value;
+    if (spec.chart_type === 'gauge') {
+      return (
+        <div className="space-y-1">
+          <BIChart
+            option={gaugeOption(typeof total === 'number' ? total : Number(total) || 0)}
+            height={height}
+            ariaLabel={describeVisualSpec(spec)}
+          />
+          {result.masked_label && (
+            <div className="text-[10px] text-amber-600 dark:text-amber-300">
+              Etiqueta enmascarada por tu perfil.
+            </div>
+          )}
+        </div>
+      );
+    }
     return (
       <div className="flex flex-col items-center justify-center text-center" style={{ height }}>
         <div className="text-4xl font-extrabold text-brand-600 dark:text-brand-300 tabular-nums">
@@ -188,11 +293,15 @@ export const VisualRenderer: React.FC<{
   }
 
   const option =
-    spec.chart_type === 'pie'
-      ? pieOption(rows)
+    spec.chart_type === 'pie' || spec.chart_type === 'donut'
+      ? pieOption(rows, spec.chart_type === 'donut')
       : spec.chart_type === 'line' || spec.chart_type === 'area'
         ? lineOption(rows, spec.chart_type === 'area')
-        : barOption(rows, spec.chart_type === 'hbar');
+        : spec.chart_type === 'scatter'
+          ? scatterOption(rows)
+          : spec.chart_type === 'stacked'
+            ? stackedOption(rows)
+            : barOption(rows, spec.chart_type === 'hbar');
 
   return (
     <div className="space-y-1">

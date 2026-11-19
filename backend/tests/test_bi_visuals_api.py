@@ -559,6 +559,72 @@ class TestBIVisualsApi(unittest.TestCase):
         self.assertEqual(updated.status_code, 200, updated.text)
         self.assertEqual(updated.json()["spec"]["size"], "full")
 
+    def test_preview_stacked_groups_by_dimension_and_series(self):
+        response = self.client.post(
+            f"{URL}/query",
+            json=self._spec(
+                chart_type="stacked", dimension="categoria", series="ejecutivo"
+            ),
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        rows = response.json()["rows"]
+        self.assertTrue(rows)
+        self.assertTrue(all("series" in row for row in rows))
+        # 6 combinaciones reales: Ana solo Software, Luis solo Servicios, y
+        # Marta y Pedro cruzan de categoria entre enero y febrero.
+        self.assertEqual(len(rows), 6)
+        by_pair = {(row["label"], row["series"]): row["value"] for row in rows}
+        self.assertEqual(by_pair[("Software", "Ana")], 3)
+        self.assertEqual(by_pair[("Software", "Pedro")], 4)
+        self.assertEqual(by_pair[("Servicios", "Pedro")], 4)
+        # El SQL auditado agrupa por eje y serie.
+        self.assertIn("series", response.json()["sql"])
+
+    def test_preview_stacked_denies_masked_series_for_non_admin(self):
+        response = self.client.post(
+            f"{URL}/query",
+            json=self._spec(chart_type="stacked", series="monto"),
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 403, response.text)
+
+    def test_preview_stacked_requires_dimension(self):
+        response = self.client.post(
+            f"{URL}/query",
+            json=self._spec(
+                chart_type="stacked", dimension=None, series="ejecutivo"
+            ),
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+
+    def test_new_chart_types_persist_and_recalculate(self):
+        specs = {
+            "gauge": self._spec(chart_type="gauge", dimension=None),
+            "donut": self._spec(chart_type="donut"),
+            "scatter": self._spec(chart_type="scatter"),
+        }
+        for chart_type, spec in specs.items():
+            created = self.client.post(
+                f"{URL}/visuals",
+                json={
+                    "title": f"Tipo {chart_type}",
+                    "panel_name": "Tipos nuevos",
+                    "spec": spec,
+                },
+                headers=self.headers,
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            self.assertEqual(created.json()["spec"]["chart_type"], chart_type)
+
+            data = self.client.post(
+                f"{URL}/visuals/{created.json()['id']}/data",
+                headers=self.headers,
+            )
+            self.assertEqual(data.status_code, 200, data.text)
+            self.assertTrue(data.json()["rows"])
+
     def test_create_rejects_invalid_table(self):
         response = self.client.post(
             f"{URL}/visuals",

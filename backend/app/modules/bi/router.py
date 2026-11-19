@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import AuditWriteError, get_current_user, get_db
@@ -15,9 +15,14 @@ from app.modules.bi.report_service import build_report
 from app.modules.bi.schemas import (
     BIColumn,
     BIConnectionOut,
+    BIPanelFiltersUpdate,
+    BIPanelOut,
+    BIPanelRename,
     BIQueryResult,
     BIReportResponse,
     BISchemaResponse,
+    BISuggestRequest,
+    BISuggestionsOut,
     BITable,
     BIVisualCreate,
     BIVisualOut,
@@ -27,13 +32,18 @@ from app.modules.bi.schemas import (
 )
 from app.modules.bi.visual_service import (
     create_visual,
+    delete_panel,
     delete_visual,
     get_visual_data,
+    list_panels,
     list_visuals,
     preview_visual,
+    rename_panel,
     reorder_visuals,
+    update_panel_filters,
     update_visual,
 )
+from app.modules.bi.suggest_service import suggest_visuals
 
 router = APIRouter()
 
@@ -228,3 +238,74 @@ def delete_bi_visual(
     """Borra un visual del usuario actual."""
     delete_visual(db, current_user, visual_id)
     return {"success": True}
+
+
+# --- Paneles (pestañas) ----------------------------------------------------------
+# Las rutas literales (`rename`, `filters`) se registran ANTES que la ruta con
+# parámetro `{panel_name}`, por el mismo criterio documentado en
+# `PUT /visuals/positions`. Son metadata del propio usuario: no consultan la
+# base corporativa y no generan fila de auditoría (precedente `reorder`); las
+# consultas que sí tocan datos siguen auditándose visual por visual con el SQL
+# real, que incluye las condiciones mergeadas del panel.
+
+
+@router.get("/panels", response_model=List[BIPanelOut])
+def get_bi_panels(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> List[BIPanelOut]:
+    """Pestañas del usuario actual, cada una con sus filtros compartidos."""
+    return list_panels(db, current_user)
+
+
+@router.patch("/panels/rename", response_model=List[BIPanelOut])
+def rename_bi_panel(
+    body: BIPanelRename,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> List[BIPanelOut]:
+    """Renombra una pestaña y mueve el string de sus visuales en una transacción."""
+    return rename_panel(db, current_user, body)
+
+
+@router.put("/panels/filters", response_model=List[BIPanelOut])
+def update_bi_panel_filters(
+    body: BIPanelFiltersUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> List[BIPanelOut]:
+    """Guarda los filtros compartidos de una pestaña (máximo 5)."""
+    return update_panel_filters(db, current_user, body)
+
+
+@router.delete("/panels/{panel_name}")
+def delete_bi_panel(
+    panel_name: str = Path(..., max_length=120),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Borra una pestaña con todos sus visuales y filtros."""
+    delete_panel(db, current_user, panel_name)
+    return {"success": True}
+
+
+@router.post("/suggest-visuals", response_model=BISuggestionsOut)
+async def suggest_bi_visuals(
+    body: BISuggestRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> BISuggestionsOut:
+    """Sugerencias de visuales para una tabla, validadas contra el esquema autorizado.
+
+    La IA no decide: cada sugerencia se valida con el MISMO constructor de
+    SQL que usará el visual, y aquí no se guarda ni se ejecuta nada. Sin IA
+    local disponible responde 503, sin sugerencias falsas. No consulta la
+    base corporativa ni devuelve filas: no genera fila de auditoría (mismo
+    criterio que `GET /bi/schema`).
+    """
+    return await suggest_visuals(
+        db=db,
+        user=current_user,
+        connection_id=body.connection_id,
+        table=body.table,
+    )

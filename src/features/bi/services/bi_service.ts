@@ -1,9 +1,12 @@
 import { apiClient } from '../../../shared/api/api_client';
 import {
   BIConnection,
+  BIPanel,
+  BIPanelFilter,
   BIQueryResult,
   BIReport,
   BISchema,
+  BISuggestion,
   BIVisual,
   BIVisualSpec,
 } from '../types';
@@ -77,4 +80,48 @@ export const biService = {
 
   deleteVisual: async (visualId: number): Promise<{ success: boolean }> =>
     (await apiClient.delete<{ success: boolean }>(`/bi/visuals/${visualId}`)).data,
+
+  // --- Paneles (pestañas) -----------------------------------------------------
+
+  listPanels: async (): Promise<BIPanel[]> =>
+    (await apiClient.get<BIPanel[]>('/bi/panels')).data,
+
+  renamePanel: async (panelName: string, newName: string): Promise<BIPanel[]> =>
+    (
+      await apiClient.patch<BIPanel[]>('/bi/panels/rename', {
+        panel_name: panelName,
+        new_name: newName,
+      })
+    ).data,
+
+  updatePanelFilters: async (
+    panelName: string,
+    filters: BIPanelFilter[],
+  ): Promise<BIPanel[]> =>
+    (
+      await apiClient.put<BIPanel[]>('/bi/panels/filters', {
+        panel_name: panelName,
+        filters,
+      })
+    ).data,
+
+  deletePanel: async (panelName: string): Promise<{ success: boolean }> =>
+    (
+      await apiClient.delete<{ success: boolean }>(
+        `/bi/panels/${encodeURIComponent(panelName)}`,
+      )
+    ).data,
+
+  // --- Sugerencias IA ----------------------------------------------------------
+
+  suggestVisuals: async (
+    connectionId: number,
+    table: string,
+  ): Promise<{ suggestions: BISuggestion[] }> =>
+    (
+      await apiClient.post<{ suggestions: BISuggestion[] }>('/bi/suggest-visuals', {
+        connection_id: connectionId,
+        table,
+      })
+    ).data,
 };

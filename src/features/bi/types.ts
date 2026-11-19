@@ -1,4 +1,6 @@
-export type BIChartType = 'bar' | 'hbar' | 'line' | 'area' | 'pie' | 'kpi' | 'table';
+export type BIChartType =
+  | 'bar' | 'hbar' | 'line' | 'area' | 'pie' | 'donut' | 'scatter' | 'stacked'
+  | 'gauge' | 'kpi' | 'table';
 export type BIAggregation = 'sum' | 'avg' | 'count' | 'count_distinct' | 'min' | 'max';
 export type BIFilterOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | 'contains';
 export type BISort = 'value_desc' | 'value_asc' | 'label_asc' | 'label_desc';
@@ -47,6 +49,8 @@ export interface BIVisualSpec {
   filters: BIFilter[];
   sort: BISort;
   limit: number;
+  /** Segunda dimensión de apilado (solo `stacked`). El backend la deniega si es confidencial para no-admin. */
+  series?: string | null;
   /** Ancho en la grilla del panel. Default del backend: `small`. */
   size?: 'small' | 'wide' | 'full';
 }
@@ -54,6 +58,8 @@ export interface BIVisualSpec {
 export interface BIRow {
   label?: string | number | null;
   value: number | string | null;
+  /** Serie (segunda dimensión) en visuales apilados. */
+  series?: string | null;
 }
 
 export interface BIQueryResult {
@@ -71,6 +77,26 @@ export interface BIVisual {
   position: number;
   spec: BIVisualSpec;
   created_at: string;
+}
+
+export interface BIPanelFilter {
+  /** Filtro compartido de una pestaña: aplica a los visuales de esta base y tabla. */
+  connection_id: number;
+  table: string;
+  column: string;
+  op: BIFilterOp;
+  value: string;
+}
+
+export interface BIPanel {
+  name: string;
+  filters: BIPanelFilter[];
+}
+
+/** Definición de visual propuesta por la IA, ya validada por el backend. */
+export interface BISuggestion {
+  title: string;
+  spec: BIVisualSpec;
 }
 
 export interface BIConnectionRef {

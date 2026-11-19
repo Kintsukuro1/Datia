@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { csvCell, csvFilename, describeVisualSpec, visualToCsv } from '../features/bi/panels_logic';
+import {
+  chartNeedsNoDimension,
+  csvCell,
+  csvFilename,
+  describeVisualSpec,
+  rowsToStacked,
+  visualToCsv,
+} from '../features/bi/panels_logic';
 import { BIRow } from '../features/bi/types';
 
 describe('exportación CSV del visual', () => {
@@ -29,10 +36,60 @@ describe('exportación CSV del visual', () => {
     expect(visualToCsv([{ value: 4 }])).toBe('Valor\r\n4');
   });
 
+  it('con serie arma tres columnas (apiladas)', () => {
+    const rows: BIRow[] = [
+      { label: 'Software', series: 'Ana', value: 3 },
+      { label: 'Software', series: 'Pedro', value: 4 },
+      { label: 'Servicios', series: 'Pedro', value: 4 },
+    ];
+    expect(visualToCsv(rows)).toBe(
+      'Etiqueta;Serie;Valor\r\nSoftware;Ana;3\r\nSoftware;Pedro;4\r\nServicios;Pedro;4',
+    );
+  });
+
   it('limpia el nombre del archivo sin perder legibilidad', () => {
     expect(csvFilename('Ventas por método de pago')).toBe('ventas_por_metodo_de_pago.csv');
     expect(csvFilename('   ')).toBe('visual.csv');
     expect(csvFilename('=CMD()')).toBe('cmd.csv');
+  });
+});
+
+describe('pivot de apiladas', () => {
+  it('convierte filas label/series/value a series por categoría', () => {
+    const rows: BIRow[] = [
+      { label: 'Software', series: 'Ana', value: 3 },
+      { label: 'Servicios', series: 'Pedro', value: 4 },
+      { label: 'Software', series: 'Pedro', value: 4 },
+      { label: 'Servicios', series: 'Ana', value: 2 },
+    ];
+    const { labels, seriesNames, cells } = rowsToStacked(rows);
+    expect(labels).toEqual(['Software', 'Servicios']);
+    expect(seriesNames).toEqual(['Ana', 'Pedro']);
+    expect(cells).toEqual([
+      [3, 4],
+      [2, 4],
+    ]);
+  });
+
+  it('rellena con cero las combinaciones sin dato', () => {
+    const rows: BIRow[] = [
+      { label: 'Software', series: 'Ana', value: 3 },
+      { label: 'Servicios', series: 'Luis', value: 1 },
+    ];
+    const { cells } = rowsToStacked(rows);
+    expect(cells).toEqual([
+      [3, 0],
+      [0, 1],
+    ]);
+  });
+});
+
+describe('tipos sin eje', () => {
+  it('kpi y gauge no requieren dimensión; el resto sí', () => {
+    expect(chartNeedsNoDimension('kpi')).toBe(true);
+    expect(chartNeedsNoDimension('gauge')).toBe(true);
+    expect(chartNeedsNoDimension('bar')).toBe(false);
+    expect(chartNeedsNoDimension('stacked')).toBe(false);
   });
 });
 

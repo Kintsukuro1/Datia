@@ -1,4 +1,4 @@
-import { BIAggregation, BIFilterOp, BIRow, BISort, BIVisualSpec } from './types';
+import { BIAggregation, BIChartType, BIFilterOp, BIRow, BISort, BIVisualSpec } from './types';
 
 export const AGGREGATIONS: Array<{ id: BIAggregation; label: string; numericOnly: boolean }> = [
   { id: 'sum', label: 'Suma', numericOnly: true },
@@ -58,6 +58,47 @@ export function describeVisualSpec(spec: BIVisualSpec): string {
   return spec.dimension ? `${measure} por ${spec.dimension}` : measure;
 }
 
+/** Tipos que consultan sin eje: una sola fila `value` (tarjeta/gauge). */
+export const chartNeedsNoDimension = (type: BIChartType): boolean =>
+  type === 'kpi' || type === 'gauge';
+
+/** Pivot de filas `label`/`series`/`value` a series apilables. */
+export function rowsToStacked(rows: BIRow[]): {
+  labels: string[];
+  seriesNames: string[];
+  /** cells[índiceDeLabel][índiceDeSerie]; 0 donde no hay dato. */
+  cells: number[][];
+} {
+  const labels: string[] = [];
+  const seriesNames: string[] = [];
+  const labelIndex = new Map<string, number>();
+  const seriesIndex = new Map<string, number>();
+  const cells: number[][] = [];
+
+  for (const row of rows) {
+    const label = String(row.label ?? '');
+    const series = String(row.series ?? '');
+    if (!labelIndex.has(label)) {
+      labelIndex.set(label, labels.length);
+      labels.push(label);
+      cells.push([]);
+    }
+    if (!seriesIndex.has(series)) {
+      seriesIndex.set(series, seriesNames.length);
+      seriesNames.push(series);
+    }
+    const li = labelIndex.get(label) as number;
+    const si = seriesIndex.get(series) as number;
+    while (cells[li].length <= si) cells[li].push(0);
+    cells[li][si] = Number(row.value) || 0;
+  }
+  // Rellena huecos: cada fila de `cells` termina del largo de seriesNames.
+  for (const cell of cells) {
+    while (cell.length < seriesNames.length) cell.push(0);
+  }
+  return { labels, seriesNames, cells };
+}
+
 // --- Exportación CSV del visual -------------------------------------------------
 // Exporta EXACTAMENTE lo que ya está en pantalla (mismo endpoint auditado), y
 // escapa los prefijos de fórmula igual que `sanitize_spreadsheet_value` del
@@ -78,7 +119,14 @@ export function csvCell(value: unknown): string {
 }
 
 export function visualToCsv(rows: BIRow[]): string {
+  const hasSeries = rows.some((row) => 'series' in row && row.series !== undefined && row.series !== null);
   const hasLabel = rows.some((row) => 'label' in row);
+  if (hasSeries) {
+    const lines = rows.map((row) =>
+      `${csvCell(row.label)};${csvCell(row.series)};${csvCell(row.value)}`,
+    );
+    return ['Etiqueta;Serie;Valor', ...lines].join('\r\n');
+  }
   const header = hasLabel ? 'Etiqueta;Valor' : 'Valor';
   const lines = rows.map((row) =>
     hasLabel ? `${csvCell(row.label)};${csvCell(row.value)}` : csvCell(row.value),

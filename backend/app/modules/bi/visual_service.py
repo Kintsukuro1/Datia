@@ -19,8 +19,13 @@ from app.modules.bi.governance import (
     load_context,
     validate_table,
 )
-from app.modules.bi.models import BIVisual
+from app.modules.bi.models import BIPanel, BIVisual
 from app.modules.bi.schemas import (
+    BIFilter,
+    BIPanelFilter,
+    BIPanelFiltersUpdate,
+    BIPanelOut,
+    BIPanelRename,
     BIQueryResult,
     BIVisualCreate,
     BIVisualOut,
@@ -95,11 +100,15 @@ def run_visual(
     spec: BIVisualSpec,
     title: str = "",
     context: Optional[BIContext] = None,
+    panel_filters: Optional[List[BIFilter]] = None,
 ) -> BIQueryResult:
     """Ejecuta la consulta de un visual y la audita.
 
     La consulta se recalcula siempre: si los permisos o los datos cambiaron, el
     visual muestra lo que el usuario puede ver hoy, no una foto vieja.
+
+    `panel_filters` son los filtros compartidos de la pestaña que matchean la
+    tabla/base de ESTE visual; la vista previa del constructor no los pasa.
     """
     context = context or load_context(
         db, user, spec.connection_id, f"Panel BI: {title or spec.table}"
@@ -115,6 +124,7 @@ def run_visual(
             spec=spec,
             blocked_columns=context.blocked_columns,
             is_admin=context.is_admin,
+            panel_filters=panel_filters,
         )
         _valid, secured_sql, _meta = ASTValidator.validate_and_secure_sql(
             raw_sql,
@@ -142,7 +152,13 @@ def run_visual(
             if isinstance(value, float):
                 value = round(value, 2)
             if "label" in row:
-                clean_rows.append({"label": label, "value": value})
+                entry = {"label": label, "value": value}
+                if "series" in row:
+                    # Apiladas: la serie se validó al construir el SQL; un
+                    # no-admin nunca llega aquí con una serie confidencial
+                    # (build_visual_sql la deniega antes de ejecutar).
+                    entry["series"] = row["series"]
+                clean_rows.append(entry)
             else:
                 clean_rows.append({"value": value})
 
@@ -390,11 +406,20 @@ def get_visual_data(db: Session, user: User, visual_id: int) -> BIQueryResult:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"El visual guardado tiene una definición inválida: {exc}",
         )
+    # Filtros compartidos de la pestaña: se mergean en memoria, por request,
+    # con los permisos de hoy. El SQL guardado (spec_json) no cambia.
+    panel_row = (
+        db.query(BIPanel)
+        .filter(BIPanel.user_id == user.id, BIPanel.name == visual.panel_name)
+        .first()
+    )
+    panel_filters = _matching_filters(panel_row, visual.connection_id, spec.table)
     return run_visual(
         db=db,
         user=user,
         spec=spec,
         title=visual.title,
+        panel_filters=panel_filters,
     )
 
 
@@ -411,3 +436,176 @@ def delete_visual(db: Session, user: User, visual_id: int) -> None:
         )
     db.delete(visual)
     db.commit()
+
+
+# --- Paneles (pestañas) ---------------------------------------------------------
+
+
+def _panel_filters(row: Optional[BIPanel]) -> List[BIPanelFilter]:
+    """Parsea los filtros guardados de un panel. Fila corrupta/ausente → vacío.
+
+    `filters_json` siempre lo escribe este módulo tras validar con Pydantic.
+    Si aún así se corrompe, el visual se ejecuta con SUS filtros propios: no
+    otorga acceso extra, porque los permisos del visual se validan igual.
+    """
+    if not row:
+        return []
+    try:
+        raw = json.loads(row.filters_json or "[]")
+    except Exception:
+        return []
+    if not isinstance(raw, list):
+        return []
+    parsed: List[BIPanelFilter] = []
+    for item in raw:
+        try:
+            parsed.append(BIPanelFilter(**item))
+        except Exception:
+            continue
+    return parsed
+
+
+def _matching_filters(
+    row: Optional[BIPanel], connection_id: int, table: str
+) -> List[BIFilter]:
+    """Filtros del panel que aplican a esta base y tabla, como filtros simples."""
+    return [
+        BIFilter(column=item.column, op=item.op, value=item.value)
+        for item in _panel_filters(row)
+        if item.connection_id == connection_id and item.table == table
+    ]
+
+
+def list_panels(db: Session, user: User) -> List[BIPanelOut]:
+    """Paneles del usuario: filas explícitas + nombres implícitos de visuales.
+
+    Los paneles creados antes de `bi_panels` existen solo como string en los
+    visuales y siguen apareciendo, con filtros vacíos.
+    """
+    rows = db.query(BIPanel).filter(BIPanel.user_id == user.id).all()
+    by_name = {row.name: _panel_filters(row) for row in rows}
+    visual_names = {
+        name
+        for (name,) in db.query(BIVisual.panel_name)
+        .filter(BIVisual.user_id == user.id)
+        .distinct()
+        .all()
+        if name
+    }
+    return [
+        BIPanelOut(name=name, filters=by_name.get(name, []))
+        for name in sorted(set(by_name) | visual_names)
+    ]
+
+
+def rename_panel(
+    db: Session, user: User, body: BIPanelRename
+) -> List[BIPanelOut]:
+    """Renombra una pestaña y mueve el string de sus visuales en una transacción."""
+    old = body.panel_name.strip()
+    new = body.new_name.strip()
+    if not new:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El nombre nuevo no puede estar vacío.",
+        )
+
+    def exists(name: str) -> bool:
+        has_visual = (
+            db.query(BIVisual.id)
+            .filter(BIVisual.user_id == user.id, BIVisual.panel_name == name)
+            .first()
+            is not None
+        )
+        has_row = (
+            db.query(BIPanel.id)
+            .filter(BIPanel.user_id == user.id, BIPanel.name == name)
+            .first()
+            is not None
+        )
+        return has_visual or has_row
+
+    if not exists(old):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No tienes un panel con ese nombre.",
+        )
+    if old != new and exists(new):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ya tienes un panel llamado así.",
+        )
+
+    row = (
+        db.query(BIPanel)
+        .filter(BIPanel.user_id == user.id, BIPanel.name == old)
+        .first()
+    )
+    try:
+        db.query(BIVisual).filter(
+            BIVisual.user_id == user.id, BIVisual.panel_name == old
+        ).update({BIVisual.panel_name: new}, synchronize_session=False)
+        if row:
+            row.name = new
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return list_panels(db, user)
+
+
+def update_panel_filters(
+    db: Session, user: User, body: BIPanelFiltersUpdate
+) -> List[BIPanelOut]:
+    """Guarda los filtros compartidos de una pestaña (crea la fila si no existe).
+
+    La forma la valida Pydantic aquí; la gobernanza de cada columna se aplica
+    al EJECUTAR los visuales, con los permisos de hoy: una columna enmascarada
+    de un no-admin rompe el visual con su mensaje de denegación, nunca se
+    filtra en silencio.
+    """
+    name = body.panel_name.strip()
+    row = (
+        db.query(BIPanel)
+        .filter(BIPanel.user_id == user.id, BIPanel.name == name)
+        .first()
+    )
+    if not row:
+        row = BIPanel(user_id=user.id, name=name, filters_json="[]")
+        db.add(row)
+    row.filters_json = json.dumps([item.model_dump() for item in body.filters])
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return list_panels(db, user)
+
+
+def delete_panel(db: Session, user: User, panel_name: str) -> None:
+    """Borra una pestaña con todos sus visuales y sus filtros."""
+    row = (
+        db.query(BIPanel)
+        .filter(BIPanel.user_id == user.id, BIPanel.name == panel_name)
+        .first()
+    )
+    visual_count = (
+        db.query(BIVisual)
+        .filter(BIVisual.user_id == user.id, BIVisual.panel_name == panel_name)
+        .count()
+    )
+    if not row and visual_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No tienes un panel con ese nombre.",
+        )
+    try:
+        db.query(BIVisual).filter(
+            BIVisual.user_id == user.id, BIVisual.panel_name == panel_name
+        ).delete(synchronize_session=False)
+        if row:
+            db.delete(row)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
