@@ -23,9 +23,18 @@ async function abrirProyecciones(page: Page) {
   // La página resuelve la fuente activa después de montar y su efecto sobre
   // `activeConnectionId` aborta una corrida lanzada antes (ProjectionsPage.tsx:94).
   // Sin esta espera el test pelea con una carrera de la UI, no con el contrato.
-  await expect(page.locator('#projections-connection-select')).toHaveValue(/\d+/, {
-    timeout: 20_000,
-  });
+  // Un bootstrap fresco trae UNA sola conexión: ahí no hay select, y la señal de
+  // "fuente resuelta" es el nombre de la base reemplazando el placeholder
+  // "Sin fuente de datos". Asumir el select hacía fallar CI sin defecto alguno.
+  await page.waitForFunction(
+    () => {
+      const select = document.querySelector('#projections-connection-select');
+      if (select instanceof HTMLSelectElement) return /\d/.test(select.value);
+      const name = document.querySelector('#projections-active-db-name');
+      return Boolean(name?.textContent && name.textContent !== 'Sin fuente de datos');
+    },
+    { timeout: 20_000 }
+  );
 }
 
 async function proyectar(page: Page, pregunta: string) {

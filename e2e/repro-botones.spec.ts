@@ -25,9 +25,14 @@ test('admin: los controles del chat responden', async ({ page }) => {
   await page.getByRole('button', { name: 'Ingresar' }).click();
   await expect(page).toHaveURL(/#\/chat/, { timeout: 20_000 });
 
-  // El selector de fuente activa vuelve a estar en el subheader del chat: sin
-  // él, cambiar de base obligaba a salir de la pantalla.
-  await expect(page.locator('#chat-active-db-select')).toBeVisible({ timeout: 20_000 });
+  // El subheader publica la fuente activa: select cuando hay varias bases,
+  // nombre fijo cuando el bootstrap trajo una sola. Asumir el select hacía
+  // fallar CI (bootstrap fresco = una conexión) sin que nada estuviera roto.
+  await expect(
+    page
+      .locator('#chat-active-db-select')
+      .or(page.locator('#chat-active-db-name'))
+  ).toBeVisible({ timeout: 20_000 });
 
   // "Nueva consulta" limpia el campo y devuelve el foco.
   const prompt = page.getByLabel('Pregunta analítica sobre datos corporativos');

@@ -1,5 +1,18 @@
 import { expect, test } from '@playwright/test';
 
+/** Elige la conexión demo en un <select> de BI, buscando la opción por texto.
+ *
+ * El valor no se hardcodea: el id de la demo depende de cuántas bases se han
+ * dado de alta antes en la instalación, y "Demo" en el nombre es lo único
+ * estable entre un bootstrap fresco y una máquina con datos propios. */
+async function selectDemoBase(select: import('@playwright/test').Locator) {
+  const demo = select.locator('option', { hasText: 'Demo' }).first();
+  // 20s: la página BI es un chunk lazy y el primer test de la corrida paga la
+  // compilación de Vite antes de que la lista de bases llegue a existir.
+  await expect(demo).toBeAttached({ timeout: 20_000 });
+  await select.selectOption((await demo.getAttribute('value')) ?? '');
+}
+
 async function loginAsAdmin(page: import('@playwright/test').Page) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/#/login');
@@ -14,6 +27,16 @@ test('informe BI: pestañas, filtros, cross-filtering y datos demo', async ({ pa
 
   await page.getByRole('button', { name: 'Power BI' }).first().click();
   await expect(page).toHaveURL(/#\/powerbi/, { timeout: 20_000 });
+
+  // El informe abre por defecto sobre la fuente activa, que solo es la demo en
+  // un bootstrap fresco (una máquina con datos propios abre sobre ellos). El
+  // cross-filtering exige una tabla cuyo grupo Y categoría se resuelvan: en la
+  // demo, `fact_ventas` no tiene categoría (`estado` se siembra con un único
+  // valor) pero `fact_incidentes_ti` sí (`tipo_falla` como grupo,
+  // `nivel_prioridad` como categoría). Se fija la demo para que el contrato
+  // corra igual en CI que en una máquina con datos propios.
+  await selectDemoBase(page.getByLabel('Base de datos'));
+  await page.getByLabel('Tabla').selectOption('fact_incidentes_ti');
 
   await expect(page.getByRole('tab', { name: 'Resumen general' })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText('Registros del período')).toBeVisible({ timeout: 30_000 });
@@ -61,19 +84,7 @@ test('paneles BI: crear, editar, reordenar y borrar visuales', async ({ page }) 
   await expect(page).toHaveURL(/#\/panels/, { timeout: 20_000 });
 
   const pickDemoBase = async () => {
-    const connectionSelect = page.locator('#bi-conn');
-    const options = connectionSelect.locator('option');
-    const count = await options.count();
-    let demoValue = '';
-    for (let index = 0; index < count; index += 1) {
-      const text = (await options.nth(index).textContent()) || '';
-      if (text.includes('Demo')) {
-        demoValue = (await options.nth(index).getAttribute('value')) || '';
-        break;
-      }
-    }
-    expect(demoValue).not.toBe('');
-    await connectionSelect.selectOption(demoValue);
+    await selectDemoBase(page.locator('#bi-conn'));
     await expect(page.locator('#bi-table option[value="fact_ventas"]')).toHaveCount(1, { timeout: 30_000 });
     await page.locator('#bi-table').selectOption('fact_ventas');
   };

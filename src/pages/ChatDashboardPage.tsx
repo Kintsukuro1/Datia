@@ -285,7 +285,12 @@ export const ChatDashboardPage: React.FC = () => {
                   </select>
                 </div>
               ) : (
-                <span className="max-w-[200px] truncate font-semibold text-app-text sm:max-w-none">
+                // Id para e2e: con una sola fuente el subheader publica el
+                // nombre en vez del select.
+                <span
+                  id="chat-active-db-name"
+                  className="max-w-[200px] truncate font-semibold text-app-text sm:max-w-none"
+                >
                   {activeDatabaseName}
                 </span>
               )}

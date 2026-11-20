@@ -283,7 +283,12 @@ export const ProjectionsPage: React.FC = () => {
                   </select>
                 </div>
               ) : (
-                <span className="truncate font-semibold text-app-text">{activeDatabaseName}</span>
+                // Id para e2e: con una sola fuente no hay select que esperar, la
+                // señal de "fuente resuelta" es este nombre (antes del placeholder
+                // "Sin fuente de datos").
+                <span id="projections-active-db-name" className="truncate font-semibold text-app-text">
+                  {activeDatabaseName}
+                </span>
               )}
             </div>
           </div>
